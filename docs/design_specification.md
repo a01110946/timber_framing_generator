@@ -1,0 +1,1 @@
+# File: docs/design_specification.md # Detailed design specs for wall assemblies and framing

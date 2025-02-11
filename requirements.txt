@@ -1,0 +1,9 @@
+# Core dependencies
+rhinoinside>=7.0.0
+# Note: Revit API and Rhino dependencies are typically installed with their respective software
+
+# Development dependencies
+pytest>=7.0.0
+black>=22.0.0
+flake8>=4.0.0
+mypy>=0.950

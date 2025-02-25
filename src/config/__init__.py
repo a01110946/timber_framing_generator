@@ -9,14 +9,14 @@ Provides a unified interface to all configuration systems:
 - System-wide defaults
 """
 
-from .units import (
+from src.config.units import (
     get_project_units,
     convert_to_feet,
     convert_from_feet,
     ProjectUnits
 )
 
-from .framing import (
+from src.config.framing import (
     PROFILES,
     FRAMING_PARAMS,
     WALL_TYPE_PROFILES,
@@ -26,7 +26,7 @@ from .framing import (
     get_profile_for_wall_type
 )
 
-from .assembly import (
+from src.config.assembly import (
     WALL_ASSEMBLY,
     SHEATHING_PARAMS,
     OPENING_DEFAULTS,

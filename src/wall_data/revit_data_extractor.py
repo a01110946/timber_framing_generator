@@ -6,9 +6,14 @@ import Rhino.Geometry as rg
 from RhinoInside.Revit import Revit
 import RhinoInside.Revit.Convert.Geometry as Geometry
 
-from wall_data.wall_helpers import compute_wall_base_elevation, get_wall_base_curve, get_wall_base_plane
-from cell_decomposition.cell_segmentation import decompose_wall_to_cells
-from cell_decomposition.cell_types import deconstruct_all_cells
+from .wall_helpers import (
+    compute_wall_base_elevation,
+    get_wall_base_curve,
+    get_wall_base_plane
+)
+from src.wall_data.wall_helpers import compute_wall_base_elevation, get_wall_base_curve, get_wall_base_plane
+from src.cell_decomposition.cell_segmentation import decompose_wall_to_cells
+from src.cell_decomposition.cell_types import deconstruct_all_cells
 
 WallInputData = Dict[str, Union[rg.Curve, float, bool, List[Dict[str, Union[str, float]]], rg.Plane]]
 

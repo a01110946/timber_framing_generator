@@ -1,7 +1,7 @@
 # File: src/framing_elements/studs.py
 
 import Rhino.Geometry as rg
-from src.config.assembly import FRAMING_PARAMS, PROFILES
+from src.config.framing import FRAMING_PARAMS, PROFILES
 
 def calculate_stud_locations(
     cell, 

@@ -7,7 +7,7 @@ A simple script to load wall data, generate framing cells, and visualize the ass
 
 from wall_data.revit_data_extractor import extract_wall_data_from_revit
 from cell_decomposition.cell_visualizer import create_rectangles_from_cell_data
-from config import DEBUG
+from src.config.assembly import DEBUG
 import Rhino.Geometry as rg
 
 # For example purposes, assume my_revit_walls is provided (e.g., from Revit)

@@ -178,17 +178,15 @@ FRAMING_PARAMS: Dict[str, Any] = {
     # King stud parameters
     "king_stud_width": 1.5/12,      # 1.5 inches in feet
     "king_stud_depth": 3.5/12,      # 3.5 inches in feet (depth along wall)
-    "king_stud_spacing": 16.0/12,   # 16 inches in feet
 
     # Trimmer parameters
     "trimmer_width": 1.5/12,      # 1.5 inches in feet
     "trimmer_depth": 3.5/12,      # 3.5 inches in feet (depth along wall)
-    "trimmer_spacing": 16.0/12,   # 16 inches in feet
 
     # Header parameters
-    "header_width": 1.5/12,      # 1.5 inches in feet
+    "header_height": 7/12,      # 1.5 inches in feet
     "header_depth": 3.5/12,      # 3.5 inches in feet (depth along wall)
-    "header_spacing": 16.0/12,   # 16 inches in feet
+    "header_height_above_opening": 0.0,  # 0 inches in feet
 
     # Cripple parameters
     "cripple_width": 1.5/12,      # 1.5 inches in feet
@@ -198,12 +196,11 @@ FRAMING_PARAMS: Dict[str, Any] = {
     # Sill parameters
     "sill_width": 1.5/12,      # 1.5 inches in feet
     "sill_depth": 3.5/12,      # 3.5 inches in feet (depth along wall)
-    "sill_spacing": 16.0/12,   # 16 inches in feet
     
     # Offsets and tolerances
     "minimum_stud_spacing": 16.0/12,  # 16 inches in feet
-    "trimmer_offset": 0.5/12,         # 0.5 inches in feet
-    "king_stud_offset": 0.5/12,       # 0.5 inches in feet
+    "trimmer_offset": 1.5/12/2,         # 0.5 inches in feet
+    "king_stud_offset": 1.5/12/2,       # 0.5 inches in feet
     
     # Validation thresholds
     "minimum_cell_width": 1.5/12,     # 1.5 inches in feet

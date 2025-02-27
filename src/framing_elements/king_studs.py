@@ -50,8 +50,8 @@ def create_king_studs(
         # Extract dimensions
         stud_width = framing_params.get("stud_width", 1.5/12)
         stud_depth = framing_params.get("stud_depth", 3.5/12)
-        trimmer_width = framing_params.get("trimmer_width", 3.5/12)
-        king_stud_width = framing_params.get("king_stud_width", 3.5/12)
+        trimmer_width = framing_params.get("trimmer_width", 1.5/12)
+        king_stud_width = framing_params.get("king_stud_width", 1.5/12)
         
         print("\nDimensions:")
         print(f"  Stud width: {stud_width}")
@@ -71,9 +71,8 @@ def create_king_studs(
         opening_start = opening_data["start_u_coordinate"]
         opening_width = opening_data["rough_width"]
         
-        left_u = opening_start - (trimmer_width + king_stud_width)
-        right_u = opening_start + opening_width + trimmer_width + king_stud_width
-
+        left_u = opening_start - trimmer_width - (king_stud_width / 2)
+        right_u = opening_start + opening_width + trimmer_width + (king_stud_width / 2)
         # Print the calculated positions
         print("\nPosition calculations:")
         print(f"Opening start: {opening_start}")
@@ -201,7 +200,7 @@ class KingStudGenerator:
         # Create plate data dictionary with the correct keys
         plate_data = {
             "bottom_plate_elevation": bottom_data["boundary_elevation"],
-            "top_elevation": top_data["reference_elevation"],  # Changed from boundary_elevation
+            "top_elevation": top_data["boundary_elevation"],  # Changed from boundary_elevation
             "plate_thickness": bottom_data["thickness"]
         }
         

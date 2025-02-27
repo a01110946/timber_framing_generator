@@ -75,20 +75,23 @@ class HeaderGenerator:
                 return self._generate_header_fallback(opening_data, king_stud_positions)
             
             # Calculate header v-coordinate (top of opening)
-            header_v = opening_v_start + opening_height
+            opening_v_end = opening_v_start + opening_height
+            header_height = FRAMING_PARAMS.get("header_height", 1.5/12)
+            header_v = opening_v_end + header_height / 2
+            header_height_above_opening = FRAMING_PARAMS.get("header_height_above_opening", 0.0)
+            header_v = header_v + header_height_above_opening
             
             # Calculate header u-coordinates (from king studs or derived from opening)
             if king_stud_positions:
                 u_left, u_right = king_stud_positions
             else:
                 # Calculate positions based on opening with offsets
-                trimmer_offset = FRAMING_PARAMS.get("trimmer_offset", 0.5/12)
-                king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 0.5/12)
-                stud_width = FRAMING_PARAMS.get("stud_width", 1.5/12)
+                trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5/12)
+                king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 1.5/12/2)
                 
                 # Calculate stud centers
-                u_left = opening_u_start - trimmer_offset - king_stud_offset - stud_width/2
-                u_right = opening_u_start + opening_width + trimmer_offset + king_stud_offset + stud_width/2
+                u_left = opening_u_start - trimmer_width
+                u_right = opening_u_start + opening_width + trimmer_width + king_stud_offset
                 
                 # Store these calculated points for visualization
                 try:
@@ -116,7 +119,7 @@ class HeaderGenerator:
                     u_start=u_left,
                     u_end=u_right,
                     v_start=header_v,
-                    v_end=header_v + header_params.height,
+                    v_end=header_v,
                     w_center=0.0,
                     coordinate_system=self.coordinate_system
                 )
@@ -188,31 +191,36 @@ class HeaderGenerator:
             print("Using fallback method for header generation")
             
             # Extract opening information
-            opening_u_start = opening_data["start_u_coordinate"]
-            opening_width = opening_data["rough_width"]
-            opening_height = opening_data["rough_height"]
-            opening_v_start = opening_data["base_elevation_relative_to_wall_base"]
+            opening_u_start = opening_data.get("start_u_coordinate")
+            opening_width = opening_data.get("rough_width")
+            opening_height = opening_data.get("rough_height")
+            opening_v_start = opening_data.get("base_elevation_relative_to_wall_base")
             
             # Calculate header v-coordinate (top of opening)
-            header_v = opening_v_start + opening_height
+            opening_v_end = opening_v_start + opening_height
+            header_height = FRAMING_PARAMS.get("header_height", 1.5/12)
+            header_depth = FRAMING_PARAMS.get("header_depth", 3.5/12)
+            header_v = opening_v_end + header_height / 2
+            header_height_above_opening = FRAMING_PARAMS.get("header_height_above_opening", 0.0)
+            header_v = header_v + header_height_above_opening
+        
+            # Calculate positions based on opening with offsets
+            trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5/12)
+            king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 1.5/12/2)
             
             # Get the base plane from wall data
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
                 print("No base plane available for fallback header generation")
                 return None
-                
-            # Get header dimensions
-            header_height = 0.25  # Default height (3 inches)
-            header_width = 0.292  # Default width (3.5 inches)
             
             # Calculate header center point (centered horizontally above the opening)
             header_center_u = opening_u_start + opening_width / 2
-            header_center_v = header_v + header_height / 2  # Center vertically above opening
+            header_center_v = header_v  # Center vertically above opening
             header_center = base_plane.PointAt(header_center_u, header_center_v, 0)
             
             # Create header length based on opening width plus some extension
-            header_length = opening_width + 0.5  # Add 6 inches total (3 on each side)
+            header_length = opening_width + trimmer_width + trimmer_width
             
             try:
                 # Create box with proper orientation
@@ -226,8 +234,8 @@ class HeaderGenerator:
                 box = rg.Box(
                     box_plane,
                     rg.Interval(-header_length/2, header_length/2),  # Length along x-axis
-                    rg.Interval(-header_width/2, header_width/2),    # Width into the wall
-                    rg.Interval(-header_height/2, header_height/2)   # Height centered on header_center
+                    rg.Interval(-header_height/2, header_height/2),    # Width into the wall
+                    rg.Interval(-header_depth/2, header_depth/2)   # Height centered on header_center
                 )
                 
                 # Convert to Brep

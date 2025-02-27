@@ -165,27 +165,25 @@ class SillGenerator:
             print("Using fallback method for sill generation")
             
             # Extract opening information
-            opening_u_start = opening_data["start_u_coordinate"]
-            opening_width = opening_data["rough_width"]
-            opening_v_start = opening_data["base_elevation_relative_to_wall_base"]
+            opening_u_start = opening_data.get("start_u_coordinate")
+            opening_width = opening_data.get("rough_width")
+            opening_v_start = opening_data.get("base_elevation_relative_to_wall_base")
+
+            # Calculate sill box dimensions
+            sill_width = FRAMING_PARAMS.get("sill_width", 1.5/12)
+            sill_depth = FRAMING_PARAMS.get("sill_depth", 3.5/12)
+            sill_length = opening_width
             
             # Get the base plane from wall data
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
                 print("No base plane available for fallback sill generation")
                 return None
-                
-            # Get sill dimensions
-            sill_height = 0.25  # Default height (3 inches)
-            sill_width = 0.292  # Default width (3.5 inches)
             
             # Calculate sill center point (centered horizontally below the opening)
             sill_center_u = opening_u_start + opening_width / 2
-            sill_center_v = opening_v_start - sill_height / 2  # Center vertically below the opening
+            sill_center_v = opening_v_start - sill_width / 2  # Center vertically below the opening
             sill_center = base_plane.PointAt(sill_center_u, sill_center_v, 0)
-            
-            # Create sill length based on opening width plus some extension
-            sill_length = opening_width + 0.5  # Add 6 inches total (3 on each side)
             
             try:
                 # Create box with proper orientation
@@ -200,7 +198,7 @@ class SillGenerator:
                     box_plane,
                     rg.Interval(-sill_length/2, sill_length/2),  # Length along x-axis
                     rg.Interval(-sill_width/2, sill_width/2),    # Width into the wall
-                    rg.Interval(-sill_height/2, sill_height/2)   # Height centered on sill_center
+                    rg.Interval(-sill_depth/2, sill_depth/2)   # Height centered on sill_center
                 )
                 
                 # Convert to Brep

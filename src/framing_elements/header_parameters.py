@@ -52,7 +52,7 @@ class HeaderParameters:
             profile = get_profile_for_wall_type(wall_type)
             
         # Get default header parameters from config
-        header_height = FRAMING_PARAMS.get("header_height", profile.width * 2)
+        header_height = FRAMING_PARAMS.get("header_height", profile.width * 2) # TEMPORARILY NOT USING HEADER HEIGHT
         
         # For headers, typical orientation is:
         # - thickness = profile.thickness (depth along wall)

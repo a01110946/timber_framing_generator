@@ -7,7 +7,7 @@ from src.framing_elements.plate_geometry import PlateGeometry
 from src.framing_elements.king_studs import KingStudGenerator
 from src.framing_elements.headers import HeaderGenerator
 from src.framing_elements.sills import SillGenerator
-from src.utils.coordinate_systems import WallCoordinateSystem
+from src.config.framing import FRAMING_PARAMS
 
 class FramingGenerator:
     """
@@ -203,48 +203,154 @@ class FramingGenerator:
     
     def _get_king_stud_positions(self) -> Dict[int, Tuple[float, float]]:
         """
-        Extract king stud positions for each opening.
+        Extract actual king stud positions from generated geometry.
         
-        This method analyzes the generated king studs to determine their
-        positions relative to each opening. It returns a dictionary mapping
-        opening index to a tuple of (left, right) u-coordinates.
+        This method analyzes the generated king stud geometries to determine
+        their exact positions, allowing other framing elements to position
+        themselves correctly relative to the king studs.
         
         Returns:
-            Dictionary mapping opening index to (left, right) positions
+            Dictionary mapping opening index to (left_u, right_u) positions
         """
         positions = {}
         
         # Check if king studs have been generated
         if not self.generation_status.get('king_studs_generated', False):
+            print("King studs not yet generated, can't extract positions")
             return positions
         
-        # Get openings data
+        # Get openings and king studs
         openings = self.wall_data.get('openings', [])
         king_studs = self.framing_elements.get('king_studs', [])
         
-        # We need to match king studs to openings
-        # This assumes king studs are generated in pairs for each opening
-        # and in the same order as the openings
-        if len(king_studs) >= 2 and len(openings) > 0:
-            # King studs are typically generated in pairs (left, right)
-            for i in range(len(openings)):
-                # Check if we have king studs for this opening
-                king_stud_index = i * 2
-                if king_stud_index + 1 < len(king_studs):
-                    # Get the centerlines of the king studs
-                    left_stud = king_studs[king_stud_index]
-                    right_stud = king_studs[king_stud_index + 1]
+        # Get the base plane for position calculations
+        base_plane = self.wall_data.get('base_plane')
+        if base_plane is None:
+            print("No base plane available for king stud position extraction")
+            return positions
+        
+        # Verify we have enough king studs (should be pairs for each opening)
+        if len(king_studs) < 2 or len(openings) == 0:
+            print(f"Not enough king studs ({len(king_studs)}) or openings ({len(openings)})")
+            return positions
+        
+        # Process each opening
+        for i in range(len(openings)):
+            # Calculate the index for this opening's king studs (2 per opening)
+            left_index = i * 2
+            right_index = i * 2 + 1
+            
+            # Verify we have studs for this opening
+            if right_index >= len(king_studs):
+                print(f"Missing king studs for opening {i+1}")
+                continue
+                
+            # Get the stud geometries
+            left_stud = king_studs[left_index]
+            right_stud = king_studs[right_index]
+            
+            try:
+                # Extract centerlines from the king stud geometries
+                left_centerline = self._extract_centerline_from_stud(left_stud)
+                right_centerline = self._extract_centerline_from_stud(right_stud)
+                
+                if left_centerline is None or right_centerline is None:
+                    print(f"Failed to extract centerlines for opening {i+1}")
+                    continue
                     
-                    # This is a simplification - we would need to extract the 
-                    # actual u-coordinates from the king studs
-                    # For now, use the opening positions
-                    opening = openings[i]
-                    u_left = opening["start_u_coordinate"] - 0.15  # Approximate left stud position
-                    u_right = opening["start_u_coordinate"] + opening["rough_width"] + 0.15  # Approximate right stud position
-                    
-                    positions[i] = (u_left, u_right)
+                # Get the u-coordinates (along the wall) for each stud
+                # For this we need the start points of each centerline
+                left_start = left_centerline.PointAtStart
+                right_start = right_centerline.PointAtStart
+                
+                # Project these points onto the base plane's X axis
+                # to get their u-coordinates
+                left_u = self._project_point_to_u_coordinate(left_start, base_plane)
+                right_u = self._project_point_to_u_coordinate(right_start, base_plane)
+                
+                # Store the inner face positions for header placement
+                positions[i] = (left_u, right_u)
+                
+                print(f"Extracted king stud positions for opening {i+1}:")
+                print(f"  Left stud centerline: u={left_u}")
+                print(f"  Right stud centerline: u={right_u}")
+                
+            except Exception as e:
+                print(f"Error extracting king stud positions for opening {i+1}: {str(e)}")
+                import traceback
+                print(traceback.format_exc())
         
         return positions
+
+    def _extract_centerline_from_stud(self, stud_brep: rg.Brep) -> Optional[rg.Curve]:
+        """
+        Extract the centerline curve from a stud Brep.
+        
+        This method analyzes the geometry of a stud to find its centerline.
+        For king studs, the centerline should be a vertical line running through
+        the center of the stud.
+        
+        Args:
+            stud_brep: The Brep geometry of the stud
+            
+        Returns:
+            The centerline curve, or None if extraction fails
+        """
+        try:
+            # If we stored path curves in debug geometry during king stud creation,
+            # we can try to find the matching one
+            for curve in self.debug_geometry.get('paths', []):
+                # Find a curve that's approximately at the same position
+                # This is a simplistic approach - you might need to enhance it
+                if stud_brep.IsPointInside(curve.PointAtStart, 0.01, True):
+                    return curve
+                    
+            # If we can't find a path curve, try to extract it from the Brep
+            # For a typical extruded stud, we can use the Brep's bounding box
+            bbox = stud_brep.GetBoundingBox(True)
+            if bbox.IsValid:
+                # Vertical centerline through the middle of the stud
+                center_x = (bbox.Min.X + bbox.Max.X) / 2
+                center_y = (bbox.Min.Y + bbox.Max.Y) / 2
+                
+                # Create a line from bottom to top
+                start = rg.Point3d(center_x, center_y, bbox.Min.Z)
+                end = rg.Point3d(center_x, center_y, bbox.Max.Z)
+                
+                return rg.LineCurve(start, end)
+                
+            # If that fails, return None
+            print("Failed to extract centerline from stud Brep")
+            return None
+            
+        except Exception as e:
+            print(f"Error extracting centerline: {str(e)}")
+            return None
+
+    def _project_point_to_u_coordinate(self, point: rg.Point3d, base_plane: rg.Plane) -> float:
+        """
+        Project a 3D point onto the wall's u-axis to get its u-coordinate.
+        
+        Args:
+            point: The 3D point to project
+            base_plane: The wall's base plane
+            
+        Returns:
+            The u-coordinate (distance along wall)
+        """
+        try:
+            # Vector from base plane origin to the point
+            vec = point - base_plane.Origin
+            
+            # Project this vector onto the u-axis (XAxis)
+            # Use the dot product for projection
+            u = vec * base_plane.XAxis
+            
+            return u
+            
+        except Exception as e:
+            print(f"Error projecting point to u-coordinate: {str(e)}")
+            return 0.0
 
     def _generate_headers_and_sills(self) -> None:
         """
@@ -259,7 +365,7 @@ class FramingGenerator:
         if not self.generation_status.get('king_studs_generated', False):
             self._generate_king_studs()
             
-        try:  # OUTER try begins
+        try:
             openings = self.wall_data.get('openings', [])
             print(f"\nGenerating headers and sills for {len(openings)} openings")
         
@@ -269,94 +375,69 @@ class FramingGenerator:
                 self.generation_status['headers_and_sills_generated'] = True
                 return
                 
-            try:  # INNER try begins
-                # Create coordinate system for consistent transformations
-                coordinate_system = WallCoordinateSystem(self.wall_data)
+            # Create header and sill generators
+            # These now use direct base plane approach - no coordinate system needed!
+            header_generator = HeaderGenerator(self.wall_data)
+            sill_generator = SillGenerator(self.wall_data)
             
-                # Verify the coordinate system was created successfully
-                if coordinate_system.base_plane is None or coordinate_system.wall_curve is None:
-                    print("Warning: Invalid coordinate system created. Using fallback approach.")
-                    # We'll proceed without the coordinate system, using a simpler approach
-                    self._generate_headers_and_sills_fallback()
-                    return
+            # Track generated elements
+            headers = []
+            sills = []
         
-                # Get king stud positions for all openings
-                king_stud_positions = self._get_king_stud_positions()
-            
-                # Initialize header and sill generators
-                header_generator = HeaderGenerator(self.wall_data, coordinate_system)
-                sill_generator = SillGenerator(self.wall_data, coordinate_system)
-                
-                # Track generated elements
-                headers = []
-                sills = []
-            
-                # Process each opening
-                for i, opening in enumerate(openings):
-                    try:
-                        print(f"\nProcessing opening {i+1}")
-                        
-                        # Get king stud positions for this opening if available
-                        opening_king_stud_positions = king_stud_positions.get(i)
-                        
-                        # Generate header
-                        header = header_generator.generate_header(opening, opening_king_stud_positions)
-                        if header:
-                            headers.append(header)
-                        
-                        # Generate sill (only for windows)
-                        if opening["opening_type"].lower() == "window":
-                            sill = sill_generator.generate_sill(opening, opening_king_stud_positions)
-                            if sill:
-                                sills.append(sill)
-                        
-                    except Exception as e:
-                        print(f"Error with opening {i+1}: {str(e)}")
-                        import traceback
-                        print(traceback.format_exc())
-                
-                # Store the generated elements
-                self.framing_elements['headers'] = headers
-                self.framing_elements['sills'] = sills
-                
-                # Collect debug geometry
-                all_debug_geometry = {
-                    'points': [],
-                    'curves': [],
-                    'planes': [],
-                    'profiles': []
-                }
-                
-                # Collect header debug geometry
-                for key in all_debug_geometry:
-                    all_debug_geometry[key].extend(header_generator.debug_geometry.get(key, []))
+            # Process each opening
+            for i, opening in enumerate(openings):
+                try:
+                    print(f"\nProcessing opening {i+1}")
                     
-                # Collect sill debug geometry
-                for key in all_debug_geometry:
-                    all_debug_geometry[key].extend(sill_generator.debug_geometry.get(key, []))
-                
-                # Store debug geometry
-                for key in all_debug_geometry:
-                    if key in self.debug_geometry:
-                        self.debug_geometry[key].extend(all_debug_geometry[key])
-                    else:
-                        self.debug_geometry[key] = all_debug_geometry[key]
-                
-                # Update generation status
-                self.generation_status['headers_and_sills_generated'] = True
-                
-            except Exception as e:  # INNER except
-                print(f"Error generating headers and sills: {str(e)}")
-                import traceback
-                print(traceback.format_exc())
-                # Don't re-raise here to allow the outer try to handle it
-                self.generation_status['headers_and_sills_generated'] = True  # Mark as completed to prevent future attempts
-                
-        except Exception as e:  # OUTER except - this was missing
-            print(f"Fatal error in header and sill generation: {str(e)}")
+                    # Get king stud positions for this opening if available
+                    opening_king_stud_positions = self._get_king_stud_positions().get(i)
+                    
+                    # Generate header using direct base plane approach
+                    header = header_generator.generate_header(opening, opening_king_stud_positions)
+                    if header:
+                        headers.append(header)
+                        print(f"Successfully created header for opening {i+1}")
+                    
+                    # Generate sill using direct base plane approach
+                    if opening["opening_type"].lower() == "window":
+                        sill = sill_generator.generate_sill(opening)
+                        if sill:
+                            sills.append(sill)
+                            print(f"Successfully created sill for opening {i+1}")
+                    
+                except Exception as e:
+                    print(f"Error with opening {i+1}: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
+            
+            # Store the generated elements
+            self.framing_elements['headers'] = headers
+            self.framing_elements['sills'] = sills
+            
+            # Collect debug geometry
+            for generator in [header_generator, sill_generator]:
+                for key in ['points', 'planes', 'profiles', 'curves']:
+                    if key in generator.debug_geometry and generator.debug_geometry[key]:
+                        if key in self.debug_geometry:
+                            self.debug_geometry[key].extend(generator.debug_geometry[key])
+                        else:
+                            self.debug_geometry[key] = generator.debug_geometry[key]
+            
+            # Update generation status
+            self.generation_status['headers_and_sills_generated'] = True
+            
+        except Exception as e:
+            print(f"Error generating headers and sills: {str(e)}")
             import traceback
             print(traceback.format_exc())
-            self.generation_status['headers_and_sills_generated'] = True  # Mark as completed to prevent future attempts
+            
+            # Mark as completed to prevent future attempts
+            self.generation_status['headers_and_sills_generated'] = True
+            
+            # Initialize empty lists to prevent errors downstream
+            self.framing_elements['headers'] = []
+            self.framing_elements['sills'] = []
     
     def _generate_headers_and_sills_fallback(self) -> None:
         """

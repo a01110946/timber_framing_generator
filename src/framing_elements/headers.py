@@ -2,7 +2,6 @@
 
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
-from src.utils.coordinate_systems import WallCoordinateSystem, FramingElementCoordinates
 from src.framing_elements.header_parameters import HeaderParameters
 from src.config.framing import FRAMING_PARAMS
 
@@ -17,9 +16,8 @@ class HeaderGenerator:
     
     def __init__(
         self,
-        wall_data: Dict[str, Any],
-        coordinate_system: Optional[WallCoordinateSystem] = None
-    ):
+        wall_data: Dict[str, Any]
+        ):
         """
         Initialize the header generator with wall data and coordinate system.
         
@@ -27,10 +25,8 @@ class HeaderGenerator:
             wall_data: Dictionary containing wall information
             coordinate_system: Optional coordinate system for transformations
         """
+        # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
-        
-        # Create coordinate system if not provided
-        self.coordinate_system = coordinate_system or WallCoordinateSystem(wall_data)
         
         # Initialize storage for debug geometry
         self.debug_geometry = {
@@ -69,122 +65,93 @@ class HeaderGenerator:
             opening_height = opening_data.get("rough_height")
             opening_v_start = opening_data.get("base_elevation_relative_to_wall_base")
             
-            # Validate required data
             if None in (opening_u_start, opening_width, opening_height, opening_v_start):
-                print("Missing required opening data, using fallback")
-                return self._generate_header_fallback(opening_data, king_stud_positions)
+                print("Missing required opening data")
+                return None
             
-            # Calculate header v-coordinate (top of opening)
-            opening_v_end = opening_v_start + opening_height
-            header_height = FRAMING_PARAMS.get("header_height", 1.5/12)
-            header_v = opening_v_end + header_height / 2
-            header_height_above_opening = FRAMING_PARAMS.get("header_height_above_opening", 0.0)
-            header_v = header_v + header_height_above_opening
+            # Get essential parameters
+            base_plane = self.wall_data.get("base_plane")
+            if base_plane is None:
+                print("No base plane available")
+                return None
+                
+            # Calculate header dimensions from framing parameters
+            header_width = FRAMING_PARAMS.get("header_depth", 5.5/12)  # Through wall thickness
+            header_height = FRAMING_PARAMS.get("header_height", 7.0/12)  # Vertical dimension
+            header_height_above_opening = FRAMING_PARAMS.get("header_height_above_opening", 0.0)    # Distance above opening
             
-            # Calculate header u-coordinates (from king studs or derived from opening)
+            # Calculate header position (top of opening + half header height)
+            opening_v_end = opening_v_start + opening_height        
+            header_v = opening_v_end + (header_height / 2) + header_height_above_opening
+            
+            # Calculate header span
             if king_stud_positions:
                 u_left, u_right = king_stud_positions
             else:
                 # Calculate positions based on opening with offsets
                 trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5/12)
-                king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 1.5/12/2)
-                
-                # Calculate stud centers
                 u_left = opening_u_start - trimmer_width
-                u_right = opening_u_start + opening_width + trimmer_width + king_stud_offset
-                
-                # Store these calculated points for visualization
-                try:
-                    left_point = self.coordinate_system.wall_to_world(u_left, header_v, 0)
-                    right_point = self.coordinate_system.wall_to_world(u_right, header_v, 0)
-                    
-                    if left_point and right_point:
-                        self.debug_geometry['points'].extend([left_point, right_point])
-                except Exception as e:
-                    print(f"Error creating debug points: {str(e)}")
+                u_right = opening_u_start + opening_width + trimmer_width
             
-            # Create header parameters based on wall type
-            try:
-                header_params = HeaderParameters.from_wall_type(
-                    self.wall_data.get("wall_type", "2x4"),
-                    opening_height
+            # 1. Create the centerline endpoints in world coordinates
+            start_point = rg.Point3d.Add(
+                base_plane.Origin, 
+                rg.Vector3d.Add(
+                    rg.Vector3d.Multiply(base_plane.XAxis, u_left),
+                    rg.Vector3d.Multiply(base_plane.YAxis, header_v)
                 )
-            except Exception as e:
-                print(f"Error creating header parameters: {str(e)}")
-                return self._generate_header_fallback(opening_data, king_stud_positions)
+            )
             
-            # Create coordinates for the header
-            try:
-                header_coords = FramingElementCoordinates(
-                    u_start=u_left,
-                    u_end=u_right,
-                    v_start=header_v,
-                    v_end=header_v,
-                    w_center=0.0,
-                    coordinate_system=self.coordinate_system
+            end_point = rg.Point3d.Add(
+                base_plane.Origin, 
+                rg.Vector3d.Add(
+                    rg.Vector3d.Multiply(base_plane.XAxis, u_right),
+                    rg.Vector3d.Multiply(base_plane.YAxis, header_v)
                 )
-                
-                # Extract visualization geometry
-                viz_geom = header_coords.get_debug_geometry()
-                
-                if 'centerline' in viz_geom and viz_geom['centerline']:
-                    self.debug_geometry['curves'].append(viz_geom['centerline'])
-                    
-                if 'boundary' in viz_geom and viz_geom['boundary']:
-                    self.debug_geometry['curves'].append(viz_geom['boundary'])
-                    
-                if 'corners' in viz_geom and viz_geom['corners']:
-                    self.debug_geometry['points'].extend(viz_geom['corners'])
-                    
-                if 'profile_plane' in viz_geom and viz_geom['profile_plane']:
-                    self.debug_geometry['planes'].append(viz_geom['profile_plane'])
-                    
-                # Get the profile plane for proper orientation
-                profile_plane = header_coords.get_profile_plane()
-                
-                # If we don't have a valid profile plane, use fallback
-                if profile_plane is None:
-                    print("Profile plane is null, using fallback approach")
-                    return self._generate_header_fallback(opening_data, king_stud_positions)
-                    
-                # Create the header profile as a rectangle
-                header_profile = rg.Rectangle3d(
-                    profile_plane,
-                    rg.Interval(-header_params.width/2, header_params.width/2),
-                    rg.Interval(-header_params.thickness/2, header_params.thickness/2)
-                )
-                
-                self.debug_geometry['profiles'].append(header_profile)
-                
-                # Create the extrusion path
-                centerline = header_coords.get_centerline()
-                
-                if centerline is None:
-                    print("Centerline is null, using fallback approach")
-                    return self._generate_header_fallback(opening_data, king_stud_positions)
-                    
-                # Create the extrusion
-                profile_curve = header_profile.ToNurbsCurve()
-                vector = rg.Vector3d(centerline.PointAtEnd - centerline.PointAtStart)
-                
-                extrusion = rg.Extrusion.CreateExtrusion(profile_curve, vector)
-                
-                # Convert to Brep and return
-                if extrusion:
-                    header_brep = extrusion.ToBrep()
-                    return header_brep
-                else:
-                    print("Failed to create header extrusion, using fallback")
-                    return self._generate_header_fallback(opening_data, king_stud_positions)
-                    
-            except Exception as e:
-                print(f"Error creating header geometry: {str(e)}")
-                return self._generate_header_fallback(opening_data, king_stud_positions)
+            )
+            
+            # Create the centerline as a curve
+            centerline = rg.LineCurve(start_point, end_point)
+            self.debug_geometry['curves'].append(centerline)
+            
+            # 2. Create a profile plane at the start point
+            # Create vectors for the profile plane
+            # X axis goes into the wall (for width)
+            profile_x_axis = base_plane.ZAxis
+            # Y axis goes up/down (for height)
+            profile_y_axis = base_plane.YAxis
+            
+            profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
+            self.debug_geometry['planes'].append(profile_plane)
+            
+            # 3. Create a rectangular profile centered on the plane
+            profile_rect = rg.Rectangle3d(
+                profile_plane,
+                rg.Interval(-header_width/2, header_width/2),
+                rg.Interval(-header_height/2, header_height/2)
+            )
+            
+            profile_curve = profile_rect.ToNurbsCurve()
+            self.debug_geometry['profiles'].append(profile_rect)
+            
+            # 4. Extrude the profile along the centerline
+            # Calculate the vector from start to end
+            extrusion_vector = rg.Vector3d(end_point - start_point)
+            extrusion = rg.Extrusion.CreateExtrusion(profile_curve, extrusion_vector)
+            
+            # Convert to Brep and return
+            if extrusion and extrusion.IsValid:
+                return extrusion.ToBrep()
+            else:
+                print("Failed to create valid header extrusion")
+                return None
                 
         except Exception as e:
             print(f"Error generating header: {str(e)}")
-            return self._generate_header_fallback(opening_data, king_stud_positions)
-    
+            import traceback
+            print(traceback.format_exc())
+            return None
+
     def _generate_header_fallback(self, opening_data, king_stud_positions=None) -> Optional[rg.Brep]:
         """Fallback method for header generation when coordinate transformations fail."""
         try:

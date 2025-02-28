@@ -16,8 +16,7 @@ class SillGenerator:
     
     def __init__(
         self,
-        wall_data: Dict[str, Any],
-        coordinate_system: Optional[WallCoordinateSystem] = None
+        wall_data: Dict[str, Any]
     ):
         """
         Initialize the sill generator with wall data and coordinate system.
@@ -26,10 +25,8 @@ class SillGenerator:
             wall_data: Dictionary containing wall information
             coordinate_system: Optional coordinate system for transformations
         """
+        # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
-        
-        # Create coordinate system if not provided
-        self.coordinate_system = coordinate_system or WallCoordinateSystem(wall_data)
         
         # Initialize storage for debug geometry
         self.debug_geometry = {
@@ -41,119 +38,112 @@ class SillGenerator:
     
     def generate_sill(
         self,
-        opening_data: Dict[str, Any],
-        king_stud_positions: Optional[Tuple[float, float]] = None
+        opening_data: Dict[str, Any]
     ) -> Optional[rg.Brep]:
         """
         Generate a sill for a window opening.
         
         This method creates a sill based on:
         1. The opening data for positioning and dimensions
-        2. Optional king stud positions for span length
-        3. Wall type for appropriate profile selection
+        2. Wall type for appropriate profile selection # TODO: Add this
         
         The method only creates sills for window openings, not for doors.
         
         Args:
             opening_data: Dictionary with opening information
-            king_stud_positions: Optional tuple of (left, right) u-coordinates
-                                 If not provided, calculated from opening width
-                                 plus configured offsets
         
         Returns:
             Sill geometry as a Rhino Brep, or None for door openings
         """
         try:
             # Only create sills for windows, not doors
-            if opening_data["opening_type"].lower() != "window":
-                return None
-            
-            # Only create sills for windows, not doors
-            if opening_data["opening_type"].lower() != "window":
+            if opening_data.get("opening_type", "").lower() != "window":
                 return None
                 
             # Extract opening information
-            opening_u_start = opening_data["start_u_coordinate"]
-            opening_width = opening_data["rough_width"]
-            opening_v_start = opening_data["base_elevation_relative_to_wall_base"]
+            opening_u_start = opening_data.get("start_u_coordinate")
+            opening_width = opening_data.get("rough_width")
+            opening_v_start = opening_data.get("base_elevation_relative_to_wall_base")
             
-            # Calculate sill v-coordinate (bottom of opening)
-            sill_v = opening_v_start
+            if None in (opening_u_start, opening_width, opening_v_start):
+                print("Missing required opening data")
+                return None
             
-            # Calculate sill u-coordinates (from king studs or derived from opening)
-            if king_stud_positions:
-                u_left, u_right = king_stud_positions
-            else:
-                # Calculate positions based on opening with offsets
-                trimmer_offset = FRAMING_PARAMS.get("trimmer_offset", 0.5/12)
-                king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 0.5/12)
-                stud_width = FRAMING_PARAMS.get("stud_width", 1.5/12)
+            # Get essential parameters
+            base_plane = self.wall_data.get("base_plane")
+            if base_plane is None:
+                print("No base plane available")
+                return None
                 
-                # Calculate stud centers
-                u_left = opening_u_start - trimmer_offset - king_stud_offset - stud_width/2
-                u_right = opening_u_start + opening_width + trimmer_offset + king_stud_offset + stud_width/2
-                
-                # Store these calculated points for visualization
-                left_point = self.coordinate_system.wall_to_world(u_left, sill_v, 0)
-                right_point = self.coordinate_system.wall_to_world(u_right, sill_v, 0)
-                self.debug_geometry['points'].extend([left_point, right_point])
+            # Calculate sill dimensions from framing parameters
+            sill_width = FRAMING_PARAMS.get("sill_depth", 3.5/12)   # Through wall thickness
+            sill_height = FRAMING_PARAMS.get("sill_height", 1.5/12)  # Vertical dimension
             
-            # Create sill parameters based on wall type
-            sill_params = SillParameters.from_wall_type(
-                self.wall_data["wall_type"],
-                opening_width
+            # Calculate sill position (equal to opening bottom)
+            sill_v = opening_v_start - (sill_height / 2)
+            
+            # Calculate sill span based on opening with offsets
+            u_left = opening_u_start
+            u_right = opening_u_start + opening_width
+            
+            # 1. Create the centerline endpoints in world coordinates
+            start_point = rg.Point3d.Add(
+                base_plane.Origin, 
+                rg.Vector3d.Add(
+                    rg.Vector3d.Multiply(base_plane.XAxis, u_left),
+                    rg.Vector3d.Multiply(base_plane.YAxis, sill_v)
+                )
             )
             
-            # Create coordinates for the sill
-            # Sill is BELOW the opening, so v_end is at opening bottom and v_start is below that
-            sill_coords = FramingElementCoordinates(
-                u_start=u_left,
-                u_end=u_right,
-                v_start=sill_v - sill_params.height,  # Sill extends downward from opening bottom
-                v_end=sill_v,
-                coordinate_system=self.coordinate_system
+            end_point = rg.Point3d.Add(
+                base_plane.Origin, 
+                rg.Vector3d.Add(
+                    rg.Vector3d.Multiply(base_plane.XAxis, u_right),
+                    rg.Vector3d.Multiply(base_plane.YAxis, sill_v)
+                )
             )
             
-            # Extract visualization geometry
-            viz_geom = sill_coords.get_debug_geometry()
-            self.debug_geometry['curves'].append(viz_geom['centerline'])
-            self.debug_geometry['curves'].append(viz_geom['boundary'])
-            self.debug_geometry['points'].extend(viz_geom['corners'])
-            self.debug_geometry['planes'].append(viz_geom['profile_plane'])
+            # Create the centerline as a curve
+            centerline = rg.LineCurve(start_point, end_point)
+            self.debug_geometry['curves'].append(centerline)
             
-            # Get the profile plane for proper orientation
-            profile_plane = sill_coords.get_profile_plane()
-
-            # Add this before creating the Rectangle3d
-            if profile_plane is None:
-                print("Profile plane is null, using fallback approach for sill")
-                return self._generate_sill_fallback(opening_data, king_stud_positions)
+            # 2. Create a profile plane at the start point
+            # Create vectors for the profile plane
+            # X axis goes into the wall (for width)
+            profile_x_axis = base_plane.ZAxis
+            # Y axis goes up/down (for height)
+            profile_y_axis = base_plane.YAxis
             
-            # Create the sill profile as a rectangle
-            sill_profile = rg.Rectangle3d(
+            profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
+            self.debug_geometry['planes'].append(profile_plane)
+            
+            # 3. Create a rectangular profile centered on the plane
+            profile_rect = rg.Rectangle3d(
                 profile_plane,
-                rg.Interval(-sill_params.width/2, sill_params.width/2),
-                rg.Interval(-sill_params.thickness/2, sill_params.thickness/2)
+                rg.Interval(-sill_width/2, sill_width/2),
+                rg.Interval(-sill_height/2, sill_height/2)
             )
-            self.debug_geometry['profiles'].append(sill_profile)
             
-            # Create the extrusion path
-            centerline = sill_coords.get_centerline()
+            profile_curve = profile_rect.ToNurbsCurve()
+            self.debug_geometry['profiles'].append(profile_rect)
             
-            # Create the extrusion
-            profile_curve = sill_profile.ToNurbsCurve()
-            extrusion = rg.Extrusion.CreateExtrusion(
-                profile_curve,
-                rg.Vector3d(centerline.PointAtEnd - centerline.PointAtStart)
-            )
+            # 4. Extrude the profile along the centerline
+            # Calculate the vector from start to end
+            extrusion_vector = rg.Vector3d(end_point - start_point)
+            extrusion = rg.Extrusion.CreateExtrusion(profile_curve, extrusion_vector)
             
             # Convert to Brep and return
-            sill_brep = extrusion.ToBrep()
-            
-            return sill_brep
+            if extrusion and extrusion.IsValid:
+                return extrusion.ToBrep()
+            else:
+                print("Failed to create valid sill extrusion")
+                return None
+                
         except Exception as e:
             print(f"Error generating sill: {str(e)}")
-            return self._generate_sill_fallback(opening_data, king_stud_positions)
+            import traceback
+            print(traceback.format_exc())
+            return None
     
     def _generate_sill_fallback(self, opening_data, king_stud_positions=None) -> Optional[rg.Brep]:
         """Fallback method for sill generation when coordinate transformations fail."""

@@ -194,7 +194,7 @@ FRAMING_PARAMS: Dict[str, Any] = {
     "cripple_spacing": 16.0/12,   # 16 inches in feet
 
     # Sill parameters
-    "sill_width": 1.5/12,      # 1.5 inches in feet
+    "sill_height": 1.5/12,      # 1.5 inches in feet
     "sill_depth": 3.5/12,      # 3.5 inches in feet (depth along wall)
     
     # Offsets and tolerances

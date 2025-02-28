@@ -40,6 +40,9 @@ class WallCoordinateSystem:
             'origin': None
         }
         
+        # Add this to track initialization status
+        self.initialization_failed = False
+
         try:
             # Extract required data from wall_data
             self.base_plane = wall_data.get("base_plane")
@@ -50,9 +53,11 @@ class WallCoordinateSystem:
             # Validate inputs
             if self.base_plane is None:
                 print("Warning: base_plane is None in wall_data")
+                self.initialization_failed = True 
                 return
             if self.wall_curve is None:
                 print("Warning: wall_base_curve is None in wall_data")
+                self.initialization_failed = True
                 return
                 
             print(f"Initializing WallCoordinateSystem with valid base plane and curve")
@@ -62,14 +67,17 @@ class WallCoordinateSystem:
                 self._to_world_transform = self._compute_to_world_transform()
                 if self._to_world_transform is None or not self._to_world_transform.IsValid:
                     print("Warning: Failed to create valid to-world transform")
+                    self.initialization_failed = True
                     return
                     
                 self._to_wall_transform = self._compute_to_wall_transform()
                 if self._to_wall_transform is None or not self._to_wall_transform.IsValid:
                     print("Warning: Failed to create valid to-wall transform")
+                    self.initialization_failed = True
                     return
             except Exception as e:
                 print(f"Error computing transformations: {str(e)}")
+                self.initialization_failed = True
                 return
                 
             # Now create debug geometry ONLY if we have valid transforms
@@ -81,6 +89,7 @@ class WallCoordinateSystem:
                 print(f"Created {len(self.debug_geometry['axes'])} axis lines")
             except Exception as e:
                 print(f"Error creating axes visualization: {str(e)}")
+                # Note: Not setting initialization_failed here since this is non-critical
                 
             # Skip grid visualization - it's causing problems
             # It's better to just disable it for now
@@ -90,6 +99,7 @@ class WallCoordinateSystem:
             print(f"Error initializing WallCoordinateSystem: {str(e)}")
             import traceback
             print(traceback.format_exc())
+            self.initialization_failed = True
     
     def _compute_to_world_transform(self) -> Optional[rg.Transform]:
         """Compute transformation matrix from wall to world coordinates."""
@@ -110,6 +120,49 @@ class WallCoordinateSystem:
             print(f"Error computing wall-to-world transform: {str(e)}")
             return None
     
+    def is_valid(self) -> bool:
+        """
+        Check if the coordinate system is fully initialized and operational.
+        
+        This method performs comprehensive validation to ensure the coordinate
+        system can reliably transform points between wall and world coordinates.
+        
+        Returns:
+            bool: True if all required components are valid and working
+        """
+        # First check if initialization was explicitly marked as failed
+        if self.initialization_failed:
+            return False
+            
+        # Then check if all required components exist
+        if not (self.base_plane is not None and 
+                self.wall_curve is not None and
+                self._to_world_transform is not None and 
+                self._to_wall_transform is not None):
+            return False
+            
+        # Check if transforms are valid
+        if not (self._to_world_transform.IsValid and 
+                self._to_wall_transform.IsValid):
+            return False
+            
+        # Perform a practical test: try to transform a point
+        test_point = rg.Point3d(0, 0, 0)  # Origin in wall coordinates
+        test_copy = rg.Point3d(test_point)
+        
+        # Test if transformation works in practice
+        transformation_works = test_copy.Transform(self._to_world_transform)
+        
+        # If transformation fails, log detailed information
+        if not transformation_works:
+            print("Coordinate system validation: transformation test failed")
+            print(f"  base_plane origin: {self.base_plane.Origin}")
+            print(f"  base_plane X-axis: {self.base_plane.XAxis}")
+            print(f"  base_plane Y-axis: {self.base_plane.YAxis}")
+            return False
+            
+        return True
+    
     def _compute_to_wall_transform(self) -> Optional[rg.Transform]:
         """Compute transformation matrix from world to wall coordinates."""
         try:
@@ -129,12 +182,9 @@ class WallCoordinateSystem:
             print(f"Error computing world-to-wall transform: {str(e)}")
             return None
     
-    def wall_to_world(self, 
-                    u: float, 
-                    v: float, 
-                    w: float = 0.0) -> Optional[rg.Point3d]:
+    def wall_to_world(self, u: float, v: float, w: float = 0.0) -> Optional[rg.Point3d]:
         """
-        Convert wall coordinates (u,v,w) to world coordinates.
+        Convert wall coordinates (u,v,w) to world coordinates with improved robustness.
         
         Args:
             u: Position along wall length
@@ -145,32 +195,42 @@ class WallCoordinateSystem:
             Point in world coordinates, or None if transformation fails
         """
         try:
-            # Quick check - if transforms are invalid, use direct approach
-            if self._to_world_transform is None or not self._to_world_transform.IsValid:
-                print(f"Using direct point_at method: invalid transform")
-                return self.point_at(u, v, w)
+            # Check for invalid transforms or numerically problematic geometry
+            transform_valid = (self._to_world_transform is not None and 
+                            self._to_world_transform.IsValid)
             
-            # Validate transform
-            if self._to_world_transform is None or not self._to_world_transform.IsValid:
-                print(f"Cannot transform point: invalid wall-to-world transform")
-                return None
-            
-            # Create point in wall coordinates
+            # Check for numerically problematic base plane (new condition)
+            potentially_unstable = False
+            if self.base_plane is not None:
+                potentially_unstable = (abs(self.base_plane.XAxis.X) < 1e-10 or 
+                                    abs(self.base_plane.YAxis.Y) < 1e-10)
+                
+            # Use direct point_at approach if transform is invalid or potentially unstable
+            if not transform_valid or potentially_unstable:
+                if not transform_valid:
+                    print(f"Transform invalid for u={u}, v={v}, w={w} - using point_at method")
+                elif potentially_unstable:
+                    print(f"Potentially unstable geometry for u={u}, v={v}, w={w} - using point_at method")
+                    
+                direct_point = self.point_at(u, v, w)
+                if direct_point is None:
+                    print(f"  point_at also failed - base_plane is {self.base_plane is not None}")
+                return direct_point
+                
+            # Standard transformation path when transform is valid and geometry is stable
             wall_point = rg.Point3d(u, v, w)
-            
-            # Make a copy to transform
             world_point = rg.Point3d(wall_point)
             
-            # Transform the point
+            # Attempt the transformation
             if not world_point.Transform(self._to_world_transform):
-                print(f"Point transformation failed for u={u}, v={v}, w={w}")
-                return None
+                print(f"Point transformation failed for u={u}, v={v}, w={w} - falling back to point_at")
+                return self.point_at(u, v, w)  # Fall back to direct method if transform fails
                 
             return world_point
             
         except Exception as e:
             print(f"Error in wall_to_world for u={u}, v={v}, w={w}: {str(e)}")
-            return None
+            return self.point_at(u, v, w)  # Final fallback using direct method
     
     def world_to_wall(self, point: rg.Point3d) -> Optional[Tuple[float, float, float]]:
         """

@@ -1,4 +1,4 @@
-#  
+# File: src/framing_elements/framing_generator.py
 
 from typing import Dict, List, Tuple, Union, Optional, Any
 import Rhino.Geometry as rg
@@ -7,6 +7,7 @@ from src.framing_elements.plate_geometry import PlateGeometry
 from src.framing_elements.king_studs import KingStudGenerator
 from src.framing_elements.headers import HeaderGenerator
 from src.framing_elements.sills import SillGenerator
+from src.framing_elements.trimmers import TrimmerGenerator
 from src.config.framing import FRAMING_PARAMS
 
 class FramingGenerator:
@@ -82,6 +83,10 @@ class FramingGenerator:
             self._generate_headers_and_sills()
             self.messages.append("Headers and sills generated successfully")
             
+            # Generate trimmers
+            self._generate_trimmers()  
+            self.messages.append("Trimmers generated successfully")
+            
             # Return both framing elements and debug geometry
             result = {
             'bottom_plates': self.framing_elements['bottom_plates'],
@@ -89,6 +94,7 @@ class FramingGenerator:
             'king_studs': self.framing_elements['king_studs'],
             'headers': self.framing_elements.get('headers', []),
             'sills': self.framing_elements.get('sills', []),
+            'trimmers': self.framing_elements.get('trimmers', []),
             'debug_geometry': self.debug_geometry  # Include debug geometry in output
             }
             
@@ -98,6 +104,7 @@ class FramingGenerator:
             print(f"King studs: {len(result['king_studs'])}")
             print(f"Headers: {len(result['headers'])}")
             print(f"Sills: {len(result['sills'])}")
+            print(f"Trimmers: {len(result['trimmers'])}")
             print(f"Debug geometry:")
             for key, items in self.debug_geometry.items():
                 print(f"  {key}: {len(items)} items")
@@ -274,6 +281,13 @@ class FramingGenerator:
                 print(f"Extracted king stud positions for opening {i+1}:")
                 print(f"  Left stud centerline: u={left_u}")
                 print(f"  Right stud centerline: u={right_u}")
+            
+                # DEBUG: Calculate and report stud inner faces
+                king_stud_width = FRAMING_PARAMS.get("king_stud_width", 1.5/12)
+                inner_left = left_u + (king_stud_width / 2)
+                inner_right = right_u - (king_stud_width / 2)
+                print(f"  Inner face positions: left={inner_left}, right={inner_right}")
+                print(f"  Resulting span width: {inner_right - inner_left}")
                 
             except Exception as e:
                 print(f"Error extracting king stud positions for opening {i+1}: {str(e)}")
@@ -298,12 +312,24 @@ class FramingGenerator:
         """
         try:
             # If we stored path curves in debug geometry during king stud creation,
-            # we can try to find the matching one
-            for curve in self.debug_geometry.get('paths', []):
-                # Find a curve that's approximately at the same position
-                # This is a simplistic approach - you might need to enhance it
-                if stud_brep.IsPointInside(curve.PointAtStart, 0.01, True):
-                    return curve
+            # check their type and handle accordingly
+            for path in self.debug_geometry.get('paths', []):
+                try:
+                    # Different ways to get start point depending on type
+                    if isinstance(path, rg.LineCurve):
+                        test_point = path.PointAtStart
+                    elif isinstance(path, rg.Line):
+                        test_point = path.From  # Line uses From/To
+                        path = rg.LineCurve(path)  # Convert to LineCurve for consistency
+                    else:
+                        test_point = path.PointAt(0)  # Generic curve
+                        
+                    # Test if this path is related to our stud
+                    if stud_brep.IsPointInside(test_point, 0.01, True):
+                        return path
+                except Exception as e:
+                    print(f"Error checking path: {str(e)}")
+                    continue
                     
             # If we can't find a path curve, try to extract it from the Brep
             # For a typical extruded stud, we can use the Brep's bounding box
@@ -551,6 +577,128 @@ class FramingGenerator:
             print(f"Error in fallback headers and sills generation: {str(e)}")
             import traceback
             print(traceback.format_exc())
+    
+    def _generate_trimmers(self) -> None:
+        """
+        Generates trimmer studs for all wall openings.
+        
+        Trimmers are generated after headers to ensure proper vertical alignment
+        with the header bottom elevation. Each opening gets a pair of trimmers
+        that run from the bottom plate to the underside of the header.
+        """
+        if self.generation_status.get('trimmers_generated', False):
+            return
+        
+        # Ensure plates are generated first
+        if not self.generation_status.get('plates_generated', False):
+            self._generate_plates()
+            
+        # Ensure dependencies are generated first
+        if not self.generation_status.get('headers_and_sills_generated', False):
+            self._generate_headers_and_sills()
+            
+        try:
+            openings = self.wall_data.get('openings', [])
+            print(f"\nGenerating trimmers for {len(openings)} openings")
+        
+            # Skip if no openings
+            if not openings:
+                print("No openings to process - skipping trimmers")
+                self.generation_status['trimmers_generated'] = True
+                self.framing_elements['trimmers'] = []
+                return
+                
+            # Create trimmer generator
+            trimmer_generator = TrimmerGenerator(self.wall_data)
+            
+            # Track generated elements
+            trimmers = []
+        
+            # Process each opening
+            for i, opening in enumerate(openings):
+                try:
+                    print(f"\nProcessing opening {i+1}")
+                    
+                    # Get header bottom elevation for this opening if available
+                    header_bottom = self._get_header_bottom_elevation(i)
+                
+                    # Get bottom plate boundary data as a dictionary
+                    bottom_plate = self.framing_elements['bottom_plates'][0]
+                    plate_boundary_data = bottom_plate.get_boundary_data()
+                    
+                    print(f"Bottom plate boundary data: {plate_boundary_data}")
+                    
+                    # Generate trimmers for this opening
+                    opening_trimmers = trimmer_generator.generate_trimmers(
+                        opening,
+                        plate_boundary_data,   
+                        header_bottom_elevation=header_bottom
+                    )
+                    
+                    if opening_trimmers:
+                        trimmers.extend(opening_trimmers)
+                        print(f"Successfully created {len(opening_trimmers)} trimmers for opening {i+1}")
+                    
+                except Exception as e:
+                    print(f"Error creating trimmers for opening {i+1}: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
+            
+            # Store the generated elements
+            self.framing_elements['trimmers'] = trimmers
+            
+            # Collect debug geometry
+            for key in ['points', 'planes', 'profiles', 'paths']:
+                if key in trimmer_generator.debug_geometry and trimmer_generator.debug_geometry[key]:
+                    if key in self.debug_geometry:
+                        self.debug_geometry[key].extend(trimmer_generator.debug_geometry[key])
+                    else:
+                        self.debug_geometry[key] = trimmer_generator.debug_geometry[key]
+            
+            # Update generation status
+            self.generation_status['trimmers_generated'] = True
+            
+        except Exception as e:
+            print(f"Error generating trimmers: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            
+            # Mark as completed to prevent future attempts
+            self.generation_status['trimmers_generated'] = True
+            
+            # Store the generated elements
+            self.framing_elements['trimmers'] = trimmers
+
+    def _get_header_bottom_elevation(self, opening_index: int) -> Optional[float]:
+        """
+        Get the bottom elevation of the header for a specific opening.
+        
+        This method extracts the header bottom elevation from the generated
+        header geometry if available.
+        
+        Args:
+            opening_index: Index of the opening to get header for
+            
+        Returns:
+            Bottom elevation of the header, or None if not available
+        """
+        try:
+            headers = self.framing_elements.get('headers', [])
+            if opening_index < len(headers):
+                header = headers[opening_index]
+                
+                # Get bounding box of header
+                bbox = header.GetBoundingBox(True)
+                if bbox.IsValid:
+                    # Return the bottom elevation of the header
+                    return bbox.Min.Z
+                    
+            return None
+            
+        except Exception as e:
+            print(f"Error getting header elevation: {str(e)}")
+            return None
 
     def get_generation_status(self) -> Dict[str, bool]:
         """

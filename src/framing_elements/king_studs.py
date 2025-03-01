@@ -47,7 +47,7 @@ def create_king_studs(
         base_plane = wall_data["base_plane"]
         debug_geom['planes'].append(base_plane)
         
-        # Extract dimensions
+        # 1. Extract dimensions
         stud_width = framing_params.get("stud_width", 1.5/12)
         stud_depth = framing_params.get("stud_depth", 3.5/12)
         trimmer_width = framing_params.get("trimmer_width", 1.5/12)
@@ -59,7 +59,7 @@ def create_king_studs(
         print(f"  Trimmer width: {trimmer_width}")
         print(f"  King stud offset: {king_stud_width}")
         
-        # Get elevations
+        # 2. Get elevations
         bottom_elevation = plate_data["bottom_plate_elevation"]
         top_elevation = plate_data["top_elevation"]
         

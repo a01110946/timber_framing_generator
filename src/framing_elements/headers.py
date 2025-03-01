@@ -59,11 +59,22 @@ class HeaderGenerator:
             Header geometry as a Rhino Brep
         """
         try:
+            # Log input parameters
+            print("\n===== HEADER GENERATION DETAILS =====")
+            print(f"Opening data: {opening_data}")
+            print(f"King stud positions: {king_stud_positions}")
+
             # Extract opening information
             opening_u_start = opening_data.get("start_u_coordinate")
             opening_width = opening_data.get("rough_width")
             opening_height = opening_data.get("rough_height")
             opening_v_start = opening_data.get("base_elevation_relative_to_wall_base")
+        
+            print(f"Extracted opening data:")
+            print(f"  opening_u_start: {opening_u_start}")
+            print(f"  opening_width: {opening_width}")
+            print(f"  opening_height: {opening_height}")
+            print(f"  opening_v_start: {opening_v_start}")
             
             if None in (opening_u_start, opening_width, opening_height, opening_v_start):
                 print("Missing required opening data")
@@ -76,22 +87,52 @@ class HeaderGenerator:
                 return None
                 
             # Calculate header dimensions from framing parameters
+            king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 1.5/12/2)
             header_width = FRAMING_PARAMS.get("header_depth", 5.5/12)  # Through wall thickness
             header_height = FRAMING_PARAMS.get("header_height", 7.0/12)  # Vertical dimension
             header_height_above_opening = FRAMING_PARAMS.get("header_height_above_opening", 0.0)    # Distance above opening
+        
+            print(f"Header dimensions:")
+            print(f"  width: {header_width}")
+            print(f"  height: {header_height}")
+            print(f"  height_above_opening: {header_height_above_opening}")
+            print(f"  king_stud_offset: {king_stud_offset}")
             
             # Calculate header position (top of opening + half header height)
             opening_v_end = opening_v_start + opening_height        
             header_v = opening_v_end + (header_height / 2) + header_height_above_opening
+        
+            print(f"Vertical position:")
+            print(f"  opening_v_end: {opening_v_end}")
+            print(f"  header_v: {header_v}")
             
             # Calculate header span
             if king_stud_positions:
+                print("Using provided king stud positions for header")
                 u_left, u_right = king_stud_positions
+            
+                # Check if these are centerlines or inner faces
+                print(f"Raw king stud positions: u_left={u_left}, u_right={u_right}")
+            
+                # Adjust positions to use inner faces instead of centerlines
+                inner_left = u_left + king_stud_offset
+                inner_right = u_right - king_stud_offset
+                print(f"  inner_left: {u_left} + {king_stud_offset} = {inner_left}")
+                print(f"  inner_right: {u_right} - {king_stud_offset} = {inner_right}")            
+                print(f"Adjusted for inner faces: u_left={inner_left}, u_right={inner_right}")
+                
+                # Use the adjusted positions
+                u_left = inner_left
+                u_right = inner_right
             else:
                 # Calculate positions based on opening with offsets
+                print("No king stud positions provided, calculating based on opening")
                 trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5/12)
                 u_left = opening_u_start - trimmer_width
                 u_right = opening_u_start + opening_width + trimmer_width
+                print(f"Calculated positions: u_left={u_left}, u_right={u_right}")
+        
+                print(f"Final header span: u_left={u_left}, u_right={u_right}, width={u_right-u_left}")
             
             # 1. Create the centerline endpoints in world coordinates
             start_point = rg.Point3d.Add(
@@ -109,6 +150,10 @@ class HeaderGenerator:
                     rg.Vector3d.Multiply(base_plane.YAxis, header_v)
                 )
             )
+        
+            print(f"Header endpoints in world coordinates:")
+            print(f"  start_point: {start_point}")
+            print(f"  end_point: {end_point}")
             
             # Create the centerline as a curve
             centerline = rg.LineCurve(start_point, end_point)
@@ -138,6 +183,8 @@ class HeaderGenerator:
             # Calculate the vector from start to end
             extrusion_vector = rg.Vector3d(end_point - start_point)
             extrusion = rg.Extrusion.CreateExtrusion(profile_curve, extrusion_vector)
+            
+            print("===== END HEADER GENERATION DETAILS =====")
             
             # Convert to Brep and return
             if extrusion and extrusion.IsValid:

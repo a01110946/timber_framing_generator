@@ -8,6 +8,7 @@ from src.framing_elements.king_studs import KingStudGenerator
 from src.framing_elements.headers import HeaderGenerator
 from src.framing_elements.sills import SillGenerator
 from src.framing_elements.trimmers import TrimmerGenerator
+from src.framing_elements.header_cripples import HeaderCrippleGenerator
 from src.config.framing import FRAMING_PARAMS
 
 class FramingGenerator:
@@ -86,6 +87,10 @@ class FramingGenerator:
             # Generate trimmers
             self._generate_trimmers()  
             self.messages.append("Trimmers generated successfully")
+        
+            # Generate header cripples
+            self._generate_header_cripples()
+            self.messages.append("Header cripples generated successfully")
             
             # Return both framing elements and debug geometry
             result = {
@@ -95,6 +100,7 @@ class FramingGenerator:
             'headers': self.framing_elements.get('headers', []),
             'sills': self.framing_elements.get('sills', []),
             'trimmers': self.framing_elements.get('trimmers', []),
+            'header_cripples': self.framing_elements.get('header_cripples', []),
             'debug_geometry': self.debug_geometry  # Include debug geometry in output
             }
             
@@ -105,6 +111,7 @@ class FramingGenerator:
             print(f"Headers: {len(result['headers'])}")
             print(f"Sills: {len(result['sills'])}")
             print(f"Trimmers: {len(result['trimmers'])}")
+            print(f"Header cripples: {len(result['header_cripples'])}")
             print(f"Debug geometry:")
             for key, items in self.debug_geometry.items():
                 print(f"  {key}: {len(items)} items")
@@ -669,7 +676,188 @@ class FramingGenerator:
             
             # Store the generated elements
             self.framing_elements['trimmers'] = trimmers
+    
+    def _generate_header_cripples(self) -> None:
+        """
+        Generates header cripple studs above wall openings.
+        
+        Header cripples are the short vertical studs that go between the top of
+        the header and the underside of the top plate. They provide support for
+        the top plate and transfer loads from it to the header below.
+        """
+        if self.generation_status.get('header_cripples_generated', False):
+            return
+        
+        # Ensure dependencies are generated first
+        if not self.generation_status.get('plates_generated', False):
+            self._generate_plates()
+            
+        if not self.generation_status.get('headers_and_sills_generated', False):
+            self._generate_headers_and_sills()
+            
+        if not self.generation_status.get('trimmers_generated', False):
+            self._generate_trimmers()
+            
+        try:
+            openings = self.wall_data.get('openings', [])
+            print(f"\nGenerating header cripples for {len(openings)} openings")
+        
+            # Skip if no openings
+            if not openings:
+                print("No openings to process - skipping header cripples")
+                self.generation_status['header_cripples_generated'] = True
+                self.framing_elements['header_cripples'] = []
+                return
+                
+            # Create header cripple generator
+            header_cripple_generator = HeaderCrippleGenerator(self.wall_data)
+            
+            # Get top plate data
+            if not self.framing_elements.get('top_plates'):
+                print("No top plates available for header cripple generation")
+                self.generation_status['header_cripples_generated'] = True
+                self.framing_elements['header_cripples'] = []
+                return
+                
+            # Get the lowest top plate (should be the last one in the list - for double top plates)
+            top_plate = self.framing_elements['top_plates'][-1]
+            top_plate_data = top_plate.get_boundary_data()
+            
+            print(f"Top plate data for header cripples:")
+            for key, value in top_plate_data.items():
+                print(f"  {key}: {value}")
+            
+            # Track generated elements
+            header_cripples = []
+        
+            # Process each opening
+            for i, opening in enumerate(openings):
+                try:
+                    print(f"\nProcessing opening {i+1} for header cripples")
+                    
+                    # Check opening type - generally headers are only needed above windows and doors
+                    opening_type = opening.get("opening_type", "").lower()
+                    print(f"Opening type: {opening_type}")
+                    
+                    # Get header data including top elevation
+                    headers = self.framing_elements.get('headers', [])
+                    print(f"Available headers: {len(headers)}")
+                    
+                    if i >= len(headers):
+                        print(f"No header found for opening {i+1}, skipping")
+                        continue
+                    
+                    # Get header top elevation for this opening
+                    header = headers[i]
+                    
+                    # Get bounding box of header
+                    bbox = header.GetBoundingBox(True)
+                    if not bbox.IsValid:
+                        print(f"Invalid bounding box for header {i+1}, skipping")
+                        continue
+                    
+                    # Get the top elevation of the header from the bounding box
+                    header_top_elevation = bbox.Max.Z
+                    print(f"Header top elevation: {header_top_elevation}")
+                        
+                    # Create header data dictionary with required elevation
+                    header_data = {
+                        "top_elevation": header_top_elevation
+                    }
+                    
+                    # Get trimmer positions for this opening
+                    trimmer_positions = self._get_trimmer_positions(i)
+                    if trimmer_positions:
+                        print(f"Trimmer positions for opening {i+1}: left={trimmer_positions[0]}, right={trimmer_positions[1]}")
+                    else:
+                        print(f"No trimmer positions found for opening {i+1}, will calculate from opening data")
+                    
+                    # Generate header cripples for this opening
+                    opening_cripples = header_cripple_generator.generate_header_cripples(
+                        opening,
+                        header_data,
+                        top_plate_data,
+                        trimmer_positions
+                    )
+                    
+                    if opening_cripples:
+                        header_cripples.extend(opening_cripples)
+                        print(f"Successfully created {len(opening_cripples)} header cripples for opening {i+1}")
+                    else:
+                        print(f"No header cripples created for opening {i+1}")
+                    
+                except Exception as e:
+                    print(f"Error creating header cripples for opening {i+1}: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
+            
+            # Store the generated elements
+            self.framing_elements['header_cripples'] = header_cripples
+            
+            # Collect debug geometry
+            for key in ['points', 'planes', 'profiles', 'paths']:
+                if key in header_cripple_generator.debug_geometry and header_cripple_generator.debug_geometry[key]:
+                    if key in self.debug_geometry:
+                        self.debug_geometry[key].extend(header_cripple_generator.debug_geometry[key])
+                    else:
+                        self.debug_geometry[key] = header_cripple_generator.debug_geometry[key]
+            
+            # Update generation status
+            self.generation_status['header_cripples_generated'] = True
+            print(f"Header cripple generation complete: {len(header_cripples)} cripples created")
+            
+        except Exception as e:
+            print(f"Error generating header cripples: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            
+            # Mark as completed to prevent future attempts
+            self.generation_status['header_cripples_generated'] = True
+            
+            # Initialize empty list to prevent errors downstream
+            self.framing_elements['header_cripples'] = []
 
+    def _get_header_top_elevation(self, opening_index: int) -> Optional[float]:
+        """
+        Get the top elevation of the header for a specific opening.
+        
+        This method extracts the header top elevation from the generated
+        header geometry if available.
+        
+        Args:
+            opening_index: Index of the opening to get header for
+            
+        Returns:
+            Top elevation of the header, or None if not available
+        """
+        try:
+            headers = self.framing_elements.get('headers', [])
+            print(f"Headers available: {len(headers)}")
+
+            if opening_index < len(headers):
+                header = headers[opening_index]
+                print(f"Retrieved header for opening {opening_index}")
+
+                # Get bounding box of header
+                bbox = header.GetBoundingBox(True)
+                print(f"Bounding box valid: {bbox.IsValid}")
+
+                if bbox.IsValid:
+                    print(f"Header bounds: Min={bbox.Min.Z}, Max={bbox.Max.Z}")
+                    # Return the top elevation of the header
+                    return bbox.Max.Z
+                else:
+                    print("Invalid bounding box for header")
+                    
+            return None
+            
+        except Exception as e:
+            print(f"Error getting header top elevation: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return None
+    
     def _get_header_bottom_elevation(self, opening_index: int) -> Optional[float]:
         """
         Get the bottom elevation of the header for a specific opening.
@@ -698,6 +886,56 @@ class FramingGenerator:
             
         except Exception as e:
             print(f"Error getting header elevation: {str(e)}")
+            return None
+
+
+    def _get_trimmer_positions(self, opening_index: int) -> Optional[Tuple[float, float]]:
+        """
+        Get the U-coordinates of the trimmers for a specific opening.
+        
+        This method extracts the trimmer positions from the generated
+        trimmer geometry if available.
+        
+        Args:
+            opening_index: Index of the opening to get trimmers for
+            
+        Returns:
+            Tuple of (left, right) U-coordinates, or None if not available
+        """
+        try:
+            trimmers = self.framing_elements.get('trimmers', [])
+            if len(trimmers) < (opening_index + 1) * 2:
+                # Need at least 2 trimmers per opening
+                return None
+                
+            # Get the pair of trimmers for this opening
+            opening_trimmers = trimmers[opening_index*2:(opening_index+1)*2]
+            if len(opening_trimmers) != 2:
+                return None
+                
+            # Get the base plane for position calculations
+            base_plane = self.wall_data.get('base_plane')
+            if base_plane is None:
+                return None
+                
+            # Extract centerlines
+            left_centerline = self._extract_centerline_from_stud(opening_trimmers[0])
+            right_centerline = self._extract_centerline_from_stud(opening_trimmers[1])
+            
+            if left_centerline is None or right_centerline is None:
+                return None
+                
+            # Get the u-coordinates (along the wall) for each trimmer
+            left_point = left_centerline.PointAtStart
+            right_point = right_centerline.PointAtStart
+            
+            left_u = self._project_point_to_u_coordinate(left_point, base_plane)
+            right_u = self._project_point_to_u_coordinate(right_point, base_plane)
+            
+            return (left_u, right_u)
+            
+        except Exception as e:
+            print(f"Error getting trimmer positions: {str(e)}")
             return None
 
     def get_generation_status(self) -> Dict[str, bool]:

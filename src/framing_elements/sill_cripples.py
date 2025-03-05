@@ -1,21 +1,17 @@
-# File: src/framing_elements/header_cripples.py
+# File: src/framing_elements/sill_cripples.py
 
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
 import math
 from src.config.framing import FRAMING_PARAMS
 
-# Ensure FRAMING_PARAMS includes the min_cripple_length parameter:
-# "min_cripple_length": 6.0/12,  # Minimum length for header cripples (6 inches in feet)
-
-class HeaderCrippleGenerator:
+class SillCrippleGenerator:
     """
-    Generates header cripple studs above openings.
+    Generates sill cripple studs below window openings.
     
-    Header cripples are vertical framing members placed between the header
-    above an opening and the underside of the top plate. They transfer loads
-    from the top plate to the header and help support the wall structure
-    above openings.
+    Sill cripples are vertical framing members placed between the bottom plate
+    and the sill below a window opening. They transfer loads from the sill to 
+    the bottom plate and help support the wall structure below window openings.
     """
     
     def __init__(
@@ -23,7 +19,7 @@ class HeaderCrippleGenerator:
         wall_data: Dict[str, Any]
     ):
         """
-        Initialize the header cripple generator with wall data.
+        Initialize the sill cripple generator with wall data.
         
         Args:
             wall_data: Dictionary containing wall information including:
@@ -42,35 +38,41 @@ class HeaderCrippleGenerator:
             'paths': []
         }
     
-    def generate_header_cripples(
+    def generate_sill_cripples(
         self,
         opening_data: Dict[str, Any],
-        header_data: Dict[str, Any],
-        top_plate_data: Dict[str, Any],
+        sill_data: Dict[str, Any],
+        bottom_plate_data: Dict[str, Any],
         trimmer_positions: Optional[Tuple[float, float]] = None
     ) -> List[rg.Brep]:
         """
-        Generate header cripple studs above an opening.
+        Generate sill cripple studs below a window opening.
         
-        This method creates a series of header cripple studs between the top of a header
-        and the bottom of the top plate. The cripples are spaced equidistantly between
-        the trimmers on either side of the opening.
+        This method creates a series of sill cripple studs between the bottom plate
+        and the sill below a window opening. The cripples are spaced equidistantly 
+        between the trimmers on either side of the opening.
         
         Args:
             opening_data: Dictionary with opening information including:
                 - start_u_coordinate: Position along wall where opening starts
                 - rough_width: Width of the rough opening
-            header_data: Dictionary with header geometry information including:
-                - top_elevation: Top face elevation of the header
-            top_plate_data: Dictionary with top plate information including:
-                - bottom_elevation: Bottom face elevation of the top plate
+                - opening_type: Type of opening ("window" or "door")
+            sill_data: Dictionary with sill geometry information including:
+                - bottom_elevation: Bottom face elevation of the sill
+            bottom_plate_data: Dictionary with bottom plate information including:
+                - top_elevation: Top face elevation of the bottom plate
             trimmer_positions: Optional tuple of (left, right) u-coordinates for trimmers
                                If not provided, calculated from opening dimensions
         
         Returns:
-            List of header cripple Brep geometries
+            List of sill cripple Brep geometries
         """
         try:
+            # Only create sill cripples for windows, not doors
+            if opening_data.get("opening_type", "").lower() != "window":
+                print("Opening is not a window - skipping sill cripples")
+                return []
+            
             # Extract opening information
             opening_u_start = opening_data.get("start_u_coordinate")
             opening_width = opening_data.get("rough_width")
@@ -85,57 +87,46 @@ class HeaderCrippleGenerator:
                 print("No base plane available")
                 return []
                 
-            # Calculate header cripple dimensions from framing parameters
+            # Calculate sill cripple dimensions from framing parameters
             cripple_width = FRAMING_PARAMS.get("cripple_width", 1.5/12)   # Typically 1.5 inches
             cripple_depth = FRAMING_PARAMS.get("cripple_depth", 3.5/12)   # Typically 3.5 inches
             cripple_spacing = FRAMING_PARAMS.get("cripple_spacing", 16/12)  # Typically 16 inches
-            min_cripple_length = FRAMING_PARAMS.get("min_cripple_length", 6/12)  # Minimum 6 inches
             
             # Calculate vertical bounds
-            header_top_elevation = header_data.get("top_elevation")
-        
-            # Try different keys for bottom elevation
-            top_plate_bottom_elevation = (
-                top_plate_data.get("bottom_elevation") or 
-                top_plate_data.get("boundary_elevation")
+            sill_bottom_elevation = sill_data.get("bottom_elevation")
+            
+            # Try different keys for top elevation of bottom plate
+            bottom_plate_top_elevation = (
+                bottom_plate_data.get("top_elevation") or 
+                bottom_plate_data.get("boundary_elevation")
             )
-        
-            print(f"Header top elevation: {header_top_elevation}")
-            print(f"Top plate bottom elevation: {top_plate_bottom_elevation}")
             
-            if None in (header_top_elevation, top_plate_bottom_elevation):
-                print("Missing elevation data for header or top plate")
-                print(f"Header data keys: {header_data.keys()}")
-                print(f"Top plate data keys: {top_plate_data.keys()}")
-                return []
+            print(f"Sill bottom elevation: {sill_bottom_elevation}")
+            print(f"Bottom plate top elevation: {bottom_plate_top_elevation}")
             
-            # Calculate cripple length
-            cripple_length = top_plate_bottom_elevation - header_top_elevation
-            
-            # Check if cripple length meets minimum requirement
-            if cripple_length < min_cripple_length:
-                print(f"Header cripple length {cripple_length} is less than minimum {min_cripple_length}")
+            if None in (sill_bottom_elevation, bottom_plate_top_elevation):
+                print("Missing elevation data for sill or bottom plate")
+                print(f"Sill data keys: {sill_data.keys()}")
+                print(f"Bottom plate data keys: {bottom_plate_data.keys()}")
                 return []
                 
             # Calculate horizontal positions
             if trimmer_positions:
                 # Use provided trimmer positions
                 u_left, u_right = trimmer_positions
-                #trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5/12)
 
-                u_left_inner = u_left # + (trimmer_width / 2)
-                u_right_inner = u_right # - (trimmer_width / 2)
+                u_left_inner = u_left + cripple_width
+                u_right_inner = u_right - cripple_width
             else:
                 # Calculate positions based on opening with standard offsets
-                u_left_inner = opening_u_start - (cripple_width / 2)
-                u_right_inner = opening_u_start + opening_width + (cripple_width / 2)
+                u_left_inner = opening_u_start + cripple_width
+                u_right_inner = opening_u_start + opening_width - cripple_width
             
             # Calculate internal width between inner faces
             internal_width = u_right_inner - u_left_inner
             
-            print(f"\nHeader cripple calculation details:")
-            print(f"  Trimmer positions: left={u_left}, right={u_right}")
-            print(f"  Inner faces: left={u_left_inner}, right={u_right_inner}")
+            print(f"\nSill cripple calculation details:")
+            print(f"  Trimmer positions: left={u_left_inner}, right={u_right_inner}")
             print(f"  Internal width: {internal_width}")
             print(f"  Cripple spacing parameter: {cripple_spacing}")
             
@@ -160,10 +151,10 @@ class HeaderCrippleGenerator:
                 print(f"  Cripple {i+1} position: {position}")
             
             # TODO: Implement alternative spacing mode where spacing is exact value from FRAMING_PARAMS["cripple_spacing"]
-            # except for the last header cripple which adjusts to the remainder space
+            # except for the last sill cripple which adjusts to the remainder space
             
-            # Store header cripples
-            header_cripples = []
+            # Store sill cripples
+            sill_cripples = []
             
             # Generate cripples at calculated positions
             for u_position in cripple_positions:
@@ -171,19 +162,19 @@ class HeaderCrippleGenerator:
                 cripple = self._create_cripple_geometry(
                     base_plane, 
                     u_position, 
-                    header_top_elevation, 
-                    top_plate_bottom_elevation, 
+                    bottom_plate_top_elevation, 
+                    sill_bottom_elevation, 
                     cripple_width, 
                     cripple_depth
                 )
                 
                 if cripple is not None:
-                    header_cripples.append(cripple)
+                    sill_cripples.append(cripple)
             
-            return header_cripples
+            return sill_cripples
                 
         except Exception as e:
-            print(f"Error generating header cripples: {str(e)}")
+            print(f"Error generating sill cripples: {str(e)}")
             import traceback
             print(traceback.format_exc())
             return []
@@ -198,9 +189,9 @@ class HeaderCrippleGenerator:
         depth: float
     ) -> Optional[rg.Brep]:
         """
-        Create the geometry for a single header cripple stud.
+        Create the geometry for a single sill cripple stud.
         
-        This method creates a header cripple stud by:
+        This method creates a sill cripple stud by:
         1. Creating start and end points in the wall's coordinate system
         2. Creating a profile perpendicular to the stud's centerline
         3. Extruding the profile along the centerline
@@ -208,13 +199,13 @@ class HeaderCrippleGenerator:
         Args:
             base_plane: Wall's base plane for coordinate system
             u_coordinate: Position along wall (horizontal)
-            bottom_v: Bottom elevation of cripple (top of header)
-            top_v: Top elevation of cripple (bottom of top plate)
+            bottom_v: Bottom elevation of cripple (top of bottom plate)
+            top_v: Top elevation of cripple (bottom of sill)
             width: Width of cripple (perpendicular to wall face)
             depth: Depth of cripple (parallel to wall length)
             
         Returns:
-            Brep geometry for the header cripple stud, or None if creation fails
+            Brep geometry for the sill cripple stud, or None if creation fails
         """
         try:
             # 1. Create the centerline endpoints in world coordinates
@@ -268,11 +259,11 @@ class HeaderCrippleGenerator:
             if extrusion and extrusion.IsValid:
                 return extrusion.ToBrep().CapPlanarHoles(0.001)
             else:
-                print("Failed to create valid header cripple extrusion")
+                print("Failed to create valid sill cripple extrusion")
                 return None
                 
         except Exception as e:
-            print(f"Error creating header cripple geometry: {str(e)}")
+            print(f"Error creating sill cripple geometry: {str(e)}")
             import traceback
             print(traceback.format_exc())
             return None

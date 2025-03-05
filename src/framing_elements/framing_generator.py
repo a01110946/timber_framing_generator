@@ -9,6 +9,7 @@ from src.framing_elements.headers import HeaderGenerator
 from src.framing_elements.sills import SillGenerator
 from src.framing_elements.trimmers import TrimmerGenerator
 from src.framing_elements.header_cripples import HeaderCrippleGenerator
+from src.framing_elements.sill_cripples import SillCrippleGenerator
 from src.config.framing import FRAMING_PARAMS
 
 class FramingGenerator:
@@ -91,6 +92,10 @@ class FramingGenerator:
             # Generate header cripples
             self._generate_header_cripples()
             self.messages.append("Header cripples generated successfully")
+        
+            # Generate sill cripples
+            self._generate_sill_cripples()
+            self.messages.append("Sill cripples generated successfully")
             
             # Return both framing elements and debug geometry
             result = {
@@ -101,6 +106,7 @@ class FramingGenerator:
             'sills': self.framing_elements.get('sills', []),
             'trimmers': self.framing_elements.get('trimmers', []),
             'header_cripples': self.framing_elements.get('header_cripples', []),
+            'sill_cripples': self.framing_elements.get('sill_cripples', []),
             'debug_geometry': self.debug_geometry  # Include debug geometry in output
             }
             
@@ -112,6 +118,7 @@ class FramingGenerator:
             print(f"Sills: {len(result['sills'])}")
             print(f"Trimmers: {len(result['trimmers'])}")
             print(f"Header cripples: {len(result['header_cripples'])}")
+            print(f"Sill cripples: {len(result['sill_cripples'])}")
             print(f"Debug geometry:")
             for key, items in self.debug_geometry.items():
                 print(f"  {key}: {len(items)} items")
@@ -887,7 +894,158 @@ class FramingGenerator:
         except Exception as e:
             print(f"Error getting header elevation: {str(e)}")
             return None
-
+    
+    def _generate_sill_cripples(self) -> None:
+        """
+        Generates sill cripple studs below window openings.
+        
+        Sill cripples are the short vertical studs that go between the top of
+        the bottom plate and the underside of the sill below window openings.
+        They provide support for the sill and transfer loads from it to the
+        bottom plate below.
+        """
+        if self.generation_status.get('sill_cripples_generated', False):
+            return
+        
+        # Ensure dependencies are generated first
+        if not self.generation_status.get('plates_generated', False):
+            self._generate_plates()
+            
+        if not self.generation_status.get('headers_and_sills_generated', False):
+            self._generate_headers_and_sills()
+            
+        if not self.generation_status.get('trimmers_generated', False):
+            self._generate_trimmers()
+            
+        try:
+            openings = self.wall_data.get('openings', [])
+            print(f"\nGenerating sill cripples for {len(openings)} openings")
+        
+            # Skip if no openings
+            if not openings:
+                print("No openings to process - skipping sill cripples")
+                self.generation_status['sill_cripples_generated'] = True
+                self.framing_elements['sill_cripples'] = []
+                return
+                
+            # Create sill cripple generator
+            sill_cripple_generator = SillCrippleGenerator(self.wall_data)
+            
+            # Get bottom plate data
+            if not self.framing_elements.get('bottom_plates'):
+                print("No bottom plates available for sill cripple generation")
+                self.generation_status['sill_cripples_generated'] = True
+                self.framing_elements['sill_cripples'] = []
+                return
+                
+            # Get the top bottom plate (should be the first one in the list for single bottom plate)
+            bottom_plate = self.framing_elements['bottom_plates'][0]
+            bottom_plate_data = bottom_plate.get_boundary_data()
+            
+            print(f"Bottom plate data for sill cripples:")
+            for key, value in bottom_plate_data.items():
+                print(f"  {key}: {value}")
+            
+            # Track generated elements
+            sill_cripples = []
+        
+            # Process each opening
+            for i, opening in enumerate(openings):
+                try:
+                    # Only process window openings
+                    if opening.get("opening_type", "").lower() != "window":
+                        print(f"Opening {i+1} is not a window, skipping sill cripples")
+                        continue
+                    
+                    print(f"\nProcessing opening {i+1} for sill cripples")
+                    
+                    # Get sill data including bottom elevation
+                    sills = self.framing_elements.get('sills', [])
+                    print(f"Available sills: {len(sills)}")
+                    
+                    # Find the sill for this opening
+                    sill_index = None
+                    for j, s in enumerate(sills):
+                        # This is a simplified approach - in practice, you might need a more
+                        # sophisticated way to match sills to window openings
+                        if j == i:
+                            sill_index = j
+                            break
+                    
+                    if sill_index is None or sill_index >= len(sills):
+                        print(f"No sill found for window opening {i+1}, skipping")
+                        continue
+                    
+                    # Get sill bottom elevation for this opening
+                    sill = sills[sill_index]
+                    
+                    # Get bounding box of sill
+                    bbox = sill.GetBoundingBox(True)
+                    if not bbox.IsValid:
+                        print(f"Invalid bounding box for sill {i+1}, skipping")
+                        continue
+                    
+                    # Get the bottom elevation of the sill from the bounding box
+                    sill_bottom_elevation = bbox.Min.Z
+                    print(f"Sill bottom elevation: {sill_bottom_elevation}")
+                        
+                    # Create sill data dictionary with required elevation
+                    sill_data = {
+                        "bottom_elevation": sill_bottom_elevation
+                    }
+                    
+                    # Get trimmer positions for this opening
+                    trimmer_positions = self._get_trimmer_positions(i)
+                    if trimmer_positions:
+                        print(f"Trimmer positions for opening {i+1}: left={trimmer_positions[0]}, right={trimmer_positions[1]}")
+                    else:
+                        print(f"No trimmer positions found for opening {i+1}, will calculate from opening data")
+                    
+                    # Generate sill cripples for this opening
+                    opening_cripples = sill_cripple_generator.generate_sill_cripples(
+                        opening,
+                        sill_data,
+                        bottom_plate_data,
+                        trimmer_positions
+                    )
+                    
+                    if opening_cripples:
+                        sill_cripples.extend(opening_cripples)
+                        print(f"Successfully created {len(opening_cripples)} sill cripples for opening {i+1}")
+                    else:
+                        print(f"No sill cripples created for opening {i+1}")
+                    
+                except Exception as e:
+                    print(f"Error creating sill cripples for opening {i+1}: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
+            
+            # Store the generated elements
+            self.framing_elements['sill_cripples'] = sill_cripples
+            
+            # Collect debug geometry
+            for key in ['points', 'planes', 'profiles', 'paths']:
+                if key in sill_cripple_generator.debug_geometry and sill_cripple_generator.debug_geometry[key]:
+                    if key in self.debug_geometry:
+                        self.debug_geometry[key].extend(sill_cripple_generator.debug_geometry[key])
+                    else:
+                        self.debug_geometry[key] = sill_cripple_generator.debug_geometry[key]
+            
+            # Update generation status
+            self.generation_status['sill_cripples_generated'] = True
+            print(f"Sill cripple generation complete: {len(sill_cripples)} cripples created")
+            
+        except Exception as e:
+            print(f"Error generating sill cripples: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            
+            # Mark as completed to prevent future attempts
+            self.generation_status['sill_cripples_generated'] = True
+            
+            # Initialize empty list to prevent errors downstream
+            self.framing_elements['sill_cripples'] = []
 
     def _get_trimmer_positions(self, opening_index: int) -> Optional[Tuple[float, float]]:
         """
@@ -903,39 +1061,66 @@ class FramingGenerator:
             Tuple of (left, right) U-coordinates, or None if not available
         """
         try:
+            print(f"\nDEBUG: _get_trimmer_positions for opening {opening_index}")
             trimmers = self.framing_elements.get('trimmers', [])
+            print(f"Total trimmers available: {len(trimmers)}")
+            
             if len(trimmers) < (opening_index + 1) * 2:
-                # Need at least 2 trimmers per opening
+                print(f"Not enough trimmers: need {(opening_index + 1) * 2}, have {len(trimmers)}")
                 return None
-                
+            
             # Get the pair of trimmers for this opening
-            opening_trimmers = trimmers[opening_index*2:(opening_index+1)*2]
+            start_idx = opening_index * 2
+            end_idx = (opening_index + 1) * 2
+            opening_trimmers = trimmers[start_idx:end_idx]
+            print(f"Extracted trimmers for opening {opening_index}: indices {start_idx} to {end_idx-1}")
+            print(f"Number of trimmers extracted: {len(opening_trimmers)}")
+            
             if len(opening_trimmers) != 2:
+                print(f"Expected 2 trimmers, got {len(opening_trimmers)}")
                 return None
-                
+            
             # Get the base plane for position calculations
             base_plane = self.wall_data.get('base_plane')
             if base_plane is None:
+                print("No base plane available")
+                return None
+            
+            # Get bounding boxes for each trimmer to determine their positions
+            trimmer_positions = []
+            for i, trimmer in enumerate(opening_trimmers):
+                bbox = trimmer.GetBoundingBox(True)
+                if not bbox.IsValid:
+                    print(f"Invalid bounding box for trimmer {i}")
+                    continue
+                    
+                # Calculate center point of bounding box
+                center_x = (bbox.Min.X + bbox.Max.X) / 2
+                center_y = (bbox.Min.Y + bbox.Max.Y) / 2
+                center_point = rg.Point3d(center_x, center_y, bbox.Min.Z)
+                
+                # Project onto wall base plane to get u-coordinate
+                u_coordinate = self._project_point_to_u_coordinate(center_point, base_plane)
+                trimmer_positions.append(u_coordinate)
+                print(f"Trimmer {i} center: ({center_x}, {center_y}), u-coordinate: {u_coordinate}")
+                
+            if len(trimmer_positions) != 2:
+                print(f"Failed to get positions for both trimmers")
                 return None
                 
-            # Extract centerlines
-            left_centerline = self._extract_centerline_from_stud(opening_trimmers[0])
-            right_centerline = self._extract_centerline_from_stud(opening_trimmers[1])
+            # Sort positions to ensure left < right
+            trimmer_positions.sort()
+            left_u, right_u = trimmer_positions
             
-            if left_centerline is None or right_centerline is None:
-                return None
-                
-            # Get the u-coordinates (along the wall) for each trimmer
-            left_point = left_centerline.PointAtStart
-            right_point = right_centerline.PointAtStart
-            
-            left_u = self._project_point_to_u_coordinate(left_point, base_plane)
-            right_u = self._project_point_to_u_coordinate(right_point, base_plane)
+            print(f"Final trimmer positions: left={left_u}, right={right_u}")
+            print(f"Distance between trimmers: {right_u - left_u}")
             
             return (left_u, right_u)
             
         except Exception as e:
             print(f"Error getting trimmer positions: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
             return None
 
     def get_generation_status(self) -> Dict[str, bool]:

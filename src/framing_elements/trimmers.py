@@ -213,7 +213,7 @@ class TrimmerGenerator:
             
             # Convert to Brep and return
             if extrusion and extrusion.IsValid:
-                return extrusion.ToBrep()
+                return extrusion.ToBrep().CapPlanarHoles(0.001)
             else:
                 print("Failed to create valid trimmer extrusion")
                 return None

@@ -1,0 +1,43 @@
+name: Create Repository Labels
+
+on:
+  workflow_dispatch:  # Run manually
+
+jobs:
+  create-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Create standard labels
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const labels = [
+              {name: 'feature', color: '0e8a16', description: 'New functionality'},
+              {name: 'bug', color: 'd73a4a', description: 'Something isn\'t working'},
+              {name: 'refactor', color: 'fbca04', description: 'Code restructuring'},
+              {name: 'doc', color: '0075ca', description: 'Documentation changes'},
+              {name: 'test', color: '6e5494', description: 'Test additions or updates'},
+              {name: 'ci', color: 'f9d0c4', description: 'CI configuration changes'},
+              {name: 'mock', color: 'bfd4f2', description: 'Changes to CI mocking'},
+              {name: 'wall-data', color: 'c5def5', description: 'Wall data components'},
+              {name: 'framing-elements', color: 'd4c5f9', description: 'Framing element components'}
+            ];
+            
+            for (const label of labels) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description
+                });
+                console.log(`Created label: ${label.name}`);
+              } catch (error) {
+                // Label might already exist
+                console.log(`Note: ${error.message}`);
+              }
+            }

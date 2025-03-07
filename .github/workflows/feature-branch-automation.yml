@@ -1,0 +1,182 @@
+name: Feature Branch Automation with AI PR Generation
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'fix/**'
+
+jobs:
+  test-lint-and-create-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt  # Make sure this file exists!
+          pip install pytest flake8 requests
+
+      - name: Run tests
+        run: pytest
+
+      - name: Run linting
+        run: flake8 src/
+
+      - name: Get diff
+        id: get-diff
+        run: |
+          git fetch origin main
+          DIFF=$(git diff --name-status origin/main...HEAD)
+          DIFF_CONTENT=$(git diff origin/main...HEAD | head -n 1000) # Limit to 1000 lines
+          echo "DIFF_FILES<<EOF" >> $GITHUB_ENV
+          echo "$DIFF" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "DIFF_CONTENT<<EOF" >> $GITHUB_ENV
+          echo "$DIFF_CONTENT" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Get commit messages
+        id: get-commits
+        run: |
+          COMMITS=$(git log --pretty=format:"%s" origin/main...HEAD)
+          echo "COMMITS<<EOF" >> $GITHUB_ENV
+          echo "$COMMITS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Generate PR content with Gemini
+        id: generate-pr-content
+        run: |
+          cat > generate_pr.py << 'EOF'
+          import requests
+          import json
+          import os
+          import sys
+
+          # Get environment variables
+          api_key = os.environ['GEMINI_API_KEY']
+          diff_files = os.environ['DIFF_FILES']
+          diff_content = os.environ['DIFF_CONTENT']
+          commits = os.environ['COMMITS']
+          branch_name = os.environ['BRANCH_NAME']
+
+          # Gemini API endpoint
+          url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+
+          # Prepare prompt (Improved for clarity and focus)
+          prompt = f"""You are assisting in creating a pull request for a project.
+          The project is a timber framing generator written in Python. This tool automatically
+          generates framing elements (studs, plates, headers, etc.) for construction models.
+
+          Given the git diff, commit messages, and branch name below, generate a concise
+          pull request title and a detailed description.  The description should clearly
+          explain the changes and their purpose. Use Markdown for formatting.
+
+          Branch name: {branch_name}
+
+          Git diff files:
+          {diff_files}
+
+          Commit messages:
+          {commits}
+
+          Diff content (truncated):
+          {diff_content}
+
+          Return the results in the following format:
+          ```
+          PR TITLE: [Generated title]
+
+          PR DESCRIPTION:
+          [Generated description with ## headings for sections, e.g., ## Summary, ## Changes, ## Testing]
+          ```
+          """
+
+          # Prepare request payload
+          payload = {
+            "contents": [{"parts":[{"text": prompt}]}],
+            "generationConfig": {
+              "temperature": 0.7,
+              "maxOutputTokens": 1000 # Increased max tokens
+            }
+          }
+
+          headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key
+          }
+
+          # Make the API request
+          try:
+              response = requests.post(url, headers=headers, data=json.dumps(payload))
+              response.raise_for_status()  # Raise an exception for bad status codes
+
+              # Extract the generated text (Corrected JSON parsing)
+              result = response.json()
+              generated_text = result["candidates"][0]["content"]["parts"][0]["text"]
+
+              # Write to output file
+              with open('pr_content.txt', 'w') as f:
+                  f.write(generated_text)
+
+              print("Successfully generated PR content")
+
+          except requests.exceptions.RequestException as e:
+              print(f"Error during API request: {e}")
+              sys.exit(1)
+          except (KeyError, IndexError) as e:
+              print(f"Error parsing API response: {e}")
+              sys.exit(1)
+
+          EOF
+
+          # Run the Python script
+          python generate_pr.py
+
+          # Extract title and description, and save in ENV
+          RESPONSE=$(cat pr_content.txt)
+          TITLE=$(echo "$RESPONSE" | grep -m 1 "PR TITLE:" | sed 's/PR TITLE: //')
+          DESCRIPTION=$(echo "$RESPONSE" | sed -n '/PR DESCRIPTION:/,$p' | sed 's/PR DESCRIPTION://')
+
+          # Set outputs (handle empty title/description)
+          echo "PR_TITLE=$TITLE" >> $GITHUB_ENV
+          echo "PR_DESCRIPTION<<EOF" >> $GITHUB_ENV
+          echo "$DESCRIPTION" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BRANCH_NAME: ${{ github.ref_name }}
+
+
+      - name: Calculate PR Title and Description
+        id: calculate-title-and-description
+        run: |
+          if [ -z "$PR_TITLE" ]; then
+            echo "PR_TITLE=$(echo 'Auto PR: ${{ github.ref_name }}')" >> $GITHUB_ENV
+          fi
+          if [ -z "$PR_DESCRIPTION" ]; then
+            echo "PR_DESCRIPTION=$(echo '## Automated Pull Request from ${{ github.ref_name }}')" >> $GITHUB_ENV
+          fi
+        env:
+          PR_TITLE: ${{ env.PR_TITLE }}
+          PR_DESCRIPTION: ${{ env.PR_DESCRIPTION }}
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: ${{ env.PR_TITLE }}
+          body: ${{ env.PR_DESCRIPTION }}
+          base: main
+          branch: ${{ github.ref_name }}
+          draft: false

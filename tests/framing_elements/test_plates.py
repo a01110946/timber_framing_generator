@@ -3,20 +3,17 @@
 import sys
 import os
 print("Python path:", sys.path)
+import timber_framing_generator
+print("Package location:", timber_framing_generator.__file__)
 
-# Try this instead
-try:
-    import timber_framing_generator
-    print("Package location:", timber_framing_generator.__file__)
-except ImportError:
-    # Add the src directory to the path
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src")))
-    import timber_framing_generator
-    print("Package loaded from path addition!")
+# Add the src/ directory to the Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src")))
 
 import pytest
 import unittest
 from typing import List, Dict, Union, Optional, Any
+
+# Import the necessary modules and classes
 from timber_framing_generator.framing_elements.location_data import get_plate_location_data
 from timber_framing_generator.config.framing import PlatePosition
 from timber_framing_generator.framing_elements.plate_parameters import PlateLayerConfig
@@ -62,37 +59,33 @@ class TestPlateSystem:
         # Try to get wall ID from the data, or generate one based on position
         return str(wall_data.get('id', hash(frozenset(wall_data.items()))))
         
-    def test_location_data(self, wall_data: Dict[str, Any]) -> Dict[str, Any]:
+    def test_location_data(self, wall_data: Dict[str, Any]):
         """Test plate location data extraction for a single wall."""
-        if self.debug:
-            print("\nTesting location data extraction...")
+        print("\nTesting location data extraction...")
         
-        # First, verify we have a valid wall dictionary
-        if not isinstance(wall_data, dict):
-            raise TypeError("wall_data must be a dictionary")
+        # Verify we have a valid wall dictionary
+        assert isinstance(wall_data, dict), "wall_data must be a dictionary"
+        assert 'cells' in wall_data, "wall_data must contain 'cells' key"
         
-        if 'cells' not in wall_data:
-            raise KeyError("wall_data must contain 'cells' key")
-        
+        # Test the location data extraction
         bottom_location = get_plate_location_data(
             wall_data,
             plate_type="bottom_plate",
             representation_type="structural"
         )
         
-        top_location = get_plate_location_data(
-            wall_data,
-            plate_type="top_plate",
-            representation_type="structural"
-        )
-        
+        # Print debug information
         if self.debug:
-            print(f"Bottom plate elevation: {bottom_location['reference_elevation']}")
-            print(f"Top plate elevation: {top_location['reference_elevation']}")
+            print(f"Bottom plate location data: {bottom_location}")
         
+        # Basic checks on returned data
+        assert bottom_location is not None, "Location data should not be None"
+        assert "reference_line" in bottom_location, "Location data should include reference_line"
+        assert "base_plane" in bottom_location, "Location data should include base_plane"
+        
+        # Return the data for further tests
         return {
             'bottom': bottom_location,
-            'top': top_location
         }
 
     def test_parameters(

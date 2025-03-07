@@ -42,6 +42,11 @@ if is_ci_environment():
         def DistanceTo(self, other):
             return 0.0
             
+        def Transform(self, transform):
+            """Transform this point by a transformation matrix."""
+            # In a mock, we can simply return True to indicate success
+            return True
+            
         def __repr__(self):
             return f"MockPoint3d({self.X}, {self.Y}, {self.Z})"
     
@@ -65,8 +70,16 @@ if is_ci_environment():
         def Add(v1, v2):
             return MockVector3d(v1.X + v2.X, v1.Y + v2.Y, v1.Z + v2.Z)
             
+        @staticmethod
+        def CrossProduct(v1, v2):
+            """Calculate cross product of two vectors."""
+            return MockVector3d(1, 0, 0)  # Simplified mock implementation
+            
         def Unitize(self):
             return True
+            
+        def Length(self):
+            return 1.0
     
     class MockPlane(MockGeometryBase):
         def __init__(self, origin=None, x_axis=None, y_axis=None):
@@ -78,6 +91,27 @@ if is_ci_environment():
             
         def PointAt(self, u, v, w=0):
             return MockPoint3d(u, v, w)
+            
+        @staticmethod
+        def WorldXY():
+            """Return the world XY plane."""
+            return MockPlane()
+    
+    class MockTransform(MockGeometryBase):
+        def __init__(self):
+            super().__init__()
+            self.IsValid = True
+            
+        @staticmethod
+        def PlaneToPlane(source_plane, target_plane):
+            """Create a transformation from source to target plane."""
+            transform = MockTransform()
+            return transform
+            
+        @staticmethod
+        def Identity():
+            """Create an identity transformation."""
+            return MockTransform()
     
     class MockCurve(MockGeometryBase):
         def __init__(self):
@@ -96,6 +130,10 @@ if is_ci_environment():
             
         def TangentAt(self, t):
             return MockVector3d(1, 0, 0)
+            
+        def ClosestPoint(self, point, extend=False):
+            """Find the closest point on the curve to a given point."""
+            return True, 0.5  # success, parameter
     
     class MockLineCurve(MockCurve):
         def __init__(self, start_point=None, end_point=None):
@@ -104,6 +142,21 @@ if is_ci_environment():
                 self.PointAtStart = start_point
             if end_point:
                 self.PointAtEnd = end_point
+                
+        @staticmethod
+        def CreateFromLine(line):
+            """Create a curve from a line."""
+            return MockLineCurve()
+    
+    class MockLine(MockGeometryBase):
+        def __init__(self, start=None, end=None):
+            super().__init__()
+            self.From = start or MockPoint3d()
+            self.To = end or MockPoint3d(10, 0, 0)
+            
+        def ToNurbsCurve(self):
+            """Convert to a NURBS curve."""
+            return MockCurve()
     
     class MockRectangle3d(MockGeometryBase):
         def __init__(self, plane=None, interval1=None, interval2=None):
@@ -130,6 +183,10 @@ if is_ci_environment():
             
         def CapPlanarHoles(self, tolerance):
             return self
+            
+        def IsPointInside(self, point, tolerance, strictly_in):
+            """Check if a point is inside the Brep."""
+            return True
     
     class MockExtrusion(MockGeometryBase):
         def __init__(self):
@@ -154,10 +211,12 @@ if is_ci_environment():
         Plane = MockPlane
         Curve = MockCurve
         LineCurve = MockLineCurve
+        Line = MockLine
         Rectangle3d = MockRectangle3d
         Interval = MockInterval
         Brep = MockBrep
         Extrusion = MockExtrusion
+        Transform = MockTransform
         
         # Additional placeholders
         Surface = type('Surface', (MockGeometryBase,), {

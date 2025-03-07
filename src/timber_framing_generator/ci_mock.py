@@ -128,9 +128,23 @@ if is_ci_environment():
         def IsValid(self):
             return True
     
+    class MockGeometryBase:
+        """Base class for all geometry objects in Rhino."""
+        def __init__(self):
+            self.IsValid = True
+            
+        def GetBoundingBox(self, accurate=True):
+            from unittest.mock import MagicMock
+            bbox = MagicMock()
+            bbox.Min = MockPoint3d(0, 0, 0)
+            bbox.Max = MockPoint3d(10, 10, 10)
+            bbox.IsValid = True
+            return bbox
+    
     # Create mock Geometry module
     class MockGeometry:
         # Basic elements
+        GeometryBase = MockGeometryBase
         Point3d = MockPoint3d
         Vector3d = MockVector3d
         Plane = MockPlane
@@ -142,6 +156,12 @@ if is_ci_environment():
         # More complex elements
         Brep = MockBrep
         Extrusion = MockExtrusion
+
+        Point3d.__bases__ = (GeometryBase,)
+        Vector3d.__bases__ = (GeometryBase,)
+        Curve.__bases__ = (GeometryBase,)
+        Brep.__bases__ = (GeometryBase,)
+        Extrusion.__bases__ = (GeometryBase,)
         
         # Additional placeholders
         Surface = type('Surface', (), {

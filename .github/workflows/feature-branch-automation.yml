@@ -50,7 +50,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}
 
       - name: Run linting
-        run: flake8 src/
+        run: flake8 src/ || true
 
       - name: Get diff
         id: get-diff

@@ -73,7 +73,7 @@ jobs:
           echo "$COMMITS" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Generate PR content with Gemini
+      - name: Generate PR content and labels with Gemini
         id: generate-pr-content
         run: |
           cat > generate_pr.py << 'EOF'
@@ -92,14 +92,28 @@ jobs:
           # Gemini API endpoint
           url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
-          # Prepare prompt (Improved for clarity and focus)
+          # Prepare prompt (Enhanced to include label generation)
           prompt = f"""You are assisting in creating a pull request for a project.
           The project is a timber framing generator written in Python. This tool automatically
           generates framing elements (studs, plates, headers, etc.) for construction models.
 
-          Given the git diff, commit messages, and branch name below, generate a concise
-          pull request title and a detailed description.  The description should clearly
-          explain the changes and their purpose. Use Markdown for formatting.
+          Given the git diff, commit messages, and branch name below, generate:
+          1. A concise pull request title
+          2. A detailed description explaining the changes
+          3. Appropriate labels for categorizing this PR
+
+          Consider these label categories:
+          - feature: New functionality or enhancements
+          - bug: Bug fixes and corrections
+          - refactor: Code restructuring without functional changes
+          - documentation: Documentation updates or improvements
+          - test: Test additions or modifications
+          - ci: CI/CD configuration changes
+          - mock: CI mocking system changes
+          - wall-data: Wall data extraction or processing components
+          - framing-elements: Changes to framing element generation
+          - utils: Utility functions and helpers
+          - cell-decomposition: Cell analysis and segmentation
 
           Branch name: {branch_name}
 
@@ -118,6 +132,8 @@ jobs:
 
           PR DESCRIPTION:
           [Generated description with ## headings for sections, e.g., ## Summary, ## Changes, ## Testing]
+
+          LABELS: [comma-separated list of applicable labels, at least one but no more than three]
           ```
           """
 
@@ -162,24 +178,59 @@ jobs:
           # Run the Python script
           python generate_pr.py
 
-          # Extract title and description, and save in ENV
+          # Extract title, description, and labels, and save in ENV
           RESPONSE=$(cat pr_content.txt)
           TITLE=$(echo "$RESPONSE" | grep -m 1 "PR TITLE:" | sed 's/PR TITLE: //')
-          DESCRIPTION=$(echo "$RESPONSE" | sed -n '/PR DESCRIPTION:/,$p' | sed 's/PR DESCRIPTION://')
-
-          # Set outputs (handle empty title/description)
+          DESCRIPTION=$(echo "$RESPONSE" | sed -n '/PR DESCRIPTION:/,/LABELS:/p' | sed '/LABELS:/d' | sed 's/PR DESCRIPTION://')
+          LABELS=$(echo "$RESPONSE" | grep -m 1 "LABELS:" | sed 's/LABELS: //')
+          
           echo "PR_TITLE=$TITLE" >> $GITHUB_ENV
           echo "PR_DESCRIPTION<<EOF" >> $GITHUB_ENV
           echo "$DESCRIPTION" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
+          echo "PR_LABELS=$LABELS" >> $GITHUB_ENV
 
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           BRANCH_NAME: ${{ github.ref_name }}
 
+      - name: Create repository labels if they don't exist
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const labels = [
+              {name: 'feature', color: '0e8a16', description: 'New functionality or enhancements'},
+              {name: 'bug', color: 'd73a4a', description: 'Bug fixes and corrections'},
+              {name: 'refactor', color: 'fbca04', description: 'Code restructuring without functional changes'},
+              {name: 'documentation', color: '0075ca', description: 'Documentation updates or improvements'},
+              {name: 'test', color: '6e5494', description: 'Test additions or modifications'},
+              {name: 'ci', color: 'f9d0c4', description: 'CI/CD configuration changes'},
+              {name: 'mock', color: 'bfd4f2', description: 'CI mocking system changes'},
+              {name: 'wall-data', color: 'c5def5', description: 'Wall data extraction or processing components'},
+              {name: 'framing-elements', color: 'd4c5f9', description: 'Changes to framing element generation'},
+              {name: 'utils', color: 'ededed', description: 'Utility functions and helpers'},
+              {name: 'cell-decomposition', color: 'ffd7b5', description: 'Cell analysis and segmentation'}
+            ];
+            
+            for (const label of labels) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: label.name,
+                  color: label.color,
+                  description: label.description
+                });
+                console.log(`Created label: ${label.name}`);
+              } catch (error) {
+                // Label might already exist, which is fine
+                console.log(`Note: Label '${label.name}' may already exist: ${error.message}`);
+              }
+            }
 
-      - name: Calculate PR Title and Description
-        id: calculate-title-and-description
+      - name: Calculate PR Title, Description, and Labels
+        id: calculate-pr-metadata
         run: |
           if [ -z "$PR_TITLE" ]; then
             echo "PR_TITLE=$(echo 'Auto PR: ${{ github.ref_name }}')" >> $GITHUB_ENV
@@ -187,9 +238,28 @@ jobs:
           if [ -z "$PR_DESCRIPTION" ]; then
             echo "PR_DESCRIPTION=$(echo '## Automated Pull Request from ${{ github.ref_name }}')" >> $GITHUB_ENV
           fi
+          
+          # Process labels
+          PROCESSED_LABELS=""
+          if [ ! -z "$PR_LABELS" ]; then
+            # Convert labels to array and trim whitespace
+            PROCESSED_LABELS=$(echo "$PR_LABELS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '\n' ',' | sed 's/,$//')
+          else
+            # Generate basic label from branch name
+            if [[ "${{ github.ref_name }}" == feature/* ]]; then
+              PROCESSED_LABELS="feature"
+            elif [[ "${{ github.ref_name }}" == fix/* ]]; then
+              PROCESSED_LABELS="bug"
+            else
+              PROCESSED_LABELS="feature"
+            fi
+          fi
+          
+          echo "PROCESSED_LABELS=$PROCESSED_LABELS" >> $GITHUB_ENV
         env:
           PR_TITLE: ${{ env.PR_TITLE }}
           PR_DESCRIPTION: ${{ env.PR_DESCRIPTION }}
+          PR_LABELS: ${{ env.PR_LABELS }}
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
@@ -197,6 +267,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           title: ${{ env.PR_TITLE }}
           body: ${{ env.PR_DESCRIPTION }}
+          labels: ${{ env.PROCESSED_LABELS }}
           base: main
           branch: ${{ github.ref_name }}
           draft: false

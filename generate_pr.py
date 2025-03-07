@@ -13,14 +13,28 @@ branch_name = os.environ['BRANCH_NAME']
 # Gemini API endpoint
 url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 
-# Prepare prompt (Improved for clarity and focus)
+# Prepare prompt (Enhanced to include label generation)
 prompt = f"""You are assisting in creating a pull request for a project.
 The project is a timber framing generator written in Python. This tool automatically
 generates framing elements (studs, plates, headers, etc.) for construction models.
 
-Given the git diff, commit messages, and branch name below, generate a concise
-pull request title and a detailed description.  The description should clearly
-explain the changes and their purpose. Use Markdown for formatting.
+Given the git diff, commit messages, and branch name below, generate:
+1. A concise pull request title
+2. A detailed description explaining the changes
+3. Appropriate labels for categorizing this PR
+
+Consider these label categories:
+- feature: New functionality or enhancements
+- bug: Bug fixes and corrections
+- refactor: Code restructuring without functional changes
+- documentation: Documentation updates or improvements
+- test: Test additions or modifications
+- ci: CI/CD configuration changes
+- mock: CI mocking system changes
+- wall-data: Wall data extraction or processing components
+- framing-elements: Changes to framing element generation
+- utils: Utility functions and helpers
+- cell-decomposition: Cell analysis and segmentation
 
 Branch name: {branch_name}
 
@@ -39,6 +53,8 @@ PR TITLE: [Generated title]
 
 PR DESCRIPTION:
 [Generated description with ## headings for sections, e.g., ## Summary, ## Changes, ## Testing]
+
+LABELS: [comma-separated list of applicable labels, at least one but no more than three]
 ```
 """
 

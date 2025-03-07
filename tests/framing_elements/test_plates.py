@@ -3,11 +3,16 @@
 import sys
 import os
 print("Python path:", sys.path)
-import timber_framing_generator
-print("Package location:", timber_framing_generator.__file__)
 
-# Add the src/ directory to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+# Try this instead
+try:
+    import timber_framing_generator
+    print("Package location:", timber_framing_generator.__file__)
+except ImportError:
+    # Add the src directory to the path
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src")))
+    import timber_framing_generator
+    print("Package loaded from path addition!")
 
 import pytest
 import unittest

@@ -1,3 +1,5 @@
+# File: src/timber_framing_generator/ci_mock.py
+
 """
 Mock modules for CI testing environment.
 
@@ -45,6 +47,9 @@ if is_ci_environment():
         @staticmethod
         def Add(v1, v2):
             return MockVector3d(v1.X + v2.X, v1.Y + v2.Y, v1.Z + v2.Z)
+            
+        def Unitize(self):
+            return True
     
     class MockPlane:
         def __init__(self, origin=None, x_axis=None, y_axis=None):
@@ -57,34 +62,103 @@ if is_ci_environment():
             return MockPoint3d(u, v, w)
     
     class MockCurve:
+        def __init__(self):
+            self.PointAtStart = MockPoint3d()
+            self.PointAtEnd = MockPoint3d(10, 0, 0)
+            
         def DuplicateCurve(self):
-            return self
+            return MockCurve()
             
         def Translate(self, vector):
             return True
             
         def GetLength(self):
             return 10.0
+            
+        def TangentAt(self, t):
+            return MockVector3d(1, 0, 0)
+    
+    class MockLineCurve(MockCurve):
+        def __init__(self, start_point=None, end_point=None):
+            super().__init__()
+            if start_point:
+                self.PointAtStart = start_point
+            if end_point:
+                self.PointAtEnd = end_point
+    
+    class MockRectangle3d:
+        def __init__(self, plane=None, interval1=None, interval2=None):
+            self.Plane = plane or MockPlane()
+            self.Width = 1.0
+            self.Height = 1.0
+            
+        def ToNurbsCurve(self):
+            return MockCurve()
+    
+    class MockInterval:
+        def __init__(self, t0=0, t1=1):
+            self.T0 = t0
+            self.T1 = t1
+    
+    class MockBrep:
+        @staticmethod
+        def CreateFromSweep(rail, shape, closed=True, tolerance=0.01):
+            return [MockBrep()]
+            
+        def CapPlanarHoles(self, tolerance):
+            return self
+            
+        @property
+        def IsValid(self):
+            return True
+    
+    class MockExtrusion:
+        @staticmethod
+        def CreateExtrusion(profile, direction):
+            return MockExtrusion()
+            
+        @staticmethod
+        def Create(profile, height, cap=True):
+            return MockExtrusion()
+            
+        def ToBrep(self, splitKinkyFaces=True):
+            return MockBrep()
+            
+        @property
+        def IsValid(self):
+            return True
     
     # Create mock Geometry module
     class MockGeometry:
+        # Basic elements
         Point3d = MockPoint3d
         Vector3d = MockVector3d
         Plane = MockPlane
         Curve = MockCurve
-        LineCurve = type('LineCurve', (MockCurve,), {})
-        Rectangle3d = type('Rectangle3d', (), {'ToNurbsCurve': lambda self: MockCurve()})
-        Extrusion = type('Extrusion', (), {
-            'CreateExtrusion': staticmethod(lambda *args: MagicMock()),
-            'ToBrep': lambda self: MagicMock(),
-            'IsValid': True
+        LineCurve = MockLineCurve
+        Rectangle3d = MockRectangle3d
+        Interval = MockInterval
+        
+        # More complex elements
+        Brep = MockBrep
+        Extrusion = MockExtrusion
+        
+        # Additional placeholders
+        Surface = type('Surface', (), {
+            'CreateExtrusion': staticmethod(lambda curve, direction: MagicMock())
         })
-    
+        
+        # Common methods
+        @staticmethod
+        def ToNurbsCurve(curve):
+            return MockCurve()
+            
     # Create and install the mocks
     rhino_mock = MagicMock()
     rhino_mock.Geometry = MockGeometry
     
     rhinoinside_mock = MagicMock()
+    rhinoinside_mock.load = MagicMock()
     
     # Install the mocks
     sys.modules['rhinoinside'] = rhinoinside_mock

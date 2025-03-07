@@ -1,9 +1,21 @@
 # File: timber_framing_generator/framing_elements/location_data.py
-import rhinoinside
-rhinoinside.load()
-import Rhino # type: ignore
 
-import Rhino.Geometry as rg  # type: ignore
+# First, try to import our CI mocks
+try:
+    from timber_framing_generator.ci_mock import is_ci_environment
+    # Only do regular imports if we're not in CI
+    if not is_ci_environment():
+        import rhinoinside
+        rhinoinside.load()
+        import Rhino.Geometry as rg
+    else:
+        # In CI, we'll use the mocks that were already installed
+        import Rhino.Geometry as rg
+except ImportError:
+    # Fall back to regular imports if CI mock module isn't available
+    import rhinoinside
+    rhinoinside.load()
+    import Rhino.Geometry as rg
 
 from typing import Dict, List, Tuple, Optional, Union
 from dataclasses import dataclass

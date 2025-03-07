@@ -1,11 +1,5 @@
-# File: src/timber_framing_generator/ci_mock.py
-
 """
 Mock modules for CI testing environment.
-
-This module provides mock implementations of Rhino and related modules
-to allow tests to run in CI environments where the actual dependencies
-are not available.
 """
 
 import sys
@@ -24,21 +18,44 @@ def is_ci_environment():
 if is_ci_environment():
     print("CI environment detected - applying Rhino/Inside mocks")
     
-    # Create basic mock classes
-    class MockPoint3d:
+    # Base class for geometry objects
+    class MockGeometryBase:
+        """Base class for all geometry objects in Rhino."""
+        def __init__(self):
+            self.IsValid = True
+            
+        def GetBoundingBox(self, accurate=True):
+            bbox = MagicMock()
+            bbox.Min = MockPoint3d(0, 0, 0) if 'MockPoint3d' in globals() else None
+            bbox.Max = MockPoint3d(10, 10, 10) if 'MockPoint3d' in globals() else None
+            bbox.IsValid = True
+            return bbox
+    
+    # Create geometry classes with proper inheritance
+    class MockPoint3d(MockGeometryBase):
         def __init__(self, x=0, y=0, z=0):
+            super().__init__()
             self.X = x
             self.Y = y
             self.Z = z
             
         def DistanceTo(self, other):
             return 0.0
+            
+        def __repr__(self):
+            return f"MockPoint3d({self.X}, {self.Y}, {self.Z})"
     
-    class MockVector3d:
+    class MockVector3d(MockGeometryBase):
         def __init__(self, x=0, y=0, z=0):
+            super().__init__()
             self.X = x
             self.Y = y
             self.Z = z
+            
+        def __mul__(self, other):
+            if isinstance(other, (int, float)):
+                return MockVector3d(self.X * other, self.Y * other, self.Z * other)
+            return 0.0
             
         @staticmethod
         def Multiply(vector, scalar):
@@ -51,8 +68,9 @@ if is_ci_environment():
         def Unitize(self):
             return True
     
-    class MockPlane:
+    class MockPlane(MockGeometryBase):
         def __init__(self, origin=None, x_axis=None, y_axis=None):
+            super().__init__()
             self.Origin = origin or MockPoint3d()
             self.XAxis = x_axis or MockVector3d(1, 0, 0)
             self.YAxis = y_axis or MockVector3d(0, 1, 0)
@@ -61,8 +79,9 @@ if is_ci_environment():
         def PointAt(self, u, v, w=0):
             return MockPoint3d(u, v, w)
     
-    class MockCurve:
+    class MockCurve(MockGeometryBase):
         def __init__(self):
+            super().__init__()
             self.PointAtStart = MockPoint3d()
             self.PointAtEnd = MockPoint3d(10, 0, 0)
             
@@ -86,8 +105,9 @@ if is_ci_environment():
             if end_point:
                 self.PointAtEnd = end_point
     
-    class MockRectangle3d:
+    class MockRectangle3d(MockGeometryBase):
         def __init__(self, plane=None, interval1=None, interval2=None):
+            super().__init__()
             self.Plane = plane or MockPlane()
             self.Width = 1.0
             self.Height = 1.0
@@ -100,19 +120,21 @@ if is_ci_environment():
             self.T0 = t0
             self.T1 = t1
     
-    class MockBrep:
+    class MockBrep(MockGeometryBase):
+        def __init__(self):
+            super().__init__()
+            
         @staticmethod
         def CreateFromSweep(rail, shape, closed=True, tolerance=0.01):
             return [MockBrep()]
             
         def CapPlanarHoles(self, tolerance):
             return self
-            
-        @property
-        def IsValid(self):
-            return True
     
-    class MockExtrusion:
+    class MockExtrusion(MockGeometryBase):
+        def __init__(self):
+            super().__init__()
+            
         @staticmethod
         def CreateExtrusion(profile, direction):
             return MockExtrusion()
@@ -123,27 +145,9 @@ if is_ci_environment():
             
         def ToBrep(self, splitKinkyFaces=True):
             return MockBrep()
-            
-        @property
-        def IsValid(self):
-            return True
-    
-    class MockGeometryBase:
-        """Base class for all geometry objects in Rhino."""
-        def __init__(self):
-            self.IsValid = True
-            
-        def GetBoundingBox(self, accurate=True):
-            from unittest.mock import MagicMock
-            bbox = MagicMock()
-            bbox.Min = MockPoint3d(0, 0, 0)
-            bbox.Max = MockPoint3d(10, 10, 10)
-            bbox.IsValid = True
-            return bbox
     
     # Create mock Geometry module
     class MockGeometry:
-        # Basic elements
         GeometryBase = MockGeometryBase
         Point3d = MockPoint3d
         Vector3d = MockVector3d
@@ -152,19 +156,11 @@ if is_ci_environment():
         LineCurve = MockLineCurve
         Rectangle3d = MockRectangle3d
         Interval = MockInterval
-        
-        # More complex elements
         Brep = MockBrep
         Extrusion = MockExtrusion
-
-        Point3d.__bases__ = (GeometryBase,)
-        Vector3d.__bases__ = (GeometryBase,)
-        Curve.__bases__ = (GeometryBase,)
-        Brep.__bases__ = (GeometryBase,)
-        Extrusion.__bases__ = (GeometryBase,)
         
         # Additional placeholders
-        Surface = type('Surface', (), {
+        Surface = type('Surface', (MockGeometryBase,), {
             'CreateExtrusion': staticmethod(lambda curve, direction: MagicMock())
         })
         
@@ -172,7 +168,7 @@ if is_ci_environment():
         @staticmethod
         def ToNurbsCurve(curve):
             return MockCurve()
-            
+    
     # Create and install the mocks
     rhino_mock = MagicMock()
     rhino_mock.Geometry = MockGeometry

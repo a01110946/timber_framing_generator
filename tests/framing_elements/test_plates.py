@@ -1,14 +1,23 @@
 # File: tests/framing_elements/test_plates.py
 
+import sys
+import os
+print("Python path:", sys.path)
+import timber_framing_generator
+print("Package location:", timber_framing_generator.__file__)
+
+# Add the src/ directory to the Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
+import pytest
 import unittest
 from typing import List, Dict, Union, Optional, Any
-import Rhino.Geometry as rg
-from src.framing_elements.location_data import get_plate_location_data
-from src.config.framing import PlatePosition
-from src.framing_elements.plate_parameters import PlateLayerConfig
-from src.framing_elements.plate_parameters import PlateParameters
-from src.framing_elements.plate_geometry import PlateGeometry
-from src.framing_elements.plates import create_plates
+from timber_framing_generator.framing_elements.location_data import get_plate_location_data
+from timber_framing_generator.config.framing import PlatePosition
+from timber_framing_generator.framing_elements.plate_parameters import PlateLayerConfig
+from timber_framing_generator.framing_elements.plate_parameters import PlateParameters
+from timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
+from timber_framing_generator.framing_elements.plates import create_plates
 
 class TestPlateSystem:
     """
@@ -24,9 +33,11 @@ class TestPlateSystem:
     separation of concerns. The class is designed to work both as a standalone test suite and
     as a utility for testing plates within Grasshopper.
     """
-    
-    def __init__(self, debug: bool = True):
-        self.debug = debug
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Setup runs before each test method."""
+        self.debug = True
         self._results = {}
     
     def _get_wall_identifier(self, wall_data: Dict[str, Any]) -> str:

@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timber_framing_generator"
+version = "0.1.0"  #  Update this as you release new versions
+description = "A Python tool for generating timber framing elements."
+readme = "README.md"
+requires-python = ">=3.9"  # Match your workflow's Python version
+license = {file = "LICENSE"} # If you have a LICENSE file, otherwise {text = "MIT"} e.g.
+authors = [
+  {name = "Fernando Maytorena", email = "fernandomaytorena@gmail.com"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",  # Or appropriate status
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",  # Or your chosen license
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: CAD",
+]
+dependencies = [
+    "rhinoinside>=0.6.0",
+    "rhino3dm>=8.9.0",
+    "black>=22.0",
+    "mypy>=0.950",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0,<8.0",     # You *could* put pytest/flake8 here, too
+    "flake8>=4.0,<7.0",
+    "requests>=2.28,<3.0", # ...but keeping them in requirements.txt is fine
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}  # Tells setuptools where to find your package
+
+[tool.setuptools.packages.find]
+where = ["src"]  #  Tells setuptools to look in the "src" directory
+#exclude = ["tests*"]   # You can uncomment this if you have problems.
+
+[tool.pytest.ini_options]   # Configuration for pytest
+addopts = "-v"             # Verbose output.  Add any other pytest options here.
+testpaths = ["tests"]       # Tell pytest where your tests are.
+
+[tool.flake8] # Configuration for flake8
+max-line-length = 88  #  Recommended with black
+ignore = ["E203", "W503"]   #  These are often needed with black.
+per-file-ignores = [     # Ignore specific errors in specific files.
+    "tests/*:S101",  # Allow `assert` statements in test files.
+]

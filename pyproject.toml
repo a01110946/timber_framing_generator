@@ -51,7 +51,7 @@ testpaths = ["tests"]       # Tell pytest where your tests are.
 
 [tool.flake8] # Configuration for flake8
 max-line-length = 88  #  Recommended with black
-ignore = ["E203", "W503"]   #  These are often needed with black.
+ignore = ["E203", "E401", "E501", "W503"]   #  These are often needed with black.
 per-file-ignores = [     # Ignore specific errors in specific files.
     "tests/*:S101",  # Allow `assert` statements in test files.
 ]

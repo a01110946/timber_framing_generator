@@ -4,6 +4,7 @@ import ghpythonlib.treehelpers as th
 from Grasshopper import DataTree
 from Grasshopper.Kernel.Data import GH_Path
 
+
 def extract_wall_assembly_keys(all_walls_data):
     """
     Given a list of wall data dictionaries (each containing keys for the wall,
@@ -69,7 +70,9 @@ def extract_wall_assembly_keys(all_walls_data):
             opening_location_points.append(op.get("opening_location_point"))
             rough_widths.append(op.get("rough_width"))
             rough_heights.append(op.get("rough_height"))
-            base_elevations_relative.append(op.get("base_elevation_relative_to_wall_base"))
+            base_elevations_relative.append(
+                op.get("base_elevation_relative_to_wall_base")
+            )
 
         # Cells: each wall may have a list of cell dictionaries.
         cells = wall.get("cells", [])
@@ -99,6 +102,7 @@ def extract_wall_assembly_keys(all_walls_data):
         "v_end": v_ends,
         "corner_points": all_corner_points,
     }
+
 
 def convert_all_walls_data_to_nested_lists(all_walls_data):
     """
@@ -147,7 +151,7 @@ def convert_all_walls_data_to_nested_lists(all_walls_data):
         wall_top_elevations.append([wall.get("wall_top_elevation")])
         base_planes.append([wall.get("base_plane")])
         is_exterior_walls.append([wall.get("is_exterior_wall")])
-        
+
         # Opening keys: for each wall, append the entire list (even if empty).
         openings = wall.get("openings", [])
         ot_list = []
@@ -166,7 +170,7 @@ def convert_all_walls_data_to_nested_lists(all_walls_data):
         rough_widths.append(rw_list)
         rough_heights.append(rh_list)
         base_elevations_relative.append(ber_list)
-        
+
         # Cell keys: for each wall, append the entire list of cell values.
         cells = wall.get("cells", [])
         ct_list = []
@@ -188,7 +192,7 @@ def convert_all_walls_data_to_nested_lists(all_walls_data):
         v_starts.append(vs_list)
         v_ends.append(ve_list)
         corner_points_all.append(cp_list)
-    
+
     return {
         "wall_base_curve": wall_base_curves,
         "wall_base_elevation": wall_base_elevations,

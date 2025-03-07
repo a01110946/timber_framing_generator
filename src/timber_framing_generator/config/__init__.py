@@ -13,7 +13,7 @@ from timber_framing_generator.config.units import (
     get_project_units,
     convert_to_feet,
     convert_from_feet,
-    ProjectUnits
+    ProjectUnits,
 )
 
 from timber_framing_generator.config.framing import (
@@ -23,18 +23,19 @@ from timber_framing_generator.config.framing import (
     ProfileDimensions,
     RepresentationType,
     PlateType,
-    get_profile_for_wall_type
+    get_profile_for_wall_type,
 )
 
 from timber_framing_generator.config.assembly import (
     WALL_ASSEMBLY,
     SHEATHING_PARAMS,
     OPENING_DEFAULTS,
-    get_assembly_dimensions
+    get_assembly_dimensions,
 )
 
 # Debug flag for development
 DEBUG = True
+
 
 def get_system_info() -> dict:
     """
@@ -45,15 +46,21 @@ def get_system_info() -> dict:
     return {
         "project_units": current_units.value,
         "wall_assembly": get_assembly_dimensions(current_units),
-        "framing_params": {k: convert_from_feet(v, current_units) 
-                          for k, v in FRAMING_PARAMS.items()
-                          if isinstance(v, (int, float))},
-        "profiles": {name: profile.get_dimensions(current_units) 
-                    for name, profile in PROFILES.items()}
+        "framing_params": {
+            k: convert_from_feet(v, current_units)
+            for k, v in FRAMING_PARAMS.items()
+            if isinstance(v, (int, float))
+        },
+        "profiles": {
+            name: profile.get_dimensions(current_units)
+            for name, profile in PROFILES.items()
+        },
     }
 
+
 # When any module in the config package is run directly
-if __name__ == '__main__':
+if __name__ == "__main__":
     import json
+
     print("Current System Configuration:")
     print(json.dumps(get_system_info(), indent=2))

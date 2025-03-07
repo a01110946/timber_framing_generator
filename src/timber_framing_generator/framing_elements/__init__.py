@@ -7,9 +7,8 @@ from .studs import StudGenerator
 from .location_data import get_plate_location_data
 
 __all__ = [
-    'create_plates',
-    'calculate_stud_locations',
-    'generate_stud',
-    'FramingGenerator'
-    'StudGenerator'
+    "create_plates",
+    "calculate_stud_locations",
+    "generate_stud",
+    "FramingGenerator" "StudGenerator",
 ]

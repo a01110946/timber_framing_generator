@@ -1,16 +1,21 @@
 # File: src/wall_data/wall_input.py
 
 from typing import List, Dict, Union, Optional
-import Rhino.Geometry as rg # Import Rhino Geometry for type hinting
+import Rhino.Geometry as rg  # Import Rhino Geometry for type hinting
 
-WallInputData = Dict[str, Union[rg.Curve, float, bool, List[Dict[str, Union[str, float]]]]]  # Type hint for Wall Input Data
+WallInputData = Dict[
+    str, Union[rg.Curve, float, bool, List[Dict[str, Union[str, float]]]]
+]  # Type hint for Wall Input Data
+
 
 def create_wall_data_dict(
     wall_base_curve: rg.Curve,  # Rhino Curve Geometry object
     wall_base_elevation: float,
     wall_top_elevation: float,
     is_exterior_wall: bool,
-    openings_data: Optional[List[Dict[str, Union[str, float]]]] = None  # List of opening data dictionaries, now optional
+    openings_data: Optional[
+        List[Dict[str, Union[str, float]]]
+    ] = None,  # List of opening data dictionaries, now optional
 ) -> WallInputData:
     """
     Creates a dictionary representing wall input data.
@@ -35,17 +40,18 @@ def create_wall_data_dict(
         "wall_base_elevation": wall_base_elevation,
         "wall_top_elevation": wall_top_elevation,
         "is_exterior_wall": is_exterior_wall,
-        "openings": openings_data
+        "openings": openings_data,
     }
 
     return wall_data
 
+
 def create_opening_data_dict(
-    opening_type: str, # "window" or "door"
+    opening_type: str,  # "window" or "door"
     start_u_coordinate: float,
     rough_width: float,
     rough_height: float,
-    base_elevation_relative_to_wall_base: float
+    base_elevation_relative_to_wall_base: float,
 ) -> Dict[str, Union[str, float]]:
     """
     Creates a dictionary representing opening data for a single opening.

@@ -2,7 +2,8 @@
 
 from typing import Dict, Union
 
-CellDataDict = Dict[str, Union[str, float, list]] # Type hint for Cell Data Dictionary
+CellDataDict = Dict[str, Union[str, float, list]]  # Type hint for Cell Data Dictionary
+
 
 def create_wall_boundary_cell_data(u_range: list, v_range: list) -> CellDataDict:
     """Creates a dictionary representing Wall Boundary Cell (WBC) data."""
@@ -11,10 +12,13 @@ def create_wall_boundary_cell_data(u_range: list, v_range: list) -> CellDataDict
         "u_start": u_range[0],
         "u_end": u_range[1],
         "v_start": v_range[0],
-        "v_end": v_range[1]
+        "v_end": v_range[1],
     }
 
-def create_opening_cell_data(u_range: list, v_range: list, opening_type: str) -> CellDataDict:
+
+def create_opening_cell_data(
+    u_range: list, v_range: list, opening_type: str
+) -> CellDataDict:
     """Creates a dictionary representing Opening Cell (OC) data."""
     return {
         "cell_type": "OC",
@@ -22,8 +26,9 @@ def create_opening_cell_data(u_range: list, v_range: list, opening_type: str) ->
         "u_start": u_range[0],
         "u_end": u_range[1],
         "v_start": v_range[0],
-        "v_end": v_range[1]
+        "v_end": v_range[1],
     }
+
 
 def create_stud_cell_data(u_range: list, v_range: list) -> CellDataDict:
     """Creates a dictionary representing Stud Cell (SC) data."""
@@ -32,8 +37,9 @@ def create_stud_cell_data(u_range: list, v_range: list) -> CellDataDict:
         "u_start": u_range[0],
         "u_end": u_range[1],
         "v_start": v_range[0],
-        "v_end": v_range[1]
+        "v_end": v_range[1],
     }
+
 
 def create_sill_cripple_cell_data(u_range: list, v_range: list) -> CellDataDict:
     """Creates a dictionary representing Sill Cripple Cell (SCC) data."""
@@ -42,8 +48,9 @@ def create_sill_cripple_cell_data(u_range: list, v_range: list) -> CellDataDict:
         "u_start": u_range[0],
         "u_end": u_range[1],
         "v_start": v_range[0],
-        "v_end": v_range[1]
+        "v_end": v_range[1],
     }
+
 
 def create_header_cripple_cell_data(u_range: list, v_range: list) -> CellDataDict:
     """Creates a dictionary representing Header Cripple Cell (HCC) data."""
@@ -52,8 +59,9 @@ def create_header_cripple_cell_data(u_range: list, v_range: list) -> CellDataDic
         "u_start": u_range[0],
         "u_end": u_range[1],
         "v_start": v_range[0],
-        "v_end": v_range[1]
+        "v_end": v_range[1],
     }
+
 
 def deconstruct_cell(cell):
     """
@@ -71,7 +79,7 @@ def deconstruct_cell(cell):
         "u_end": cell.get("u_end"),
         "v_start": cell.get("v_start"),
         "v_end": cell.get("v_end"),
-        "corner_points": cell.get("corner_points")
+        "corner_points": cell.get("corner_points"),
     }
 
 
@@ -93,6 +101,7 @@ def deconstruct_all_cells(cell_data):
         elif isinstance(cells, dict):
             all_deconstructed_cells.append(deconstruct_cell(cells))
     return all_deconstructed_cells
+
 
 """
 def deconstruct_all_cells(cell_data: dict) -> list:

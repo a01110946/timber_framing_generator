@@ -1,28 +1,23 @@
-PR TITLE: Add REST API for Timber Framing Generator
+```
+PR TITLE: Add Supabase Database Integration
 
 PR DESCRIPTION:
 ## Summary
 
-This pull request introduces a REST API for the timber framing generator, enabling external applications to interact with the generator's functionality.  It includes a Docker configuration for easy deployment and uses FastAPI for the API framework.
+This pull request introduces integration with Supabase for persistent storage of wall analysis jobs.  This replaces the in-memory storage previously used, enabling scalability and persistence of job data.
 
 ## Changes
 
-- Created a REST API using FastAPI.
-- Implemented an endpoint for submitting wall data for analysis (`/walls/analyze`).
-- Implemented an endpoint for retrieving analysis results (`/walls/{job_id}`).
-- Added authentication using API keys.
-- Added Dockerfile and docker-compose.yml for containerization.
-- Created API models for input and output data using Pydantic.
-- Implemented asynchronous task processing using FastAPI's `BackgroundTasks`.
-- Added support for both Rhino integration (for actual geometry processing) and mock data for testing.
-- Updated `requirements.txt` to include API dependencies.
-- Added `requirements-api.txt` for API specific dependencies.
-- Added basic error handling and status reporting.
-- Improved the Revit wall data extraction process.
+- Added Supabase database integration using the `supabase-py` library.  This includes a new `.env.example` file for configuring Supabase credentials.
+- Modified the `/api/endpoints/walls.py` endpoint to use Supabase for creating, retrieving, updating, and listing jobs.  The endpoint now supports listing jobs with optional filtering by status and pagination.
+- Created a new `api/utils/db.py` module to encapsulate Supabase database interactions. This module provides functions for creating, retrieving, updating, and deleting jobs.
+- Updated `requirements-api.txt` to include the `supabase` and `python-dotenv` packages.
+- Added comprehensive unit tests (`test_supabase.py`) to verify the Supabase integration.
+
 
 ## Testing
 
-Added basic unit tests using pytest for the API.  Thorough testing of the Rhino integration will require separate integration tests.  The API includes a mock data option (`USE_RHINO` environment variable), allowing for testing without needing a running Rhino instance.  
+The Supabase integration has been thoroughly tested using unit tests that verify database interactions, job creation, retrieval, updates, and deletions.  The tests also cover error handling scenarios.
 
-
-LABELS: feature, api, framing-elements
+LABELS: feature, framing-elements, utils
+```

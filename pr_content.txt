@@ -1,15 +1,27 @@
-```
-PR TITLE: Refactor: Improve Code Structure and Maintainability
+PR TITLE: Add REST API for Timber Framing Generator
 
 PR DESCRIPTION:
 ## Summary
-This pull request incorporates changes from pull request #13 and refactors parts of the timber framing generator codebase to improve code structure and maintainability.  The refactoring focuses on enhancing readability and reducing code complexity without altering the core functionality.
+
+This pull request introduces a REST API for the timber framing generator, enabling external applications to interact with the generator's functionality.  It includes a Docker configuration for easy deployment and API key authentication for security.
 
 ## Changes
-The specific changes made are not detailed in the provided diff, but they are assumed to be internal code restructuring and improvements based on the branch and commit message. This may include code cleanup, improved variable naming, function decomposition, or other similar enhancements.
+
+- Added a FastAPI-based REST API with endpoints for wall analysis.
+- Implemented asynchronous job processing for wall analysis using background tasks.
+- Created models for API requests and responses using Pydantic.
+- Developed a Dockerfile and docker-compose.yml for easy deployment.
+- Added API key authentication for security.
+- Implemented Rhino integration (conditional, based on environment variable).
+- Created mock data and serialization utilities for testing.
+- Updated `requirements.txt` to include API dependencies.
+- Added a new `requirements-api.txt` file to specify the API's dependencies separately.
+- Modified `revit_walls.py` to adapt to changes made for API integration.
+
 
 ## Testing
-Testing details are not provided in the available information.  Further testing is recommended to ensure that the refactoring did not introduce any regressions.
 
-LABELS: refactor, framing-elements
+The API includes unit tests and integration tests using pytest.  The Rhino integration is conditionally enabled through an environment variable (`USE_RHINO`).  When `USE_RHINO` is not set or set to "false", the API uses mock data for processing and testing purposes.  This facilitates testing without requiring a Rhino environment.
+
+LABELS: feature, api, framing-elements
 ```

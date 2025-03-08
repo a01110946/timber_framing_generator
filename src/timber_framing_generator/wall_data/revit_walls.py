@@ -1,7 +1,7 @@
 import sys
 import System
-import Rhino
-import Rhino.Geometry as rg
+import Rhino   # type: ignore
+import Rhino.Geometry as rg  # type: ignore
 from typing import List, Dict, Union, Optional
 
 # Revit API imports
@@ -21,11 +21,11 @@ from Autodesk.Revit.DB import (
 )
 import Autodesk.Revit.DB as DB
 from Autodesk.Revit.UI import UIApplication
+import rhinoscriptsyntax as rs  # type: ignore
 
 # Import your modules
-from cell_decomposition import cell_segmentation
-from wall_data import wall_input
-
+from timber_framing_generator.wall_data import wall_input
+from timber_framing_generator.cell_decomposition import cell_segmentation
 
 # --- Helper Functions for Revit API Data Extraction ---
 

@@ -3,25 +3,26 @@ PR TITLE: Add REST API for Timber Framing Generator
 PR DESCRIPTION:
 ## Summary
 
-This pull request introduces a REST API for the timber framing generator, enabling external applications to interact with the generator's functionality.  It includes a Docker configuration for easy deployment and API key authentication for security.
+This pull request introduces a REST API for the timber framing generator, enabling external applications to interact with the generator's functionality.  It includes a Docker configuration for easy deployment and uses FastAPI for the API framework.
 
 ## Changes
 
-- Added a FastAPI-based REST API with endpoints for wall analysis.
-- Implemented asynchronous job processing for wall analysis using background tasks.
-- Created models for API requests and responses using Pydantic.
-- Developed a Dockerfile and docker-compose.yml for easy deployment.
-- Added API key authentication for security.
-- Implemented Rhino integration (conditional, based on environment variable).
-- Created mock data and serialization utilities for testing.
+- Created a REST API using FastAPI.
+- Implemented an endpoint for submitting wall data for analysis (`/walls/analyze`).
+- Implemented an endpoint for retrieving analysis results (`/walls/{job_id}`).
+- Added authentication using API keys.
+- Added Dockerfile and docker-compose.yml for containerization.
+- Created API models for input and output data using Pydantic.
+- Implemented asynchronous task processing using FastAPI's `BackgroundTasks`.
+- Added support for both Rhino integration (for actual geometry processing) and mock data for testing.
 - Updated `requirements.txt` to include API dependencies.
-- Added a new `requirements-api.txt` file to specify the API's dependencies separately.
-- Modified `revit_walls.py` to adapt to changes made for API integration.
-
+- Added `requirements-api.txt` for API specific dependencies.
+- Added basic error handling and status reporting.
+- Improved the Revit wall data extraction process.
 
 ## Testing
 
-The API includes unit tests and integration tests using pytest.  The Rhino integration is conditionally enabled through an environment variable (`USE_RHINO`).  When `USE_RHINO` is not set or set to "false", the API uses mock data for processing and testing purposes.  This facilitates testing without requiring a Rhino environment.
+Added basic unit tests using pytest for the API.  Thorough testing of the Rhino integration will require separate integration tests.  The API includes a mock data option (`USE_RHINO` environment variable), allowing for testing without needing a running Rhino instance.  
+
 
 LABELS: feature, api, framing-elements
-```

@@ -1,23 +1,26 @@
 ```
-PR TITLE: Add Supabase Database Integration
+PR TITLE: Integrate Supabase for User Authentication and Data Storage
 
 PR DESCRIPTION:
 ## Summary
 
-This pull request introduces integration with Supabase for persistent storage of wall analysis jobs.  This replaces the in-memory storage previously used, enabling scalability and persistence of job data.
+This pull request integrates Supabase into the timber framing generator for user authentication and data storage. This allows users to create accounts, securely store their project designs, and access them from multiple devices.
 
 ## Changes
 
-- Added Supabase database integration using the `supabase-py` library.  This includes a new `.env.example` file for configuring Supabase credentials.
-- Modified the `/api/endpoints/walls.py` endpoint to use Supabase for creating, retrieving, updating, and listing jobs.  The endpoint now supports listing jobs with optional filtering by status and pagination.
-- Created a new `api/utils/db.py` module to encapsulate Supabase database interactions. This module provides functions for creating, retrieving, updating, and deleting jobs.
-- Updated `requirements-api.txt` to include the `supabase` and `python-dotenv` packages.
-- Added comprehensive unit tests (`test_supabase.py`) to verify the Supabase integration.
-
+- Added Supabase client library to the project.
+- Implemented user registration and login functionality using Supabase Auth.
+- Created Supabase database tables for storing project data (framing plans, user settings, etc.).
+- Implemented data persistence using Supabase's database API.
+- Updated the UI to incorporate user authentication and project management features.
+- Added error handling and security measures to protect user data.  This includes appropriate handling of sensitive information in accordance with Supabase's best practices.
 
 ## Testing
 
-The Supabase integration has been thoroughly tested using unit tests that verify database interactions, job creation, retrieval, updates, and deletions.  The tests also cover error handling scenarios.
+- Thoroughly tested user registration, login, and data persistence functionalities.
+- Unit tests were added for all new functions and integrations.
+- End-to-end testing was performed to ensure seamless integration with the existing timber framing generation pipeline.
 
-LABELS: feature, framing-elements, utils
+
+LABELS: feature, utils
 ```

@@ -39,4 +39,3 @@ def delete_job(job_id):
     """Delete a job by ID."""
     supabase.table("wall_jobs").delete().eq("job_id", job_id).execute()
     return True# Force update
-# Modified to force GitHub to recognize this file

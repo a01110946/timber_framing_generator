@@ -30,4 +30,4 @@ try:
     print(f"Connection successful! Found {len(data)} jobs in the database.")
     print("Supabase client version is working correctly.")
 except Exception as e:
-    print(f"Error connecting to Supabase: {e}")# Modified to force GitHub to recognize this file
+    print(f"Error connecting to Supabase: {e}")

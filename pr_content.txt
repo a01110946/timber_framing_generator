@@ -1,26 +1,25 @@
 ```
-PR TITLE: Integrate Supabase for User Authentication and Data Storage
+PR TITLE: Add Supabase Database Integration
 
 PR DESCRIPTION:
 ## Summary
 
-This pull request integrates Supabase into the timber framing generator for user authentication and data storage. This allows users to create accounts, securely store their project designs, and access them from multiple devices.
+This pull request integrates Supabase as the database for managing wall analysis jobs.  This replaces the in-memory storage previously used, enabling persistent job storage and retrieval.
 
 ## Changes
 
-- Added Supabase client library to the project.
-- Implemented user registration and login functionality using Supabase Auth.
-- Created Supabase database tables for storing project data (framing plans, user settings, etc.).
-- Implemented data persistence using Supabase's database API.
-- Updated the UI to incorporate user authentication and project management features.
-- Added error handling and security measures to protect user data.  This includes appropriate handling of sensitive information in accordance with Supabase's best practices.
+- Added Supabase client integration using the `supabase` Python library.
+- Created a new `api/utils` directory containing database utility functions (`db.py`).
+- Modified the `/api/endpoints/walls.py` endpoint to use Supabase for job creation, retrieval, updating, and listing.  The endpoint now supports listing jobs with optional filtering by status and pagination.
+- Added a `.env.example` file for configuring Supabase URL and API keys.  Note: The `.env` file itself should *not* be committed to the repository.
+- Created comprehensive unit tests (`test_supabase.py`) to verify the Supabase integration.
+- Updated `requirements-api.txt` to include the `supabase` and `python-dotenv` packages.
+
 
 ## Testing
 
-- Thoroughly tested user registration, login, and data persistence functionalities.
-- Unit tests were added for all new functions and integrations.
-- End-to-end testing was performed to ensure seamless integration with the existing timber framing generation pipeline.
+The Supabase integration has been thoroughly tested using unit tests which verify database connection, job creation, retrieval, updating, and listing functionalities.
 
 
-LABELS: feature, utils
+LABELS: feature, wall-data, utils
 ```

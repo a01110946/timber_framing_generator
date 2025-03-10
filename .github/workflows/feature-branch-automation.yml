@@ -261,13 +261,40 @@ jobs:
           PR_DESCRIPTION: ${{ env.PR_DESCRIPTION }}
           PR_LABELS: ${{ env.PR_LABELS }}
 
+      - name: Update PR Content
+        run: |
+          # Add PR content to the branch without removing other files
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          echo "$PR_DESCRIPTION" > pr_content.txt
+          git add pr_content.txt
+          git commit -m "Update PR description [skip ci]"
+          git push origin ${{ github.ref_name }}
+        
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v5
+        uses: actions/github-script@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          title: ${{ env.PR_TITLE }}
-          body: ${{ env.PR_DESCRIPTION }}
-          labels: ${{ env.PROCESSED_LABELS }}
-          base: main
-          branch: ${{ github.ref_name }}
-          draft: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { repo, owner } = context.repo;
+            const result = await github.rest.pulls.create({
+              owner,
+              repo,
+              title: process.env.PR_TITLE,
+              body: process.env.PR_DESCRIPTION,
+              head: '${{ github.ref_name }}',
+              base: 'main'
+            });
+            
+            // Add labels to the PR
+            const labels = process.env.PROCESSED_LABELS.split(',');
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number: result.data.number,
+              labels: labels
+            });
+        env:
+          PR_TITLE: ${{ env.PR_TITLE }}
+          PR_DESCRIPTION: ${{ env.PR_DESCRIPTION }}
+          PROCESSED_LABELS: ${{ env.PROCESSED_LABELS }}

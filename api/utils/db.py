@@ -1,4 +1,5 @@
 import os
+import traceback
 from supabase import create_client, Client
 from typing import Dict, List, Any, Optional
 import datetime
@@ -175,43 +176,50 @@ def list_jobs(limit: int = 10, offset: int = 0, status: Optional[str] = None) ->
         List of job dictionaries
     """
     if not supabase:
-        logger.error("Cannot list jobs: Supabase client is not initialized")
-        return []
+        error_msg = "Cannot list jobs: Supabase client is not initialized"
+        logger.error(error_msg)
+        # Instead of silently returning empty list, raise an exception
+        raise RuntimeError(error_msg)
         
     try:
-        # Define fields needed for listing
-        # This improves performance by reducing data transfer
-        list_fields = "job_id,status,created_at,updated_at,wall_data:wall_data(wall_type,wall_length,wall_height)"
-        
-        start_time = time.time()
-        logger.info(f"Starting optimized database query: status={status}, limit={limit}, offset={offset}")
-        
         # Start building query
-        query = supabase.table("wall_jobs").select(list_fields)
+        query = supabase.table("wall_jobs").select("*")
         
         # Add status filter if provided
         if status:
-            logger.info(f"Applying status filter: {status}")
+            logger.info(f"Listing jobs with status: {status}, limit: {limit}, offset: {offset}")
             query = query.eq("status", status)
+        else:
+            logger.info(f"Listing all jobs with limit: {limit}, offset: {offset}")
+        
+        # Add detailed logging for debugging
+        logger.debug(f"Executing Supabase query: table=wall_jobs, limit={limit}, offset={offset}, status={status}")
         
         # Add order, limit, and offset
         response = query.order("created_at", desc=True).limit(limit).offset(offset).execute()
         
-        # Log query performance
-        end_time = time.time()
-        query_time = end_time - start_time
-        logger.info(f"Query completed in {query_time:.2f}s - fetched {len(response.data or [])} records")
+        # Log the raw response for debugging
+        logger.debug(f"Supabase response type: {type(response)}")
+        logger.debug(f"Supabase response has data: {hasattr(response, 'data')}")
         
-        # Check response
+        # Handle potential None response
+        if not response or not hasattr(response, 'data'):
+            logger.warning("Received invalid response from Supabase")
+            return []
+            
+        # Handle empty response
         if not response.data:
             logger.info("No jobs found matching criteria")
             return []
             
+        logger.info(f"Retrieved {len(response.data)} jobs")
         return response.data
     except Exception as e:
         import traceback
-        logger.error(f"Error listing jobs: {str(e)}\n{traceback.format_exc()}")
-        return []
+        error_detail = traceback.format_exc()
+        logger.error(f"Error listing jobs: {str(e)}\n{error_detail}")
+        # Raise the exception instead of silently returning empty list
+        raise RuntimeError(f"Database error while listing jobs: {str(e)}")
 
 def delete_job(job_id: str) -> bool:
     """Delete a job by ID."""

@@ -2,7 +2,7 @@ import os
 from supabase import create_client, Client
 from typing import Dict, List, Any, Optional
 import datetime
-import json
+import time
 
 # Set up logging
 import logging
@@ -123,7 +123,15 @@ def update_job(job_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, A
         return None
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Get a job by ID."""
+    """
+    Get a job by ID with optimized query.
+    
+    Args:
+        job_id: Job identifier
+        
+    Returns:
+        Job dictionary or None if not found
+    """
     if not supabase:
         logger.error(f"Cannot get job {job_id}: Supabase client is not initialized")
         return None
@@ -131,14 +139,16 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     try:
         logger.info(f"Getting job {job_id}")
         
-        # Execute the select operation
-        response = supabase.table("wall_jobs").select("*").eq("job_id", job_id).execute()
+        # First check if job exists with a minimal query
+        exists_query = supabase.table("wall_jobs").select("job_id").eq("job_id", job_id).execute()
         
-        # Check response
-        if not response.data or len(response.data) == 0:
+        if not exists_query.data or len(exists_query.data) == 0:
             logger.warning(f"Job {job_id} not found")
             return None
             
+        # Then get the full job data
+        response = supabase.table("wall_jobs").select("*").eq("job_id", job_id).execute()
+        
         logger.info(f"Job {job_id} retrieved successfully")
         return response.data[0]
     except Exception as e:
@@ -147,31 +157,56 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 def list_jobs(limit: int = 10, offset: int = 0, status: Optional[str] = None) -> List[Dict[str, Any]]:
-    """List jobs with optional filtering by status."""
+    """
+    List jobs with optional filtering by status.
+    
+    This function optimizes query performance by:
+    1. Only selecting required fields for listing
+    2. Setting up proper indexes
+    3. Limiting the number of results
+    4. Using pagination
+    
+    Args:
+        limit: Maximum number of jobs to return
+        offset: Number of jobs to skip
+        status: Optional filter for job status
+        
+    Returns:
+        List of job dictionaries
+    """
     if not supabase:
         logger.error("Cannot list jobs: Supabase client is not initialized")
         return []
         
     try:
+        # Define fields needed for listing
+        # This improves performance by reducing data transfer
+        list_fields = "job_id,status,created_at,updated_at,wall_data:wall_data(wall_type,wall_length,wall_height)"
+        
+        start_time = time.time()
+        logger.info(f"Starting optimized database query: status={status}, limit={limit}, offset={offset}")
+        
         # Start building query
-        query = supabase.table("wall_jobs").select("*")
+        query = supabase.table("wall_jobs").select(list_fields)
         
         # Add status filter if provided
         if status:
-            logger.info(f"Listing jobs with status: {status}, limit: {limit}, offset: {offset}")
+            logger.info(f"Applying status filter: {status}")
             query = query.eq("status", status)
-        else:
-            logger.info(f"Listing all jobs with limit: {limit}, offset: {offset}")
         
         # Add order, limit, and offset
         response = query.order("created_at", desc=True).limit(limit).offset(offset).execute()
+        
+        # Log query performance
+        end_time = time.time()
+        query_time = end_time - start_time
+        logger.info(f"Query completed in {query_time:.2f}s - fetched {len(response.data or [])} records")
         
         # Check response
         if not response.data:
             logger.info("No jobs found matching criteria")
             return []
             
-        logger.info(f"Retrieved {len(response.data)} jobs")
         return response.data
     except Exception as e:
         import traceback

@@ -1,10 +1,11 @@
 import os
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, status
 from fastapi.responses import JSONResponse
 from api.models.wall_models import WallDataInput, WallAnalysisJob
 from api.utils.db import create_job, update_job, get_job, list_jobs, supabase
 from api.utils.serialization import create_mock_wall_analysis
 from api.utils.errors import ResourceNotFoundError, DatabaseError, handle_exception
+from api.utils.compat import timeout
 from typing import Dict, List, Any, Optional
 import uuid
 from datetime import datetime
@@ -14,7 +15,17 @@ import traceback
 import logging
 logger = logging.getLogger("timber_framing.api")
 
-router = APIRouter()
+# Create a dependency specifically for auth
+async def verify_api_key(x_api_key: str = Header(...)):
+    if x_api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key"
+        )
+    return x_api_key
+
+# Use the dependency at the router level
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 @router.post("/analyze", response_model=WallAnalysisJob)
 async def analyze_wall(

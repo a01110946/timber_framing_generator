@@ -164,3 +164,21 @@ def test_list_jobs(api_headers):
     # All returned jobs should have the specified status
     for job in jobs:
         assert job["status"] == "completed"
+
+@pytest.fixture
+def basic_wall_data():
+    """Minimal wall data that passes validation."""
+    return {
+        "wall_type": "2x4 EXT",
+        "wall_base_elevation": 0.0,
+        "wall_top_elevation": 8.0,
+        "wall_length": 10.0,
+        "wall_height": 8.0,
+        "is_exterior_wall": True
+    }
+
+def test_auth_required(basic_wall_data):
+    """Test that authentication is required for protected endpoints."""
+    # Try without API key - pass valid data to avoid validation errors
+    response = client.post("/walls/analyze", json=basic_wall_data)
+    assert response.status_code == 401

@@ -8,6 +8,8 @@ services:
     volumes:
       - .:/app
     environment:
+      - SUPABASE_URL=supabase_url
+      - SUPABASE_SERVICE_ROLE_KEY=service_role_key
       - API_KEY=dev_key
       - DEBUG=true
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload

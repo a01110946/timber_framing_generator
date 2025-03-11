@@ -1,0 +1,17 @@
+{
+  "wall_type": "2x4 EXT",
+  "wall_base_elevation": 0.0,
+  "wall_top_elevation": 8.0,
+  "wall_length": 10.0,
+  "wall_height": 8.0,
+  "is_exterior_wall": true,
+  "openings": [
+    {
+      "opening_type": "window",
+      "start_u_coordinate": 3.0,
+      "rough_width": 2.0,
+      "rough_height": 3.0,
+      "base_elevation_relative_to_wall_base": 3.0
+    }
+  ]
+}

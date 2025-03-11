@@ -8,3 +8,5 @@ pytest>=8.3.5                       # For testing
 httpx>=0.28.1                       # For API testing
 supabase>=2.13.0                    # For Supabase integration
 python-dotenv>=1.0.1                # For environment variables
+black>=24.3.0                       # For code formatting
+flake8>=4.0,<7.0                    # For linting

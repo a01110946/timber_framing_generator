@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from api.models.wall_models import WallDataInput, WallAnalysisJob
 from api.utils.db import create_job, update_job, get_job, list_jobs, supabase
 from api.utils.serialization import create_mock_wall_analysis
+from api.utils.errors import ResourceNotFoundError, DatabaseError, handle_exception
 from typing import Dict, List, Any, Optional
 import uuid
 from datetime import datetime
@@ -102,17 +103,45 @@ async def list_wall_analyses(
     offset: int = 0,
     status: Optional[str] = None
 ):
-    """List wall analysis jobs."""
-    logger.info(f"*** GET ENDPOINT CALLED ***")
+    """
+    List wall analysis jobs with pagination and optional status filtering.
+    
+    Args:
+        limit: Maximum number of jobs to return
+        offset: Number of jobs to skip
+        status: Optional filter for job status
+        
+    Returns:
+        List of wall analysis jobs
+    """
     try:
         logger.info(f"Listing jobs: limit={limit}, offset={offset}, status={status}")
-        jobs = list_jobs(limit, offset, status)
+        
+        # Add timeouts to the database call
+        jobs = []
+        try:
+            # Wrap DB call in timeout context
+            from contextlib import timeout
+            with timeout(5):  # 5 second timeout
+                jobs = list_jobs(limit, offset, status)
+        except TimeoutError:
+            logger.error(f"Database query timed out when listing jobs")
+            raise HTTPException(
+                status_code=504,  # Gateway Timeout
+                detail="Database query timed out"
+            )
+        
         logger.info(f"Retrieved {len(jobs)} jobs")
-        return jobs
+        
+        # Return empty list instead of None
+        return jobs or []
     except Exception as e:
         error_detail = traceback.format_exc()
         logger.error(f"Error listing jobs: {str(e)}\n{error_detail}")
-        raise HTTPException(status_code=500, detail=f"Error listing jobs: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Error listing jobs: {str(e)}"
+        )
 
 async def process_wall_analysis(job_id: str, wall_data: WallDataInput):
     """Process wall analysis in the background."""
@@ -154,23 +183,44 @@ async def process_wall_analysis(job_id: str, wall_data: WallDataInput):
             logger.error(f"Failed to update error status for job {job_id}: {str(update_error)}")
 
 # Explicitly add type constraint for job_id route
-@router.get("/job/{job_id}", response_model=WallAnalysisJob)  # Note the /job/ prefix
+@router.get("/job/{job_id}", response_model=WallAnalysisJob)
 async def get_wall_analysis(job_id: str):
-    """Get the status and results of a wall analysis job."""
+    """
+    Get the status and results of a wall analysis job.
+    
+    Args:
+        job_id: The unique identifier for the job
+        
+    Returns:
+        Wall analysis job data including status and results if available
+        
+    Raises:
+        404: If the job doesn't exist
+        500: If there's a server error retrieving the job
+    """
     try:
+        # Validate job_id format (should be UUID)
+        try:
+            uuid_obj = uuid.UUID(job_id)
+            if str(uuid_obj) != job_id:
+                raise ValueError("Invalid UUID format")
+        except ValueError:
+            logger.warning(f"Invalid job ID format: {job_id}")
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid job ID format. Job IDs must be valid UUIDs."
+            )
+        
         logger.info(f"Retrieving job: {job_id}")
         job_data = get_job(job_id)
         
         if not job_data:
             logger.warning(f"Job not found: {job_id}")
-            raise HTTPException(status_code=404, detail="Job not found")
+            if not job_data:
+                raise ResourceNotFoundError("job", job_id)
         
         logger.info(f"Successfully retrieved job: {job_id}")
         return job_data
         
-    except HTTPException:
-        raise
     except Exception as e:
-        error_detail = traceback.format_exc()
-        logger.error(f"Error retrieving job {job_id}: {str(e)}\n{error_detail}")
-        raise HTTPException(status_code=500, detail=f"Error retrieving job: {str(e)}")
+        raise handle_exception(e, "job", job_id)

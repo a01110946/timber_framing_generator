@@ -39,8 +39,52 @@ logger.info("==== API INITIALIZATION STARTING ====")
 # Create FastAPI application with lifespan
 app = FastAPI(
     title="Timber Framing API",
-    description="API for automated timber framing generation and analysis",
+    description="""
+    # Timber Framing Generator API
+    
+    This API provides access to automated timber framing generation and analysis tools.
+    
+    ## Features
+    
+    - Wall data extraction and analysis
+    - Timber framing generation based on wall data
+    - Cell decomposition for detailed framing
+    - Visualization data for integration with CAD systems
+    
+    ## Authentication
+    
+    All API endpoints require an API key to be provided in the `X-API-Key` header.
+    Contact the API administrator to obtain an API key.
+    
+    ## Workflow
+    
+    1. Submit wall data for analysis using the `POST /walls/analyze` endpoint
+    2. Receive a job ID for the analysis task
+    3. Check the status of the analysis using the `GET /walls/job/{job_id}` endpoint
+    4. When the status is `completed`, retrieve the results from the same endpoint
+    
+    ## Data Models
+    
+    - `WallDataInput`: Input data for wall analysis
+    - `WallAnalysisJob`: Job status and results for wall analysis
+    """,
     version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_tags=[
+        {
+            "name": "Walls",
+            "description": "Operations with wall data and timber framing analysis"
+        },
+        {
+            "name": "Status",
+            "description": "API status and health check endpoints"
+        },
+        {
+            "name": "Debug",
+            "description": "Debugging and testing endpoints"
+        }
+    ],
     lifespan=lifespan,
 )
 

@@ -2,12 +2,12 @@ import os
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, status
 from fastapi.responses import JSONResponse
 from api.models.wall_models import WallDataInput, WallAnalysisJob
-from api.utils.db import create_job, update_job, get_job, list_jobs, supabase
+from api.utils.db import create_job, update_job, get_job, list_jobs
 from api.utils.serialization import create_mock_wall_analysis
-from api.utils.errors import ResourceNotFoundError, DatabaseError, handle_exception
-from api.utils.compat import timeout
+from api.utils.errors import ResourceNotFoundError, handle_exception
 from typing import Dict, List, Any, Optional
 import uuid
+from contextlib import timeout
 from datetime import datetime
 import traceback
 

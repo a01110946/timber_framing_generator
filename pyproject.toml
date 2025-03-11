@@ -7,7 +7,7 @@ name = "timber_framing_generator"
 version = "0.1.0"  #  Update this as you release new versions
 description = "A Python tool for generating timber framing elements."
 readme = "README.md"
-requires-python = ">=3.9"  # Match your workflow's Python version
+requires-python = ">=3.11"  # Match your workflow's Python version
 license = {file = "LICENSE"} # If you have a LICENSE file, otherwise {text = "MIT"} e.g.
 authors = [
   {name = "Fernando Maytorena", email = "fernandomaytorena@gmail.com"},

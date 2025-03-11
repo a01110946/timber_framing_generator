@@ -1,41 +1,219 @@
-# api/utils/db.py
 import os
-from supabase import create_client
+from supabase import create_client, Client
+from typing import Dict, List, Any, Optional
+import datetime
+import json
 
+# Set up logging
+import logging
+logger = logging.getLogger("timber_framing.db")
+
+# Get Supabase credentials from environment
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Initialize supabase client with proper error handling
+supabase: Optional[Client] = None
 
-def get_job(job_id):
-    """Get a job by ID."""
-    response = supabase.table("wall_jobs").select("*").eq("job_id", job_id).execute()
-    if response.data and len(response.data) > 0:
-        return response.data[0]
-    return None
-
-def list_jobs(limit=10, offset=0, status=None):
-    """List jobs with optional filtering by status."""
-    query = supabase.table("wall_jobs").select("*")
-    if status:
-        query = query.eq("status", status)
+def _init_supabase():
+    """Initialize the Supabase client."""
+    global supabase
     
-    response = query.order("created_at", desc=True).limit(limit).offset(offset).execute()
-    return response.data
+    # Log configuration (without revealing sensitive keys)
+    if SUPABASE_URL:
+        logger.info(f"Initializing Supabase client with URL: {SUPABASE_URL}")
+    else:
+        logger.error("SUPABASE_URL environment variable not set")
+        return None
+        
+    if SUPABASE_KEY:
+        logger.info("SUPABASE_SERVICE_ROLE_KEY is configured")
+    else:
+        logger.error("SUPABASE_SERVICE_ROLE_KEY environment variable not set")
+        return None
+    
+    try:
+        supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Supabase client initialized successfully")
+        return supabase_client
+    except Exception as e:
+        import traceback
+        logger.error(f"Failed to initialize Supabase client: {str(e)}\n{traceback.format_exc()}")
+        return None
 
-def create_job(job_data):
+# Initialize Supabase client
+supabase = _init_supabase()
+
+def _serialize_for_supabase(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Properly serialize complex data structures for Supabase."""
+    serialized = {}
+    
+    for key, value in data.items():
+        if isinstance(value, (datetime.datetime, datetime.date)):
+            serialized[key] = value.isoformat()
+        elif isinstance(value, dict):
+            serialized[key] = _serialize_for_supabase(value)
+        elif isinstance(value, list):
+            serialized[key] = [
+                _serialize_for_supabase(item) if isinstance(item, dict) 
+                else item for item in value
+            ]
+        else:
+            serialized[key] = value
+    
+    return serialized
+
+def create_job(job_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Create a new job."""
-    response = supabase.table("wall_jobs").insert(job_data).execute()
-    return response.data[0] if response.data else None
+    if not supabase:
+        logger.error("Cannot create job: Supabase client is not initialized")
+        return None
+    
+    try:
+        # Serialize complex data structures
+        serialized_data = _serialize_for_supabase(job_data)
+        
+        logger.info(f"Creating job in database: {serialized_data.get('job_id')}")
+        
+        # Execute the insert operation
+        response = supabase.table("wall_jobs").insert(serialized_data).execute()
+        
+        # Check response
+        if not response.data:
+            logger.error(f"No data returned from insert operation")
+            return None
+            
+        return response.data[0]
+    except Exception as e:
+        import traceback
+        logger.error(f"Error creating job in database: {str(e)}\n{traceback.format_exc()}")
+        return None
 
-def update_job(job_id, update_data):
+def update_job(job_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID."""
-    # Ensure updated_at is set to current time
-    update_data["updated_at"] = "now()"  # This uses PostgreSQL's now() function
-    response = supabase.table("wall_jobs").update(update_data).eq("job_id", job_id).execute()
-    return response.data[0] if response.data else None
+    if not supabase:
+        logger.error(f"Cannot update job {job_id}: Supabase client is not initialized")
+        return None
+        
+    try:
+        # Ensure updated_at is set to current time in ISO format
+        if "updated_at" not in update_data:
+            update_data["updated_at"] = datetime.datetime.now().isoformat()
+        
+        # Ensure all datetime objects are properly serialized
+        for key, value in update_data.items():
+            if isinstance(value, (datetime.datetime, datetime.date)):
+                update_data[key] = value.isoformat()
+        
+        logger.info(f"Updating job {job_id} with changes to keys: {', '.join(update_data.keys())}")
+        
+        # Execute the update operation
+        response = supabase.table("wall_jobs").update(update_data).eq("job_id", job_id).execute()
+        
+        # Check response
+        if not response.data:
+            logger.error(f"No data returned from update operation for job {job_id}")
+            return None
+            
+        logger.info(f"Job {job_id} updated successfully")
+        return response.data[0]
+    except Exception as e:
+        import traceback
+        logger.error(f"Error updating job {job_id}: {str(e)}\n{traceback.format_exc()}")
+        return None
 
-def delete_job(job_id):
+def get_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Get a job by ID."""
+    if not supabase:
+        logger.error(f"Cannot get job {job_id}: Supabase client is not initialized")
+        return None
+        
+    try:
+        logger.info(f"Getting job {job_id}")
+        
+        # Execute the select operation
+        response = supabase.table("wall_jobs").select("*").eq("job_id", job_id).execute()
+        
+        # Check response
+        if not response.data or len(response.data) == 0:
+            logger.warning(f"Job {job_id} not found")
+            return None
+            
+        logger.info(f"Job {job_id} retrieved successfully")
+        return response.data[0]
+    except Exception as e:
+        import traceback
+        logger.error(f"Error getting job {job_id}: {str(e)}\n{traceback.format_exc()}")
+        return None
+
+def list_jobs(limit: int = 10, offset: int = 0, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List jobs with optional filtering by status."""
+    if not supabase:
+        logger.error("Cannot list jobs: Supabase client is not initialized")
+        return []
+        
+    try:
+        # Start building query
+        query = supabase.table("wall_jobs").select("*")
+        
+        # Add status filter if provided
+        if status:
+            logger.info(f"Listing jobs with status: {status}, limit: {limit}, offset: {offset}")
+            query = query.eq("status", status)
+        else:
+            logger.info(f"Listing all jobs with limit: {limit}, offset: {offset}")
+        
+        # Add order, limit, and offset
+        response = query.order("created_at", desc=True).limit(limit).offset(offset).execute()
+        
+        # Check response
+        if not response.data:
+            logger.info("No jobs found matching criteria")
+            return []
+            
+        logger.info(f"Retrieved {len(response.data)} jobs")
+        return response.data
+    except Exception as e:
+        import traceback
+        logger.error(f"Error listing jobs: {str(e)}\n{traceback.format_exc()}")
+        return []
+
+def delete_job(job_id: str) -> bool:
     """Delete a job by ID."""
-    supabase.table("wall_jobs").delete().eq("job_id", job_id).execute()
-    return True# Force update
+    if not supabase:
+        logger.error(f"Cannot delete job {job_id}: Supabase client is not initialized")
+        return False
+        
+    try:
+        logger.info(f"Deleting job {job_id}")
+        
+        # Execute the delete operation
+        response = supabase.table("wall_jobs").delete().eq("job_id", job_id).execute()
+        
+        # Check if any rows were affected
+        if response and hasattr(response, 'data'):
+            logger.info(f"Job {job_id} deleted successfully")
+            return True
+        else:
+            logger.warning(f"Job {job_id} not found for deletion")
+            return False
+    except Exception as e:
+        import traceback
+        logger.error(f"Error deleting job {job_id}: {str(e)}\n{traceback.format_exc()}")
+        return False
+
+def check_supabase_connection() -> bool:
+    """Check if Supabase connection is working."""
+    if not supabase:
+        logger.error("Supabase client is not initialized")
+        return False
+    
+    try:
+        # Simple query to check connection - note we're using the result count
+        response = supabase.table("wall_jobs").select("count", count="exact").limit(0).execute()
+        count = getattr(response, 'count', 0)
+        logger.info(f"Supabase connection verified successfully. Found {count} records.")
+        return True
+    except Exception as e:
+        logger.error(f"Supabase connection check failed: {str(e)}")
+        return False

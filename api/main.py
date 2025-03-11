@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import logging
 from api.utils.auth import get_api_key
 from api.utils.db import check_supabase_connection
+from api.endpoints.debug import debug_router
 from api.endpoints.walls import router as walls_router
 from typing import Dict
 
@@ -201,7 +202,7 @@ async def open_test():
 # Include the open router without auth requirements
 app.include_router(
     open_router,
-    prefix="/walls",
+    prefix="/walls/open",
     tags=["Walls - No Auth"],
 )
 
@@ -213,6 +214,13 @@ app.include_router(
     dependencies=[Depends(get_api_key)]
 )
 logger.info("Included walls router with prefix /walls")
+
+app.include_router(
+    debug_router,
+    prefix="/debug",
+    tags=["Debugging"],
+    dependencies=[Depends(get_api_key)]
+)
 
 @app.get("/debug-config")
 async def debug_config():

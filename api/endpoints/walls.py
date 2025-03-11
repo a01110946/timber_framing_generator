@@ -7,7 +7,7 @@ from api.utils.serialization import create_mock_wall_analysis
 from api.utils.errors import ResourceNotFoundError, handle_exception
 from typing import Dict, List, Any, Optional
 import uuid
-from contextlib import timeout
+from api.utils.compat import timeout
 from datetime import datetime
 import traceback
 

@@ -1,6 +1,7 @@
 # File: api/utils/auth.py
 import os
 from fastapi import Header, HTTPException, status, Depends
+from api.utils.config import Config
 import logging
 
 logger = logging.getLogger("timber_framing.api")
@@ -23,16 +24,10 @@ async def get_api_key(x_api_key: str = Header(...)):
         masked_input = x_api_key[:4] + "..." + x_api_key[-4:] if len(x_api_key) > 8 else "***masked***"
         logger.info(f"Received API key: {masked_input}")
     
-    # Temporary debugging - print the exact comparison
-    logger.info(f"API_KEY environment variable is: {API_KEY is not None}")
-    if API_KEY:
-        logger.info(f"Keys match: {x_api_key == API_KEY}")
-        logger.info(f"Key lengths - Env: {len(API_KEY)}, Received: {len(x_api_key)}")
-    
-    # In production, check against environment variable
-    if x_api_key == API_KEY:
-        logger.info("Authentication successful with production API key")
-        return {"key": x_api_key, "environment": "production"}
+    # Check against configured API key
+    if x_api_key == Config.API_KEY:
+        logger.info("Authentication successful")
+        return {"key": x_api_key, "environment": "production" if Config.API_KEY != "dev_key" else "development"}
     
     # Log authentication failure
     logger.warning(f"Invalid API key provided")

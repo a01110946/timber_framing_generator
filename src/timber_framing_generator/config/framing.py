@@ -215,6 +215,9 @@ FRAMING_PARAMS: Dict[str, Any] = {
     "first_block_height": 24.0 / 12.0,  # 24 inches (2 feet) from bottom plate
     "block_pattern": BlockingPattern.INLINE,  # Default blocking pattern
     "block_profile_override": None,   # Use same profile as studs by default
+    "blocking_row_height_threshold_1": 4.0,  # 4' for a single row of blocking
+    "blocking_row_height_threshold_2": 8.0,  # 8' for two rows of blocking
+    "blocking_min_height": 1.5,  # Minimum cell height (in feet) required for blocking 
 }
 
 

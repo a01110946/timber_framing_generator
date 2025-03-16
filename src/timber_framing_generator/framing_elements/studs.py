@@ -192,11 +192,10 @@ class StudGenerator:
 
     def generate_studs(self) -> List[rg.Brep]:
         """
-        Generate studs based on Stud Cell (SC) information.
+        Generate standard wall studs based on stud cells.
 
-        This method processes all stud cells and generates studs with proper
-        spacing according to the configured stud spacing parameter. Studs run
-        from the top of the bottom plate to the bottom of the top plate.
+        This method processes all stud cells (SC) and generates studs with
+        proper spacing according to the configured stud spacing parameter.
 
         Returns:
             List of stud Brep geometries
@@ -275,6 +274,10 @@ class StudGenerator:
             # Store all generated studs
             all_studs = []
 
+            # Initialize stud_positions dictionary if it doesn't exist
+            if not hasattr(self, 'stud_positions'):
+                self.stud_positions = {}
+
             # Process each stud cell
             for i, cell in enumerate(stud_cells):
                 try:
@@ -283,6 +286,7 @@ class StudGenerator:
                     # Extract cell boundaries
                     u_start = cell.get("u_start")
                     u_end = cell.get("u_end")
+                    cell_id = cell.get("cell_id", f"SC_{u_start}_{u_end}")
 
                     if None in (u_start, u_end):
                         print(
@@ -323,6 +327,10 @@ class StudGenerator:
                         f"After filtering king stud conflicts: {len(filtered_positions)} positions"
                     )
 
+                    # Create or update the entry in stud_positions dictionary for this cell
+                    if cell_id not in self.stud_positions:
+                        self.stud_positions[cell_id] = []
+
                     # Generate a stud at each position
                     cell_studs = []
                     for j, u_pos in enumerate(filtered_positions):
@@ -338,10 +346,14 @@ class StudGenerator:
                         if stud is not None:
                             cell_studs.append(stud)
                             print(f"  Created stud {j+1} at u={u_pos}")
+                            # Add this stud position to the stud_positions dictionary
+                            self.stud_positions[cell_id].append(u_pos)
                         else:
                             print(f"  Failed to create stud {j+1} at u={u_pos}")
 
                     all_studs.extend(cell_studs)
+
+                    print(f"Registered {len(self.stud_positions[cell_id])} stud positions for cell {cell_id}")
 
                 except Exception as e:
                     print(f"Error processing stud cell {i+1}: {str(e)}")
@@ -351,6 +363,10 @@ class StudGenerator:
                     continue
 
             print(f"\nGenerated {len(all_studs)} studs total")
+            print(f"Registered studs in {len(self.stud_positions)} cells")
+            for cell_id, positions in self.stud_positions.items():
+                print(f"  Cell {cell_id}: {len(positions)} stud positions")
+
             return all_studs
 
         except Exception as e:

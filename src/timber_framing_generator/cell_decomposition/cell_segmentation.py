@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Union
 import Rhino.Geometry as rg
-from timber_framing_generator.cell_decomposition.cell_types import (
+from src.timber_framing_generator.cell_decomposition.cell_types import (
     create_wall_boundary_cell_data,
     create_opening_cell_data,
     create_stud_cell_data,

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from typing import List, Optional
-from timber_framing_generator.config.framing import (
+from src.timber_framing_generator.config.framing import (
     PlatePosition,
     FRAMING_PARAMS,
     PROFILES,

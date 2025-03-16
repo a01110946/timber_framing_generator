@@ -1,1 +1,0 @@
-# File: docs/usage.md                # Instructions on how to use/extend the generator

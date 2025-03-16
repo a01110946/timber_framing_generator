@@ -11,7 +11,7 @@ if DEV_MODE:
 
     # Import and use the development utilities
     sys.path.append(project_root)
-    from timber_framing_generator.dev_utils.reload_modules import (
+    from src.timber_framing_generator.dev_utils.reload_modules import (
         clear_module_cache,
         reload_project_modules,
     )
@@ -21,20 +21,20 @@ if DEV_MODE:
     reload_project_modules(project_root)
 
 # Now import using relative paths from within timber_framing_generator
-from timber_framing_generator.wall_data.wall_selector import pick_walls_from_active_view
-from timber_framing_generator.wall_data.revit_data_extractor import (
+from src.timber_framing_generator.wall_data.wall_selector import pick_walls_from_active_view
+from src.timber_framing_generator.wall_data.revit_data_extractor import (
     extract_wall_data_from_revit,
 )
-from timber_framing_generator.utils.data_extractor import (
+from src.timber_framing_generator.utils.data_extractor import (
     extract_wall_assembly_keys,
     convert_all_walls_data_to_nested_lists,
 )
-from timber_framing_generator.cell_decomposition.cell_visualizer import (
+from src.timber_framing_generator.cell_decomposition.cell_visualizer import (
     create_rectangles_from_cell_data,
 )
-from timber_framing_generator.framing_elements.plates import create_plates
+from src.timber_framing_generator.framing_elements.plates import create_plates
 from tests.framing_elements.test_plates import TestPlateSystem
-from timber_framing_generator.framing_elements.studs import (
+from src.timber_framing_generator.framing_elements.studs import (
     calculate_stud_locations,
     generate_stud,
 )

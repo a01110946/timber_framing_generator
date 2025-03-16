@@ -2,12 +2,12 @@
 
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
-from timber_framing_generator.utils.coordinate_systems import (
+from src.timber_framing_generator.utils.coordinate_systems import (
     WallCoordinateSystem,
     FramingElementCoordinates,
 )
-from timber_framing_generator.framing_elements.sill_parameters import SillParameters
-from timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.framing_elements.sill_parameters import SillParameters
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS
 
 
 class SillGenerator:

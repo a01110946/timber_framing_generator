@@ -1,23 +1,17 @@
 # File: src/wall_data/revit_data_extractor.py
 
-from typing import List, Dict, Union, Optional
+from typing import List, Dict, Union
 from Autodesk.Revit import DB
 import Rhino.Geometry as rg
-from RhinoInside.Revit import Revit
 import RhinoInside.Revit.Convert.Geometry as Geometry
 
-from .wall_helpers import (
+from src.timber_framing_generator.wall_data.wall_helpers import (
     compute_wall_base_elevation,
     get_wall_base_curve,
     get_wall_base_plane,
 )
-from src.wall_data.wall_helpers import (
-    compute_wall_base_elevation,
-    get_wall_base_curve,
-    get_wall_base_plane,
-)
-from src.cell_decomposition.cell_segmentation import decompose_wall_to_cells
-from src.cell_decomposition.cell_types import deconstruct_all_cells
+from src.timber_framing_generator.cell_decomposition.cell_segmentation import decompose_wall_to_cells
+from src.timber_framing_generator.cell_decomposition.cell_types import deconstruct_all_cells
 
 WallInputData = Dict[
     str, Union[rg.Curve, float, bool, List[Dict[str, Union[str, float]]], rg.Plane]

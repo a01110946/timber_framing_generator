@@ -2,9 +2,9 @@
 
 from typing import Dict, List, Any, Tuple
 import Rhino.Geometry as rg
-from timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
-from timber_framing_generator.config.framing import FRAMING_PARAMS
-from timber_framing_generator.framing_elements.framing_geometry import (
+from src.timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.framing_elements.framing_geometry import (
     create_stud_profile,
 )
 

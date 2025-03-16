@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from timber_framing_generator.config.framing import (
+from src.timber_framing_generator.config.framing import (
     FRAMING_PARAMS,
     PROFILES,
     get_profile_for_wall_type,

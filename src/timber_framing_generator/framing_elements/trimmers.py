@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
-from timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS
 
 
 class TrimmerGenerator:

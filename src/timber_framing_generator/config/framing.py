@@ -8,9 +8,9 @@ timber framing elements.
 
 from enum import Enum
 from dataclasses import dataclass
-from typing import Dict, Union, Any
+from typing import Dict, Any
 
-from timber_framing_generator.config.units import ProjectUnits, convert_from_feet
+from src.timber_framing_generator.config.units import ProjectUnits, convert_from_feet
 
 
 class PlatePosition(Enum):
@@ -89,6 +89,13 @@ class PlateType(Enum):
     TOP_PLATE = "top_plate"
     CAP_PLATE = "cap_plate"
     SOLE_PLATE = "sole_plate"
+
+
+class BlockingPattern(Enum):
+    """Defines valid patterns for row blocking installation."""
+
+    INLINE = "inline"       # Blocks at same height across wall
+    STAGGERED = "staggered" # Blocks at alternating heights between adjacent stud bays
 
 
 @dataclass
@@ -202,7 +209,14 @@ FRAMING_PARAMS: Dict[str, Any] = {
     # Validation thresholds
     "minimum_cell_width": 1.5 / 12,  # 1.5 inches in feet
     "minimum_cell_height": 1.5 / 12,  # 1.5 inches in feet
+    # Row blocking parameters
+    "include_blocking": True,        # Whether to include row blocking
+    "block_spacing": 48.0 / 12.0,    # 48 inches (4 feet) in feet
+    "first_block_height": 24.0 / 12.0,  # 24 inches (2 feet) from bottom plate
+    "block_pattern": BlockingPattern.INLINE,  # Default blocking pattern
+    "block_profile_override": None,   # Use same profile as studs by default
 }
+
 
 # Wall type to profile mapping
 WALL_TYPE_PROFILES: Dict[str, str] = {

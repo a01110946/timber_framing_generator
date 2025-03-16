@@ -1,12 +1,13 @@
 # File: api/utils/auth.py
 import os
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, status, Depends
+from api.utils.config import Config
 import logging
 
 logger = logging.getLogger("timber_framing.api")
 
 # Get the API key from environment variable
-API_KEY = os.environ.get("API_KEY")
+API_KEY = os.environ.get("API_KEY", "dev_key")
 
 # Log all environment variables names (not values) for debugging
 logger.info(f"Available environment variables: {', '.join(os.environ.keys())}")
@@ -16,9 +17,6 @@ if API_KEY:
     masked_key = API_KEY[:4] + "..." + API_KEY[-4:] if len(API_KEY) > 8 else "***masked***"
     logger.info(f"API_KEY from environment: {masked_key}")
 
-# Fallback development key
-DEV_KEY = "dev_key"
-
 async def get_api_key(x_api_key: str = Header(...)):
     """Validate API key from header."""
     # Log received API key (safely)
@@ -26,21 +24,10 @@ async def get_api_key(x_api_key: str = Header(...)):
         masked_input = x_api_key[:4] + "..." + x_api_key[-4:] if len(x_api_key) > 8 else "***masked***"
         logger.info(f"Received API key: {masked_input}")
     
-    # Temporary debugging - print the exact comparison
-    logger.info(f"API_KEY environment variable is: {API_KEY is not None}")
-    if API_KEY:
-        logger.info(f"Keys match: {x_api_key == API_KEY}")
-        logger.info(f"Key lengths - Env: {len(API_KEY)}, Received: {len(x_api_key)}")
-    
-    # In production, check against environment variable
-    if API_KEY and x_api_key == API_KEY:
-        logger.info("Authentication successful with production API key")
-        return {"key": x_api_key, "environment": "production"}
-    
-    # In development, allow dev_key as fallback
-    if not API_KEY and x_api_key == DEV_KEY:
-        logger.info("Authentication successful with development API key")
-        return {"key": x_api_key, "environment": "development"}
+    # Check against configured API key
+    if x_api_key == Config.API_KEY:
+        logger.info("Authentication successful")
+        return {"key": x_api_key, "environment": "production" if Config.API_KEY != "dev_key" else "development"}
     
     # Log authentication failure
     logger.warning(f"Invalid API key provided")
@@ -48,3 +35,8 @@ async def get_api_key(x_api_key: str = Header(...)):
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid API Key"
     )
+
+# Use this at the router level to ensure auth comes first
+def auth_dependency():
+    """Creates a dependency that requires authentication."""
+    return Depends(get_api_key)

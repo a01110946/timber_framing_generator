@@ -1,1 +1,0 @@
-# File: docs/architecture.md         # Overall system architecture and design rationale

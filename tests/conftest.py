@@ -5,7 +5,7 @@ import os
 
 # Import our CI mocks to ensure they're loaded first
 try:
-    from timber_framing_generator.ci_mock import is_ci_environment
+    from src.timber_framing_generator.ci_mock import is_ci_environment
 
     # The mocks are now already installed if we're in CI
 except ImportError:

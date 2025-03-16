@@ -1,19 +1,19 @@
 # File: timber_framing_generator/framing_elements/plates.py
 
 from typing import List, Dict, Optional
-from timber_framing_generator.config.framing import (
+from src.timber_framing_generator.config.framing import (
     FRAMING_PARAMS,
     PlatePosition,
 )
 
-from timber_framing_generator.framing_elements.location_data import (
+from src.timber_framing_generator.framing_elements.location_data import (
     get_plate_location_data,
 )
-from timber_framing_generator.framing_elements.plate_parameters import (
+from src.timber_framing_generator.framing_elements.plate_parameters import (
     PlateParameters,
     PlateLayerConfig,
 )
-from timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
+from src.timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
 
 
 def create_plates(

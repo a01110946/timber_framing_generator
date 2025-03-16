@@ -9,14 +9,14 @@ Provides a unified interface to all configuration systems:
 - System-wide defaults
 """
 
-from timber_framing_generator.config.units import (
+from src.timber_framing_generator.config.units import (
     get_project_units,
     convert_to_feet,
     convert_from_feet,
     ProjectUnits,
 )
 
-from timber_framing_generator.config.framing import (
+from src.timber_framing_generator.config.framing import (
     PROFILES,
     FRAMING_PARAMS,
     WALL_TYPE_PROFILES,
@@ -26,7 +26,7 @@ from timber_framing_generator.config.framing import (
     get_profile_for_wall_type,
 )
 
-from timber_framing_generator.config.assembly import (
+from src.timber_framing_generator.config.assembly import (
     WALL_ASSEMBLY,
     SHEATHING_PARAMS,
     OPENING_DEFAULTS,

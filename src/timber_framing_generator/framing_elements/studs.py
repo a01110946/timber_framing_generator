@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Optional
 import Rhino.Geometry as rg
 import math
-from timber_framing_generator.config.framing import FRAMING_PARAMS, PROFILES
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, PROFILES
 
 
 def calculate_stud_locations(

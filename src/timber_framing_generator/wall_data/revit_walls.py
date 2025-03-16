@@ -24,8 +24,8 @@ from Autodesk.Revit.UI import UIApplication
 import rhinoscriptsyntax as rs  # type: ignore
 
 # Import your modules
-from timber_framing_generator.wall_data import wall_input
-from timber_framing_generator.cell_decomposition import cell_segmentation
+from src.timber_framing_generator.wall_data import wall_input
+from src.timber_framing_generator.cell_decomposition import cell_segmentation
 
 # --- Helper Functions for Revit API Data Extraction ---
 

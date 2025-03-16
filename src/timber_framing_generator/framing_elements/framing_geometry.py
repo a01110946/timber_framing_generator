@@ -1,12 +1,21 @@
 # File: timber_framing_generator/framing_elements/framing_geometry.py
 
-import rhinoinside
-
-rhinoinside.load(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Rhino 8")
-import Rhino  # type: ignore
-
-import Rhino.Geometry as rg  # type: ignore
+import sys
 from typing import Dict, Any
+
+# Check if we're running in Grasshopper/Rhino
+is_rhino_environment = 'rhinoscriptsyntax' in sys.modules or 'Rhino' in sys.modules
+
+# Only import rhinoinside if not already in Rhino environment
+if not is_rhino_environment:
+    import rhinoinside
+    rhinoinside.load(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Rhino 8")
+    import Rhino  # type: ignore
+    import Rhino.Geometry as rg  # type: ignore
+else:
+    # If in Rhino, directly import Rhino.Geometry
+    import Rhino  # type: ignore
+    import Rhino.Geometry as rg  # type: ignore
 
 
 def create_stud_profile(

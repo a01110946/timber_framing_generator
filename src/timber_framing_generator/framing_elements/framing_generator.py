@@ -1,25 +1,49 @@
 # File: timber_framing_generator/framing_elements/framing_generator.py
 
-import rhinoinside
+import datetime
+from typing import Dict, List, Any, Optional, Tuple, Union
+import sys
+import math
+import traceback
 
-rhinoinside.load(r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Rhino 8")
+try:
+    import rhinoscriptsyntax as rs  # type: ignore
+except ImportError:
+    print("rhinoscriptsyntax not available")
+    
+try:
+    import scriptcontext as sc  # type: ignore
+except ImportError:
+    print("scriptcontext not available")
+
+# Check if we're running in Grasshopper/Rhino
+is_rhino_environment: bool = 'rhinoscriptsyntax' in sys.modules or 'scriptcontext' in sys.modules
+
+# Always import Rhino.Geometry for type annotations
 import Rhino  # type: ignore
-
 import Rhino.Geometry as rg  # type: ignore
 
-from typing import Dict, List, Tuple, Union, Optional, Any
-from timber_framing_generator.framing_elements.plates import create_plates
-from timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
-from timber_framing_generator.framing_elements.king_studs import KingStudGenerator
-from timber_framing_generator.framing_elements.headers import HeaderGenerator
-from timber_framing_generator.framing_elements.sills import SillGenerator
-from timber_framing_generator.framing_elements.trimmers import TrimmerGenerator
-from timber_framing_generator.framing_elements.header_cripples import (
-    HeaderCrippleGenerator,
-)
-from timber_framing_generator.framing_elements.sill_cripples import SillCrippleGenerator
-from timber_framing_generator.framing_elements.studs import StudGenerator
-from timber_framing_generator.config.framing import FRAMING_PARAMS
+# Only import rhinoinside if not already in Rhino environment
+if not is_rhino_environment:
+    import rhinoinside
+    rhinoinside.load()
+    # Removed the import Rhino  # type: ignore and import Rhino.Geometry as rg  # type: ignore from here
+
+# Project imports using relative imports to avoid module path issues
+from ..framing_elements.plates import create_plates
+from ..framing_elements.plate_geometry import PlateGeometry
+from ..framing_elements.king_studs import KingStudGenerator
+from ..framing_elements.headers import HeaderGenerator
+from ..framing_elements.sills import SillGenerator
+from ..framing_elements.trimmers import TrimmerGenerator
+from ..framing_elements.header_cripples import HeaderCrippleGenerator
+from ..framing_elements.sill_cripples import SillCrippleGenerator
+from ..framing_elements.studs import StudGenerator
+from ..framing_elements.row_blocking import RowBlockingGenerator
+from ..framing_elements.blocking_parameters import BlockingParameters
+
+# Import only what exists in the framing module
+from ..config.framing import FRAMING_PARAMS, PROFILES, BlockingPattern
 
 
 class FramingGenerator:
@@ -45,6 +69,9 @@ class FramingGenerator:
             "representation_type": "schematic",  # Default to schematic representation
             "bottom_plate_layers": 1,  # Single bottom plate by default
             "top_plate_layers": 2,  # Double top plate by default
+            "include_blocking": FRAMING_PARAMS.get("include_blocking", True),  # Include row blocking by default
+            "block_spacing": FRAMING_PARAMS.get("block_spacing", 48.0/12.0),  # Default block spacing
+            "first_block_height": FRAMING_PARAMS.get("first_block_height", 24.0/12.0),  # Default first block height
         }
 
         # Update configuration with any provided values
@@ -63,6 +90,8 @@ class FramingGenerator:
             "plates_generated": False,
             "king_studs_generated": False,
             "headers_and_sills_generated": False,
+            "studs_generated": False,
+            "blocking_generated": False,
         }
 
         # Track any warnings or messages during generation
@@ -71,91 +100,100 @@ class FramingGenerator:
         # Initialize debug geometry storage
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
 
-    def generate_framing(self) -> Dict[str, List[PlateGeometry]]:
+    def generate_framing(self) -> Dict[str, List[rg.Brep]]:
         """
-        Generates all framing elements in the correct dependency order.
-
-        For now, this only handles plate generation, but it's structured
-        to accommodate our full framing hierarchy as we build it out.
-
+        Generate all framing elements.
+        
         Returns:
-            Dictionary containing lists of generated framing elements,
-            currently just bottom and top plates.
+            A dictionary containing all generated framing elements.
         """
+        start_time = datetime.datetime.now()
+        print("\nStarting framing generation...")
+        
+        # Generate plates
+        self._generate_plates()
+        
+        # King studs
+        self._generate_king_studs()
+        
+        # Headers and sills
+        self._generate_headers_and_sills()
+        
+        # Trimmers
+        self._generate_trimmers()
+        
+        # Header cripples
+        self._generate_header_cripples()
+        
+        # Sill cripples
+        self._generate_sill_cripples()
+        
+        # Standard studs
+        self._generate_studs()
+        
+        # Row blocking
         try:
-            # Generate plates first since king studs depend on them
-            self._generate_plates()
-            self.messages.append("Plates generated successfully")
-
-            # Now generate king studs using the generated plates
-            self._generate_king_studs()
-            self.messages.append("King studs generated successfully")
-
-            # Generate headers and sills
-            self._generate_headers_and_sills()
-            self.messages.append("Headers and sills generated successfully")
-
-            # Generate trimmers
-            self._generate_trimmers()
-            self.messages.append("Trimmers generated successfully")
-
-            # Generate header cripples
-            self._generate_header_cripples()
-            self.messages.append("Header cripples generated successfully")
-
-            # Generate sill cripples
-            self._generate_sill_cripples()
-            self.messages.append("Sill cripples generated successfully")
-
-            # Generate standard studs
-            self._generate_studs()
-            self.messages.append("Standard studs generated successfully")
-
-            # Return both framing elements and debug geometry
-            result = {
-                "bottom_plates": self.framing_elements["bottom_plates"],
-                "top_plates": self.framing_elements["top_plates"],
-                "king_studs": self.framing_elements["king_studs"],
-                "headers": self.framing_elements.get("headers", []),
-                "sills": self.framing_elements.get("sills", []),
-                "trimmers": self.framing_elements.get("trimmers", []),
-                "header_cripples": self.framing_elements.get("header_cripples", []),
-                "sill_cripples": self.framing_elements.get("sill_cripples", []),
-                "studs": self.framing_elements.get("studs", []),
-                "debug_geometry": self.debug_geometry,  # Include debug geometry in output
-            }
-
-            print("\nFraming generation complete:")
-            print(f"Bottom plates: {len(result['bottom_plates'])}")
-            print(f"Top plates: {len(result['top_plates'])}")
-            print(f"King studs: {len(result['king_studs'])}")
-            print(f"Headers: {len(result['headers'])}")
-            print(f"Sills: {len(result['sills'])}")
-            print(f"Trimmers: {len(result['trimmers'])}")
-            print(f"Header cripples: {len(result['header_cripples'])}")
-            print(f"Sill cripples: {len(result['sill_cripples'])}")
-            print(f"Debug geometry:")
-            for key, items in self.debug_geometry.items():
-                print(f"  {key}: {len(items)} items")
-
-            return result
-
+            # Check if row blocking is already generated
+            if self.generation_status.get("blocking_generated", False):
+                print("Row blocking already generated, skipping.")
+            else:
+                # Generate row blocking using the already generated studs
+                if "studs" in self.framing_elements and self.framing_elements["studs"]:
+                    blocking = self._generate_row_blocking(studs=self.framing_elements["studs"])
+                    
+                    # Store the generated blocking
+                    self.framing_elements["row_blocking"] = blocking
+                    
+                    # Collect debug geometry from the blocking generator
+                    # Note: This part will need to be updated if we need debug geometry
+                    
+                    # Update generation status
+                    self.generation_status["blocking_generated"] = True
+                    print(f"Row blocking generation complete: {len(blocking)} blocks created")
+                else:
+                    print("No studs available for row blocking, skipping.")
+                    self.framing_elements["row_blocking"] = []
+                    self.generation_status["blocking_generated"] = True
         except Exception as e:
-            self.messages.append(f"Error during framing generation: {str(e)}")
-            raise
+            print(f"Error in main generate_framing while processing row blocking: {str(e)}")
+            # Initialize empty list to prevent errors downstream
+            self.framing_elements["row_blocking"] = []
+            self.generation_status["blocking_generated"] = True
+        
+        end_time = datetime.datetime.now()
+        print(f"Framing generation complete in {(end_time - start_time).total_seconds():.2f} seconds")
+        
+        # Display debugging info for wall
+        self._print_wall_data_diagnostic()
+        
+        print("Framing generation complete:")
+        print(f"Bottom plates: {len(self.framing_elements.get('bottom_plates', []))}")
+        print(f"Top plates: {len(self.framing_elements.get('top_plates', []))}")
+        print(f"King studs: {len(self.framing_elements.get('king_studs', []))}")
+        print(f"Headers: {len(self.framing_elements.get('headers', []))}")
+        print(f"Sills: {len(self.framing_elements.get('sills', []))}")
+        print(f"Trimmers: {len(self.framing_elements.get('trimmers', []))}")
+        print(f"Header cripples: {len(self.framing_elements.get('header_cripples', []))}")
+        print(f"Sill cripples: {len(self.framing_elements.get('sill_cripples', []))}")
+        print(f"Studs: {len(self.framing_elements.get('studs', []))}")
+        print(f"Row blocking: {len(self.framing_elements.get('row_blocking', []))}")
+        
+        # Print debug geometry count
+        print("Debug geometry:")
+        for key, items in self.debug_geometry.items():
+            print(f"  {key}: {len(items)} items")
+            
+        return self.framing_elements
 
-    def _generate_plates(self) -> None:
+    def _generate_plates(self):
         """
-        Creates bottom and top plates using our existing plate generation system.
-
-        Instead of reimplementing plate generation logic, this method uses our
-        existing create_plates() function while managing the overall process
-        and maintaining state.
+        Generate top and bottom wall plates.
         """
-        if self.generation_status["plates_generated"]:
-            return
-
         try:
+            # Skip if plates already generated
+            if self.generation_status["plates_generated"]:
+                return
+
             self.framing_elements["bottom_plates"] = create_plates(
                 wall_data=self.wall_data,
                 plate_type="bottom_plate",
@@ -172,23 +210,30 @@ class FramingGenerator:
 
             self.generation_status["plates_generated"] = True
             self.messages.append("Plates generated successfully")
-
+            print(f"Created {len(self.framing_elements['bottom_plates'])} bottom plates")
+            print(f"Created {len(self.framing_elements['top_plates'])} top plates")
+            
         except Exception as e:
+            print(f"Error generating plates: {str(e)}")
             self.messages.append(f"Error generating plates: {str(e)}")
-            raise
+            
+            # Initialize empty collections as fallback
+            self.framing_elements["bottom_plates"] = []
+            self.framing_elements["top_plates"] = []
+            self.generation_status["plates_generated"] = True  # Mark as done to prevent retry
 
     def _generate_king_studs(self) -> None:
         """Generates king studs with debug geometry tracking."""
         # Initialize debug geometry with matching keys
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
 
-        if self.generation_status["king_studs_generated"]:
-            return
-
-        if not self.generation_status["plates_generated"]:
-            raise RuntimeError("Cannot generate king studs before plates")
-
         try:
+            if self.generation_status["king_studs_generated"]:
+                return
+
+            if not self.generation_status["plates_generated"]:
+                raise RuntimeError("Cannot generate king studs before plates")
+
             openings = self.wall_data.get("openings", [])
             print(f"\nGenerating king studs for {len(openings)} openings")
 
@@ -244,87 +289,95 @@ class FramingGenerator:
         Returns:
             Dictionary mapping opening index to (left_u, right_u) positions
         """
-        positions = {}
+        try:
+            positions = {}
 
-        # Check if king studs have been generated
-        if not self.generation_status.get("king_studs_generated", False):
-            print("King studs not yet generated, can't extract positions")
-            return positions
+            # Check if king studs have been generated
+            if not self.generation_status.get("king_studs_generated", False):
+                print("King studs not yet generated, can't extract positions")
+                return positions
 
-        # Get openings and king studs
-        openings = self.wall_data.get("openings", [])
-        king_studs = self.framing_elements.get("king_studs", [])
+            # Get openings and king studs
+            openings = self.wall_data.get("openings", [])
+            king_studs = self.framing_elements.get("king_studs", [])
 
-        # Get the base plane for position calculations
-        base_plane = self.wall_data.get("base_plane")
-        if base_plane is None:
-            print("No base plane available for king stud position extraction")
-            return positions
+            # Get the base plane for position calculations
+            base_plane = self.wall_data.get("base_plane")
+            if base_plane is None:
+                print("No base plane available for king stud position extraction")
+                return positions
 
-        # Verify we have enough king studs (should be pairs for each opening)
-        if len(king_studs) < 2 or len(openings) == 0:
-            print(
-                f"Not enough king studs ({len(king_studs)}) or openings ({len(openings)})"
-            )
-            return positions
+            # Verify we have enough king studs (should be pairs for each opening)
+            if len(king_studs) < 2 or len(openings) == 0:
+                print(
+                    f"Not enough king studs ({len(king_studs)}) or openings ({len(openings)})"
+                )
+                return positions
 
-        # Process each opening
-        for i in range(len(openings)):
-            # Calculate the index for this opening's king studs (2 per opening)
-            left_index = i * 2
-            right_index = i * 2 + 1
+            # Process each opening
+            for i in range(len(openings)):
+                # Calculate the index for this opening's king studs (2 per opening)
+                left_index = i * 2
+                right_index = i * 2 + 1
 
-            # Verify we have studs for this opening
-            if right_index >= len(king_studs):
-                print(f"Missing king studs for opening {i+1}")
-                continue
-
-            # Get the stud geometries
-            left_stud = king_studs[left_index]
-            right_stud = king_studs[right_index]
-
-            try:
-                # Extract centerlines from the king stud geometries
-                left_centerline = self._extract_centerline_from_stud(left_stud)
-                right_centerline = self._extract_centerline_from_stud(right_stud)
-
-                if left_centerline is None or right_centerline is None:
-                    print(f"Failed to extract centerlines for opening {i+1}")
+                # Verify we have studs for this opening
+                if right_index >= len(king_studs):
+                    print(f"Missing king studs for opening {i+1}")
                     continue
 
-                # Get the u-coordinates (along the wall) for each stud
-                # For this we need the start points of each centerline
-                left_start = left_centerline.PointAtStart
-                right_start = right_centerline.PointAtStart
+                # Get the stud geometries
+                left_stud = king_studs[left_index]
+                right_stud = king_studs[right_index]
 
-                # Project these points onto the base plane's X axis
-                # to get their u-coordinates
-                left_u = self._project_point_to_u_coordinate(left_start, base_plane)
-                right_u = self._project_point_to_u_coordinate(right_start, base_plane)
+                try:
+                    # Extract centerlines from the king stud geometries
+                    left_centerline = self._extract_centerline_from_stud(left_stud)
+                    right_centerline = self._extract_centerline_from_stud(right_stud)
 
-                # Store the inner face positions for header placement
-                positions[i] = (left_u, right_u)
+                    if left_centerline is None or right_centerline is None:
+                        print(f"Failed to extract centerlines for opening {i+1}")
+                        continue
 
-                print(f"Extracted king stud positions for opening {i+1}:")
-                print(f"  Left stud centerline: u={left_u}")
-                print(f"  Right stud centerline: u={right_u}")
+                    # Get the u-coordinates (along the wall) for each stud
+                    # For this we need the start points of each centerline
+                    left_start = left_centerline.PointAtStart
+                    right_start = right_centerline.PointAtStart
 
-                # DEBUG: Calculate and report stud inner faces
-                king_stud_width = FRAMING_PARAMS.get("king_stud_width", 1.5 / 12)
-                inner_left = left_u + (king_stud_width / 2)
-                inner_right = right_u - (king_stud_width / 2)
-                print(f"  Inner face positions: left={inner_left}, right={inner_right}")
-                print(f"  Resulting span width: {inner_right - inner_left}")
+                    # Project these points onto the base plane's X axis
+                    # to get their u-coordinates
+                    left_u = self._project_point_to_u_coordinate(left_start, base_plane)
+                    right_u = self._project_point_to_u_coordinate(right_start, base_plane)
 
-            except Exception as e:
-                print(
-                    f"Error extracting king stud positions for opening {i+1}: {str(e)}"
-                )
-                import traceback
+                    # Store the inner face positions for header placement
+                    positions[i] = (left_u, right_u)
 
-                print(traceback.format_exc())
+                    print(f"Extracted king stud positions for opening {i+1}:")
+                    print(f"  Left stud centerline: u={left_u}")
+                    print(f"  Right stud centerline: u={right_u}")
 
-        return positions
+                    # DEBUG: Calculate and report stud inner faces
+                    king_stud_width = FRAMING_PARAMS.get("king_stud_width", 1.5 / 12)
+                    inner_left = left_u + (king_stud_width / 2)
+                    inner_right = right_u - (king_stud_width / 2)
+                    print(f"  Inner face positions: left={inner_left}, right={inner_right}")
+                    print(f"  Resulting span width: {inner_right - inner_left}")
+
+                except Exception as e:
+                    print(
+                        f"Error extracting king stud positions for opening {i+1}: {str(e)}"
+                    )
+                    import traceback
+
+                    print(traceback.format_exc())
+
+            return positions
+
+        except Exception as e:
+            print(f"Error getting king stud positions: {str(e)}")
+            import traceback
+
+            print(traceback.format_exc())
+            return {}
 
     def _extract_centerline_from_stud(self, stud_brep: rg.Brep) -> Optional[rg.Curve]:
         """
@@ -382,7 +435,7 @@ class FramingGenerator:
             return None
 
         except Exception as e:
-            print(f"Error extracting centerline: {str(e)}")
+            print(f"Error extracting centerline from stud: {str(e)}")
             return None
 
     def _project_point_to_u_coordinate(
@@ -419,13 +472,13 @@ class FramingGenerator:
         This method creates headers above all openings and sills below window openings,
         using the king studs as span references when available.
         """
-        if self.generation_status.get("headers_and_sills_generated", False):
-            return
-
-        if not self.generation_status.get("king_studs_generated", False):
-            self._generate_king_studs()
-
         try:
+            if self.generation_status.get("headers_and_sills_generated", False):
+                return
+
+            if not self.generation_status.get("king_studs_generated", False):
+                self._generate_king_studs()
+
             openings = self.wall_data.get("openings", [])
             print(f"\nGenerating headers and sills for {len(openings)} openings")
 
@@ -635,18 +688,18 @@ class FramingGenerator:
         with the header bottom elevation. Each opening gets a pair of trimmers
         that run from the bottom plate to the underside of the header.
         """
-        if self.generation_status.get("trimmers_generated", False):
-            return
-
-        # Ensure plates are generated first
-        if not self.generation_status.get("plates_generated", False):
-            self._generate_plates()
-
-        # Ensure dependencies are generated first
-        if not self.generation_status.get("headers_and_sills_generated", False):
-            self._generate_headers_and_sills()
-
         try:
+            if self.generation_status.get("trimmers_generated", False):
+                return
+
+            # Ensure plates are generated first
+            if not self.generation_status.get("plates_generated", False):
+                self._generate_plates()
+
+            # Ensure dependencies are generated first
+            if not self.generation_status.get("headers_and_sills_generated", False):
+                self._generate_headers_and_sills()
+
             openings = self.wall_data.get("openings", [])
             print(f"\nGenerating trimmers for {len(openings)} openings")
 
@@ -726,7 +779,7 @@ class FramingGenerator:
             self.generation_status["trimmers_generated"] = True
 
             # Store the generated elements
-            self.framing_elements["trimmers"] = trimmers
+            self.framing_elements["trimmers"] = []
 
     def _generate_header_cripples(self) -> None:
         """
@@ -736,20 +789,20 @@ class FramingGenerator:
         the header and the underside of the top plate. They provide support for
         the top plate and transfer loads from it to the header below.
         """
-        if self.generation_status.get("header_cripples_generated", False):
-            return
-
-        # Ensure dependencies are generated first
-        if not self.generation_status.get("plates_generated", False):
-            self._generate_plates()
-
-        if not self.generation_status.get("headers_and_sills_generated", False):
-            self._generate_headers_and_sills()
-
-        if not self.generation_status.get("trimmers_generated", False):
-            self._generate_trimmers()
-
         try:
+            if self.generation_status.get("header_cripples_generated", False):
+                return
+
+            # Ensure dependencies are generated first
+            if not self.generation_status.get("plates_generated", False):
+                self._generate_plates()
+
+            if not self.generation_status.get("headers_and_sills_generated", False):
+                self._generate_headers_and_sills()
+
+            if not self.generation_status.get("trimmers_generated", False):
+                self._generate_trimmers()
+
             openings = self.wall_data.get("openings", [])
             print(f"\nGenerating header cripples for {len(openings)} openings")
 
@@ -963,20 +1016,20 @@ class FramingGenerator:
         They provide support for the sill and transfer loads from it to the
         bottom plate below.
         """
-        if self.generation_status.get("sill_cripples_generated", False):
-            return
-
-        # Ensure dependencies are generated first
-        if not self.generation_status.get("plates_generated", False):
-            self._generate_plates()
-
-        if not self.generation_status.get("headers_and_sills_generated", False):
-            self._generate_headers_and_sills()
-
-        if not self.generation_status.get("trimmers_generated", False):
-            self._generate_trimmers()
-
         try:
+            if self.generation_status.get("sill_cripples_generated", False):
+                return
+
+            # Ensure dependencies are generated first
+            if not self.generation_status.get("plates_generated", False):
+                self._generate_plates()
+
+            if not self.generation_status.get("headers_and_sills_generated", False):
+                self._generate_headers_and_sills()
+
+            if not self.generation_status.get("trimmers_generated", False):
+                self._generate_trimmers()
+
             openings = self.wall_data.get("openings", [])
             print(f"\nGenerating sill cripples for {len(openings)} openings")
 
@@ -1205,8 +1258,6 @@ class FramingGenerator:
             print(traceback.format_exc())
             return None
 
-    # Add this method to the FramingGenerator class
-
     def _generate_studs(self) -> None:
         """
         Generates standard wall studs based on Stud Cell (SC) information.
@@ -1215,17 +1266,17 @@ class FramingGenerator:
         running from the top of the bottom plate to the bottom of the top plate.
         Stud positions are determined based on the configured stud spacing.
         """
-        if self.generation_status.get("studs_generated", False):
-            return
-
-        # Ensure dependencies are generated first
-        if not self.generation_status.get("plates_generated", False):
-            self._generate_plates()
-
-        if not self.generation_status.get("king_studs_generated", False):
-            self._generate_king_studs()
-
         try:
+            if self.generation_status.get("studs_generated", False):
+                return
+
+            # Ensure dependencies are generated first
+            if not self.generation_status.get("plates_generated", False):
+                self._generate_plates()
+
+            if not self.generation_status.get("king_studs_generated", False):
+                self._generate_king_studs()
+
             print("\nGenerating standard wall studs")
 
             # Create stud generator with king stud information to avoid overlaps
@@ -1273,6 +1324,145 @@ class FramingGenerator:
             # Initialize empty list to prevent errors downstream
             self.framing_elements["studs"] = []
 
+    def _generate_row_blocking(self, studs: List[rg.Brep] = None) -> List[rg.Brep]:
+        """
+        Generate row blocking between wall studs.
+        
+        Args:
+            studs: Optionally provide the list of studs to use for blocking.
+                   If not provided, uses studs that were previously generated.
+                   
+        Returns:
+            List of row blocking elements (Breps)
+        """
+        try:
+            if not self.framing_config.get("include_blocking", False):
+                return []
+            
+            # Get current studs if not provided
+            if studs is None:
+                studs = self.framing_elements["studs"] or []
+            
+            # If no studs, can't generate blocking
+            if not studs:
+                return []
+                
+            print("Generating row blocking")
+            print(f"Framing config: {self.framing_config}")
+            
+            # Create blocking parameters
+            blocking_params = BlockingParameters(
+                include_blocking=self.framing_config.get("include_blocking", False),
+                block_spacing=self.framing_config.get("block_spacing", 4.0),
+                first_block_height=self.framing_config.get("first_block_height", 2.0),
+                # Get pattern from framing config, default to "inline"
+                pattern=self.framing_config.get("blocking_pattern", "inline")
+            )
+            
+            print(f"Created blocking parameters: include={blocking_params.include_blocking}, "
+                  f"spacing={blocking_params.block_spacing}, first_height={blocking_params.first_block_height}, "
+                  f"pattern={blocking_params.pattern}")
+            
+            # Get a profile name for blocks - use the stud profile if available
+            block_profile_name = self.framing_config.get("stud_profile", "2x4")
+            
+            # Get wall height from wall data
+            wall_height = self.wall_data.get("height", 8.0)  # Default to 8' if not specified
+            
+            # Check for alternative wall height keys in wall_data
+            if "wall_height" in self.wall_data:
+                wall_height = self.wall_data.get("wall_height")
+            elif "wall_top_elevation" in self.wall_data and "wall_base_elevation" in self.wall_data:
+                wall_height = self.wall_data.get("wall_top_elevation") - self.wall_data.get("wall_base_elevation")
+                
+            print(f"Using wall height: {wall_height}ft")
+            
+            # Create row blocking generator with correct parameters
+            blocking_generator = RowBlockingGenerator(
+                wall_data=self.wall_data,
+                studs=studs,  # Pass the list of studs
+                framing_config=self.framing_config  # Pass the full config
+            )
+            
+            # Update framing_config directly with pattern if needed
+            if "blocking_pattern" in self.framing_config:
+                pattern_str = self.framing_config["blocking_pattern"].lower().strip()
+                if pattern_str == "staggered":
+                    print("Explicitly setting pattern to STAGGERED in blocking generator")
+                    from ..config.framing import BlockingPattern
+                    blocking_generator.blocking_params.pattern = BlockingPattern.STAGGERED
+                else:
+                    print("Explicitly setting pattern to INLINE in blocking generator")
+                    from ..config.framing import BlockingPattern
+                    blocking_generator.blocking_params.pattern = BlockingPattern.INLINE
+            
+            # Update blocking params with our config values
+            blocking_generator.blocking_params.include_blocking = blocking_params.include_blocking
+            blocking_generator.blocking_params.block_spacing = blocking_params.block_spacing
+            blocking_generator.blocking_params.first_block_height = blocking_params.first_block_height
+                    
+            # Set debugging params
+            print(f"Set blocking param include_blocking = {blocking_generator.blocking_params.include_blocking}")
+            print(f"Set blocking param block_spacing = {blocking_generator.blocking_params.block_spacing}")
+            print(f"Set blocking param first_block_height = {blocking_generator.blocking_params.first_block_height}")
+            
+            # Get the base plane - this is required for proper coordinate calculations
+            base_plane = self.wall_data.get("base_plane")
+            if not base_plane or not isinstance(base_plane, rg.Plane):
+                print("Error: Missing or invalid base_plane in wall data")
+                return []
+                
+            # Calculate stud positions directly using stud geometries and base plane
+            print(f"Setting {len(studs)} stud positions for blocking")
+            stud_positions = []
+            
+            # Extract stud centerline U coordinates
+            for i, stud in enumerate(studs):
+                if not stud:
+                    continue
+                    
+                # Get stud center point (at mid-height)
+                try:
+                    centroid = self._get_brep_centroid(stud)
+                    if not centroid:
+                        print(f"Warning: Could not calculate centroid for stud {i+1}")
+                        continue
+                        
+                    # Project directly onto the base plane to get U coordinate
+                    u_coord = self._project_point_to_u_coordinate(centroid, base_plane)
+                    
+                    # Log with safe access to point coordinates
+                    print(f"Point: {centroid.X},{centroid.Y},{centroid.Z}, "
+                          f"Wall Origin: {base_plane.Origin.X},{base_plane.Origin.Y},{base_plane.Origin.Z}, "
+                          f"U-coord: {u_coord}")
+                    
+                    stud_positions.append(u_coord)
+                    
+                except Exception as e:
+                    print(f"Error calculating stud position: {str(e)}")
+                    continue
+            
+            # Sort positions from start to end of wall
+            stud_positions.sort()
+            
+            # Set stud positions in blocking generator 
+            blocking_generator.set_stud_positions(studs=None, positions=stud_positions)
+            print(f"Updated stud positions: {len(stud_positions)} studs found")
+            
+            # Generate blocking
+            blocking = blocking_generator.generate_blocking()
+            
+            if not blocking:
+                print("Warning: No row blocking generated")
+                
+            return blocking
+            
+        except Exception as e:
+            print(f"Error generating row blocking: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return []
+
     def get_generation_status(self) -> Dict[str, bool]:
         """
         Returns the current status of framing generation.
@@ -1296,3 +1486,78 @@ class FramingGenerator:
             List of message strings accumulated during generation
         """
         return self.messages
+
+    def _print_wall_data_diagnostic(self) -> None:
+        """
+        Prints a diagnostic summary of the wall data for debugging purposes.
+        """
+        try:
+            print("\nWall data diagnostic for wall {}:".format(
+                self.wall_data.get('wall_id', 'Unknown')
+            ))
+            # Check for key wall data elements
+            print(f"  base_plane: {self.wall_data.get('base_plane') is not None}")
+            print(f"  wall_base_curve: {self.wall_data.get('wall_base_curve') is not None}")
+            print(f"  wall_base_elevation: {self.wall_data.get('wall_base_elevation')}")
+            print(f"  wall_top_elevation: {self.wall_data.get('wall_top_elevation')}")
+        except Exception as e:
+            print(f"Error printing wall data diagnostic: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+
+    def _world_to_wall_u_coordinate(self, point: rg.Point3d) -> float:
+        """
+        Convert a world point to the wall's U coordinate (distance along wall).
+        
+        Args:
+            point: Point in world coordinates
+            
+        Returns:
+            U-coordinate (distance along wall)
+        """
+        try:
+            # Get the base plane
+            base_plane = self.wall_data.get("base_plane")
+            if not base_plane:
+                raise ValueError("Wall data missing base plane")
+                
+            # Project the point to the wall's U coordinate
+            return self._project_point_to_u_coordinate(point, base_plane)
+        
+        except Exception as e:
+            print(f"Error converting point to U-coordinate: {str(e)}")
+            return 0.0
+
+    def _get_brep_centroid(self, brep: rg.Brep) -> rg.Point3d:
+        """
+        Calculate the centroid (center point) of a Brep.
+        
+        This method extracts the center point of a Brep by using its bounding box.
+        For complex Breps, this is an approximation of the true centroid.
+        
+        Args:
+            brep: The Brep geometry to calculate centroid for
+            
+        Returns:
+            Point3d representing the centroid
+            
+        Raises:
+            ValueError: If the Brep is invalid or cannot compute bounding box
+        """
+        if not brep or not isinstance(brep, rg.Brep):
+            raise ValueError("Invalid Brep provided")
+            
+        # Get bounding box in world coordinates
+        bbox = brep.GetBoundingBox(True)
+        
+        if not bbox.IsValid:
+            raise ValueError("Invalid bounding box for Brep")
+            
+        # Calculate centroid as average of min and max points
+        centroid = rg.Point3d(
+            (bbox.Min.X + bbox.Max.X) / 2.0,
+            (bbox.Min.Y + bbox.Max.Y) / 2.0,
+            (bbox.Min.Z + bbox.Max.Z) / 2.0
+        )
+        
+        return centroid

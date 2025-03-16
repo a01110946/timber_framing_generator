@@ -1,23 +1,32 @@
 # File: timber_framing_generator/framing_elements/location_data.py
 
+# First, detect the environment and import appropriate modules
+import sys
+import os
+
+# Check if we're running in Grasshopper/Rhino
+is_rhino_environment = 'rhinoscriptsyntax' in sys.modules or 'Rhino' in sys.modules
+
 # First, try to import our CI mocks
 try:
-    from timber_framing_generator.ci_mock import is_ci_environment
+    from src.timber_framing_generator.ci_mock import is_ci_environment
 
-    # Only do regular imports if we're not in CI
-    if not is_ci_environment():
+    # Only do regular imports if we're not in CI and not in Rhino
+    if not is_ci_environment() and not is_rhino_environment:
         import rhinoinside
-
         rhinoinside.load()
         import Rhino.Geometry as rg
     else:
-        # In CI, we'll use the mocks that were already installed
+        # In CI or already in Rhino, we won't use rhinoinside
         import Rhino.Geometry as rg
 except ImportError:
-    # Fall back to regular imports if CI mock module isn't available
-    import rhinoinside
-
-    rhinoinside.load()
+    # Fall back based on environment
+    if not is_rhino_environment:
+        # Only import rhinoinside if we're not already in Rhino
+        import rhinoinside
+        rhinoinside.load()
+    
+    # Import Rhino.Geometry directly if we're already in Rhino
     import Rhino.Geometry as rg
 
 from typing import Dict, List, Tuple, Optional, Union

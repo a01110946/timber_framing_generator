@@ -2,9 +2,9 @@
 
 from typing import Dict, Optional, Any
 import Rhino.Geometry as rg
-from timber_framing_generator.config.framing import PlatePosition, FRAMING_PARAMS
-from timber_framing_generator.config.units import convert_from_feet, ProjectUnits
-from timber_framing_generator.framing_elements.plate_parameters import PlateParameters
+from src.timber_framing_generator.config.framing import PlatePosition, FRAMING_PARAMS
+from src.timber_framing_generator.config.units import convert_from_feet, ProjectUnits
+from src.timber_framing_generator.framing_elements.plate_parameters import PlateParameters
 
 
 class PlateGeometry:

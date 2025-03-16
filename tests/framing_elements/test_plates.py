@@ -18,14 +18,14 @@ import unittest
 from typing import List, Dict, Union, Optional, Any
 
 # Import the necessary modules and classes
-from timber_framing_generator.framing_elements.location_data import (
+from src.timber_framing_generator.framing_elements.location_data import (
     get_plate_location_data,
 )
-from timber_framing_generator.config.framing import PlatePosition
-from timber_framing_generator.framing_elements.plate_parameters import PlateLayerConfig
-from timber_framing_generator.framing_elements.plate_parameters import PlateParameters
-from timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
-from timber_framing_generator.framing_elements.plates import create_plates
+from src.timber_framing_generator.config.framing import PlatePosition
+from src.timber_framing_generator.framing_elements.plate_parameters import PlateLayerConfig
+from src.timber_framing_generator.framing_elements.plate_parameters import PlateParameters
+from src.timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
+from src.timber_framing_generator.framing_elements.plates import create_plates
 
 
 class TestPlateSystem:

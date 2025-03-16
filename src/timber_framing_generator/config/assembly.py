@@ -8,7 +8,7 @@ All dimensions are stored in project units (configurable through units.py).
 
 from dataclasses import dataclass
 from typing import Dict, Any, Callable
-from timber_framing_generator.utils.units import (
+from src.timber_framing_generator.utils.units import (
     ProjectUnits,
     convert_to_feet,
     convert_from_feet,

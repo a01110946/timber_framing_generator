@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
 import math
-from timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS
 
 # Ensure FRAMING_PARAMS includes the min_cripple_length parameter:
 # "min_cripple_length": 6.0/12,  # Minimum length for header cripples (6 inches in feet)

@@ -10,6 +10,7 @@ from api.utils.auth import get_api_key
 from api.utils.db import check_supabase_connection
 from api.endpoints.debug import debug_router
 from api.endpoints.walls import router as walls_router
+from api.endpoints.speckle import router as speckle_router
 from typing import Dict
 
 # Set up logging
@@ -216,6 +217,13 @@ app.include_router(
 logger.info("Included walls router with prefix /walls")
 
 app.include_router(
+    speckle_router,
+    prefix="/speckle",
+    tags=["Speckle"],
+    dependencies=[Depends(get_api_key)]
+)
+
+app.include_router(
     debug_router,
     prefix="/debug",
     tags=["Debugging"],
@@ -231,10 +239,6 @@ async def debug_config():
         "api_key_set": bool(os.environ.get("API_KEY")), 
         "app_version": "1.0.1"  # Increment this to confirm deployment
     }
-
-# In api/main.py (add at the end)
-from api.endpoints.debug import debug_router
-app.include_router(debug_router, prefix="/debug", tags=["Debug"])
 
 # Log completion
 logger.info("==== API INITIALIZATION COMPLETE ====")

@@ -8,11 +8,11 @@ installed between vertical studs to provide lateral support, prevent stud rotati
 add structural rigidity, and provide nailing surfaces for wall finishes.
 
 This module handles the calculation and creation of row blocking geometry based on
-stud positions and configuration parameters.
+cell decomposition and stud positions.
 """
 
 import sys
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import math
 import Rhino.Geometry as rg
 
@@ -30,69 +30,109 @@ from src.timber_framing_generator.framing_elements.blocking_parameters import (
 
 class RowBlockingGenerator:
     """
-    Generates row blocking elements between studs.
+    Generates row blocking elements between studs based on cell decomposition.
     
     Row blocking consists of horizontal members installed between studs to provide
-    lateral support and prevent stud rotation. This class takes stud positions and
-    wall data to calculate appropriate blocking positions and generate the geometry.
+    lateral support and prevent stud rotation. This class uses the cell system to
+    properly place blocking elements within appropriate spatial boundaries.
     
     Attributes:
-        wall_data: Dictionary with wall information
-        studs: List of stud geometries
+        wall_data: Dictionary with wall information including cells
+        stud_positions: Dictionary of stud positions by cell type
         blocking_params: Parameters for blocking configuration
-        debug_geometry: Storage for debug visualization (optional)
+        debug_geometry: Storage for debug visualization
     """
     
-    def __init__(self, wall_data: Dict[str, Any], studs: List[rg.Brep] = None, framing_config: Dict[str, Any] = None):
+    def __init__(
+        self, 
+        wall_data: Dict[str, Any], 
+        studs: Optional[List[Any]] = None, 
+        king_studs: Optional[List[Any]] = None, 
+        trimmers: Optional[List[Any]] = None,
+        header_cripples: Optional[List[Any]] = None,
+        sill_cripples: Optional[List[Any]] = None,
+        blocking_pattern: Optional[str] = None,
+        include_blocking: Optional[bool] = None,
+        block_spacing: Optional[float] = None,
+        first_block_height: Optional[float] = None
+    ) -> None:
         """
-        Initialize row blocking generator with wall data and framing config.
+        Initialize the row blocking generator.
         
         Args:
-            wall_data: Dictionary with wall geometry and parameter data
-            studs: Optional list of stud Brep geometries to determine stud positions
-            framing_config: Optional override framing configuration
+            wall_data: Dictionary containing wall configuration data
+            studs: List of standard studs
+            king_studs: List of king studs
+            trimmers: List of trimmer studs
+            header_cripples: List of header cripple studs
+            sill_cripples: List of sill cripple studs
+            blocking_pattern: Pattern for blocking (inline, staggered, etc.)
+            include_blocking: Flag to enable/disable blocking
+            block_spacing: Spacing between blocks in feet
+            first_block_height: Height of first block row in feet
         """
         self.wall_data = wall_data
-        self.studs = studs or []
-        self.wall_height = wall_data.get('wall_top_elevation', 0) - wall_data.get('wall_base_elevation', 0)
+        self.wall_base_elevation = wall_data.get("wall_base_elevation", 0)
+        self.wall_top_elevation = wall_data.get("wall_top_elevation", 0)
         
-        # Get local framing configuration (provided or from defaults)
-        self.framing_config = framing_config if framing_config else {}
+        # Store the provided framing elements
+        self.studs = studs or []
+        self.king_studs = king_studs or []
+        self.trimmers = trimmers or []
+        self.header_cripples = header_cripples or []
+        self.sill_cripples = sill_cripples or []
         
         # Initialize blocking parameters
         self.blocking_params = BlockingParameters()
         
-        # Explicitly handle blocking pattern conversion if it's a string
-        if framing_config and 'blocking_pattern' in framing_config:
-            pattern_value = framing_config['blocking_pattern']
-            print(f"Row blocking received pattern: {pattern_value}, type: {type(pattern_value)}")
-            
-            if isinstance(pattern_value, str):
-                pattern_str = pattern_value.lower().strip()
-                if pattern_str == "staggered":
+        # Explicitly handle blocking pattern conversion
+        if blocking_pattern is not None:
+            if isinstance(blocking_pattern, str):
+                print(f"Row blocking received pattern: {blocking_pattern}, type: {type(blocking_pattern)}")
+                
+                pattern_str = blocking_pattern.upper().strip()
+                if pattern_str == "STAGGERED":
                     self.blocking_params.pattern = BlockingPattern.STAGGERED
                     print(f"Explicitly set pattern to STAGGERED")
                 else:
                     self.blocking_params.pattern = BlockingPattern.INLINE
                     print(f"Explicitly set pattern to INLINE")
+            else:
+                self.blocking_params.pattern = blocking_pattern
         
-        # Override default parameters if config provided
-        if framing_config:
-            for key, value in framing_config.items():
-                if hasattr(self.blocking_params, key) and key != 'blocking_pattern':
-                    setattr(self.blocking_params, key, value)
-                    print(f"Set blocking param {key} = {value}")
+        # Override specific parameters if provided
+        if include_blocking is not None:
+            self.blocking_params.include_blocking = include_blocking
+            print(f"Set blocking param include_blocking = {include_blocking}")
+            
+        if block_spacing is not None:
+            self.blocking_params.block_spacing = block_spacing
+            print(f"Set blocking param block_spacing = {block_spacing}")
+            
+        if first_block_height is not None:
+            self.blocking_params.first_block_height = first_block_height
+            print(f"Set blocking param first_block_height = {first_block_height}")
         
-        # Initialize stud positions (empty if no studs provided)
-        self.stud_positions = []
-        if self.studs:
-            self.stud_positions = self._extract_stud_positions()
+        # Initialize stud positions dictionary
+        self.stud_positions = {}
         
         # Get wall and block profiles
         self.wall_profile = get_profile_for_wall_type(wall_data.get("wall_type", "2x4"))
         self.block_profile_name = self.blocking_params.get_block_profile(self.wall_profile.name)
         self.block_profile = PROFILES.get(self.block_profile_name, self.wall_profile)
         
+        # Try to get blocking height thresholds from config, otherwise use defaults
+        self.blocking_height_threshold_1 = FRAMING_PARAMS.get("blocking_row_height_threshold_1", 48/12)  # 48 inches in feet
+        self.blocking_height_threshold_2 = FRAMING_PARAMS.get("blocking_row_height_threshold_2", 96/12)  # 96 inches in feet
+        
+        # Calculate minimum cell height for blocking from profile or default
+        try:
+            dims = self.block_profile.get_dimensions()
+            self.blocking_min_height = dims["width"] * 3  # Use block width (vertical dimension) * 3
+        except (AttributeError, KeyError):
+            # Default to 3x nominal width of framing (e.g., 4.5" for 2x4)
+            self.blocking_min_height = 4.5/12 * 3  # 13.5 inches in feet
+            
         # Storage for debug geometry
         self.debug_geometry = {
             "points": [],
@@ -101,119 +141,59 @@ class RowBlockingGenerator:
             "paths": []
         }
         
-    def set_stud_positions(self, studs: List[rg.Brep] = None, positions: List[float] = None) -> None:
+    def set_stud_positions(self, stud_positions: Dict[str, List[float]]) -> None:
         """
-        Set or update the stud positions for blocking.
+        Set or update the stud positions by cell type.
         
         Args:
-            studs: List of stud Brep geometries to determine stud positions
-            positions: Option to directly provide precalculated U-coordinate positions
-                      Takes precedence over studs if both are provided
+            stud_positions: Dictionary mapping cell IDs to stud position lists
         """
-        if positions is not None and len(positions) > 0:
-            # Use provided positions directly
-            self.stud_positions = sorted(positions)
-            print(f"Using {len(self.stud_positions)} provided stud positions")
-        elif studs is not None:
-            # Extract positions from stud geometries
-            self.studs = studs
-            self.stud_positions = self._extract_stud_positions()
+        if stud_positions is not None:
+            self.stud_positions = stud_positions
+            print(f"Updated stud positions: cells={len(self.stud_positions.keys())}")
+            for cell_id, positions in self.stud_positions.items():
+                print(f"  Cell {cell_id}: {len(positions)} studs")
         else:
-            # No valid input provided
-            print("Warning: No stud data or positions provided")
-            self.stud_positions = []
-            
-        print(f"Updated stud positions: {len(self.stud_positions)} studs found")
-    
-    def _extract_stud_positions(self) -> List[float]:
-        """
-        Extract U-coordinates of studs along the wall.
-        
-        Returns:
-            List of U-coordinates (along wall length) where studs are positioned
-        """
-        positions = []
-        base_plane = self.wall_data.get("base_plane")
-        
-        if not base_plane or not isinstance(base_plane, rg.Plane):
-            raise ValueError("Wall data must contain a valid base_plane")
-        
-        for stud in self.studs:
-            if not stud:
-                continue
-                
-            # Get the center point of the stud
-            if hasattr(stud, "GetBoundingBox"):
-                bbox = stud.GetBoundingBox(True)
-                center = (bbox.Min + bbox.Max) / 2.0
-                
-                # Project to U coordinate on base plane
-                u_coord = self._project_point_to_u_coordinate(center, base_plane)
-                positions.append(u_coord)
-        
-        # Sort positions along the wall
-        positions.sort()
-        return positions
-    
-    def _project_point_to_u_coordinate(
-        self, point: rg.Point3d, base_plane: rg.Plane
-    ) -> float:
-        """
-        Project a 3D point onto the wall's u-axis to get its u-coordinate.
-        
-        Args:
-            point: The 3D point to project
-            base_plane: The wall's base plane
-            
-        Returns:
-            The u-coordinate (distance along wall)
-        """
-        # Get wall direction vector (X axis of the base plane)
-        wall_direction = base_plane.XAxis
-        
-        # Get vector from plane origin to point
-        vector_to_point = point - base_plane.Origin
-        
-        # Project this vector onto the wall direction to get the U coordinate
-        u_coord = rg.Vector3d.Multiply(vector_to_point, wall_direction)
-        
-        print(f"Point: {point}, Wall Origin: {base_plane.Origin}, U-coord: {u_coord}")
-        return u_coord
+            print("Warning: No stud position data provided")
+            self.stud_positions = {}
     
     def generate_blocking(self) -> List[rg.Brep]:
         """
-        Generate row blocking elements for a wall.
+        Generate row blocking elements for a wall based on cell decomposition.
         
         Returns:
-            List of Brep geometries representing blocking
+            List of Brep geometries representing blocking elements
         """
         print("\n===== ROW BLOCKING DIAGNOSTIC INFO =====")
         print(f"Include blocking flag: {self.blocking_params.include_blocking}")
-        print(f"Wall height: {self.wall_height}")
-        print(f"Wall elevations: base={self.wall_data.get('wall_base_elevation')}, top={self.wall_data.get('wall_top_elevation')}")
+        print(f"Wall height: {self.wall_top_elevation - self.wall_base_elevation}")
+        print(f"Wall elevations: base={self.wall_base_elevation}, top={self.wall_top_elevation}")
     
-        # Skip if blocking is disabled or no stud positions
+        # Skip if blocking is disabled
         if not self.blocking_params.include_blocking:
             print("Blocking is disabled, skipping generation")
             return []
         
-        if not self.stud_positions or len(self.stud_positions) < 2:
-            print(f"Not enough stud positions for blocking: {len(self.stud_positions)}")
+        # Get wall cells
+        cells = self.wall_data.get("cells", [])
+        if not cells:
+            print("No cells found in wall data, cannot generate blocking")
+            return []
+            
+        # Get base plane for coordinate transformations
+        base_plane = self.wall_data.get("base_plane")
+        if not base_plane:
+            print("Missing wall base plane, cannot generate blocking")
             return []
         
-        # Calculate heights for blocking rows
-        print(f"\nCalculating block heights for wall height: {self.wall_height}ft")
-        block_heights = self.blocking_params.calculate_block_heights(self.wall_height)
-        
-        # Get block dimensions from profile
+        # Get dimensions for stud width adjustment
         try:
-            # Try to get dimensions from the profile
             dims = self.block_profile.get_dimensions()
             block_width = dims["width"]  # Vertical dimension (usually 1.5" for 2x4)
             block_thickness = dims["thickness"]  # Horizontal dimension (usually 3.5" for 2x4)
             print(f"Block profile dimensions: {dims}")
         except (AttributeError, KeyError) as e:
-            # Fallback to direct attributes if get_dimensions not available or dimensions not found
+            # Fallback to direct attributes if get_dimensions not available
             print(f"Using direct profile attributes - get_dimensions failed: {str(e)}")
             try:
                 # Try nominal_width/nominal_depth
@@ -225,191 +205,678 @@ class RowBlockingGenerator:
                     block_width = self.block_profile.width
                     block_thickness = self.block_profile.depth
                 except AttributeError:
-                    # If all else fails, use default values for 2x4
+                    # Default to 3x nominal width of framing (e.g., 4.5" for 2x4)
                     print("WARNING: Could not determine block dimensions, using defaults for 2x4")
                     block_width = 1.5 / 12.0  # 1.5 inches in feet
                     block_thickness = 3.5 / 12.0  # 3.5 inches in feet
-        
+                    
         print(f"Block profile: {self.block_profile_name}, width: {block_width}, thickness: {block_thickness}")
         
-        # Show stud information
-        print(f"Number of studs: {len(self.stud_positions)}")
-        print(f"Stud positions: {self.stud_positions}")
-
-        # Get pattern and make sure it's properly set (debugging)
-        print(f"Blocking pattern: {self.blocking_params.pattern}")
-        print(f"Blocking pattern type: {type(self.blocking_params.pattern)}")
-        if self.framing_config and 'blocking_pattern' in self.framing_config:
-            print(f"Config blocking pattern: {self.framing_config['blocking_pattern']}")
+        # Get stud width for adjusting block lengths
+        stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)  # Default to 1.5 inches in feet
+            
+        # Store all generated blocks
+        all_blocks = []
         
-        # Get wall base plane
-        base_plane = self.wall_data.get("base_plane")
-        if not base_plane:
-            print("Missing wall base plane, cannot generate blocking")
-            return []
-    
-        blocks = []
-        blocks_at_height = {}  # Keep track of blocks created at each height
-    
-        # Generate blocking rows at each height
-        for height_index, height in enumerate(block_heights):
-            print(f"\nProcessing blocking row at height: {height}")
-            blocks_at_height[height] = 0  # Initialize counter for this height
-                
-            # For each pair of adjacent studs, create a block between them
-            for i in range(len(self.stud_positions) - 1):
-                start_stud_idx = i
-                end_stud_idx = i + 1
-                
-                # For staggered pattern, skip every other block in alternating rows
-                if (self.blocking_params.pattern == BlockingPattern.STAGGERED and 
-                    ((height_index % 2 == 0 and i % 2 == 1) or 
-                     (height_index % 2 == 1 and i % 2 == 0))):
-                    print(f"  Skipping block between studs at {self.stud_positions[start_stud_idx]} and {self.stud_positions[end_stud_idx]} (staggered pattern)")
+        # First, try to use standard cells for blocking
+        standard_cells_successful = False
+        
+        # Process header cripples and assign them to cells
+        print("\nProcessing header cripples:")
+        header_cripple_count = len(self.header_cripples)
+        print(f"Total header cripples found: {header_cripple_count}")
+        
+        for i, cripple in enumerate(self.header_cripples):
+            try:
+                # Get the bounding box of the cripple
+                bbox = cripple.GetBoundingBox(True)
+                if not bbox:
+                    print(f"  Header Cripple {i+1}: Could not get bounding box")
                     continue
+                    
+                min_pt = bbox.Min
+                max_pt = bbox.Max
                 
-                start_u = self.stud_positions[start_stud_idx]
-                end_u = self.stud_positions[end_stud_idx]
-                span = end_u - start_u
+                # Get the u-coordinate (position along wall length)
+                u_coord = self._project_point_to_u_coordinate(min_pt, base_plane)
+                print(f"  Header Cripple {i+1}: u-coordinate = {u_coord:.4f}, height range: {min_pt.Z:.4f} to {max_pt.Z:.4f}")
                 
-                print(f"  Creating block between studs at {start_u} and {end_u} (span: {span})")
+                # Find the HCC cell this cripple belongs to
+                assigned = False
+                for cell in cells:
+                    cell_id = cell.get("cell_id", "")
+                    cell_type = cell.get("cell_type", "")
+                    
+                    # Only process HeaderCrippleCells
+                    if cell_type != "HCC":
+                        continue
+                        
+                    # Get cell bounds directly from cell data
+                    u_start = cell.get("u_start", 0)
+                    u_end = cell.get("u_end", 0)
+                    
+                    # Check if cripple position is within cell bounds with a small tolerance
+                    if u_start - 0.1 <= u_coord <= u_end + 0.1:
+                        # Initialize the list for this cell if not already done
+                        if cell_id not in self.stud_positions:
+                            self.stud_positions[cell_id] = []
+                            
+                        # Add the cripple position to this cell
+                        self.stud_positions[cell_id].append(u_coord)
+                        print(f"    Assigned header cripple at position {u_coord:.4f} to cell {cell_id} (u_start={u_start}, u_end={u_end})")
+                        assigned = True
                 
-                # Create the actual block geometry
-                block = self._create_block_geometry(
-                    base_plane, 
-                    start_u,
-                    end_u,
-                    height, 
+                if not assigned:
+                    print(f"    WARNING: Could not assign header cripple at position {u_coord:.4f} to any HCC cell")
+            except Exception as e:
+                print(f"  Error processing header cripple {i+1}: {str(e)}")
+        
+        # Process sill cripples and assign them to cells
+        print("\nProcessing sill cripples:")
+        sill_cripple_count = len(self.sill_cripples)
+        print(f"Total sill cripples found: {sill_cripple_count}")
+        
+        for i, cripple in enumerate(self.sill_cripples):
+            try:
+                # Get the bounding box of the cripple
+                bbox = cripple.GetBoundingBox(True)
+                if not bbox:
+                    print(f"  Sill Cripple {i+1}: Could not get bounding box")
+                    continue
+                    
+                min_pt = bbox.Min
+                max_pt = bbox.Max
+                
+                # Get the u-coordinate (position along wall length)
+                u_coord = self._project_point_to_u_coordinate(min_pt, base_plane)
+                print(f"  Sill Cripple {i+1}: u-coordinate = {u_coord:.4f}, height range: {min_pt.Z:.4f} to {max_pt.Z:.4f}")
+                
+                # Find the SCC cell this cripple belongs to
+                assigned = False
+                for cell in cells:
+                    cell_id = cell.get("cell_id", "")
+                    cell_type = cell.get("cell_type", "")
+                    
+                    # Only process SillCrippleCells
+                    if cell_type != "SCC":
+                        continue
+                        
+                    # Get cell bounds directly from cell data
+                    u_start = cell.get("u_start", 0)
+                    u_end = cell.get("u_end", 0)
+                    
+                    # Check if cripple position is within cell bounds with a small tolerance
+                    if u_start - 0.1 <= u_coord <= u_end + 0.1:
+                        # Initialize the list for this cell if not already done
+                        if cell_id not in self.stud_positions:
+                            self.stud_positions[cell_id] = []
+                            
+                        # Add the cripple position to this cell
+                        self.stud_positions[cell_id].append(u_coord)
+                        print(f"    Assigned sill cripple at position {u_coord:.4f} to cell {cell_id} (u_start={u_start}, u_end={u_end})")
+                        assigned = True
+                
+                if not assigned:
+                    print(f"    WARNING: Could not assign sill cripple at position {u_coord:.4f} to any SCC cell")
+            except Exception as e:
+                print(f"  Error processing sill cripple {i+1}: {str(e)}")
+        
+        print("\nCompleted processing header and sill cripples")
+        print(f"Total cells with stud positions: {len(self.stud_positions)}")
+        
+        # Generate and return the blocking elements
+        all_blocks = self._generate_row_blocking(self.stud_positions, block_width, block_thickness, base_plane)
+        print(f"Total blocks created: {len(all_blocks)}")
+        print("===== END ROW BLOCKING DIAGNOSTIC INFO =====")
+        return all_blocks
+    
+    def _project_point_to_u_coordinate(self, point: rg.Point3d, base_plane: rg.Plane) -> float:
+        """
+        Project a 3D point onto the wall base plane and get the U coordinate.
+        
+        Args:
+            point: 3D point to project
+            base_plane: Wall base plane
+            
+        Returns:
+            U coordinate along the wall length
+        """
+        try:
+            # Convert world coordinates to a u-coordinate
+            # We need to get the distance from the base plane origin along the X-axis direction
+            
+            # Create vector from plane origin to the point
+            vector_to_point = rg.Vector3d(point - base_plane.Origin)
+            
+            # Project this vector onto the X-axis of the base plane
+            # The dot product gives us the scalar projection
+            u_coordinate = vector_to_point * base_plane.XAxis
+            
+            # Print debug information
+            print(f"DEBUG: Point({point.X:.4f}, {point.Y:.4f}, {point.Z:.4f})")
+            print(f"DEBUG: Plane Origin({base_plane.Origin.X:.4f}, {base_plane.Origin.Y:.4f}, {base_plane.Origin.Z:.4f})")
+            print(f"DEBUG: Plane X-Axis({base_plane.XAxis.X:.4f}, {base_plane.XAxis.Y:.4f}, {base_plane.XAxis.Z:.4f})")
+            print(f"DEBUG: Vector to point({vector_to_point.X:.4f}, {vector_to_point.Y:.4f}, {vector_to_point.Z:.4f})")
+            print(f"DEBUG: Projected u-coordinate: {u_coordinate:.4f}")
+            
+            return u_coordinate
+            
+        except Exception as e:
+            print(f"Error in _project_point_to_u_coordinate: {str(e)}")
+            
+            # Use direct coordinate extraction as fallback
+            try:
+                # Just extract X coordinate (assumes wall is aligned with world X axis)
+                print(f"Using fallback coordinate extraction, point X: {point.X}")
+                return point.X
+            except Exception as e2:
+                print(f"Fallback also failed: {str(e2)}")
+                return 0.0
+    
+    def _process_cripples(self, cells, hcc_cells, scc_cells):
+        """
+        Process header and sill cripples, assigning them to appropriate cells.
+        
+        Args:
+            cells: Dictionary of cells
+            hcc_cells: Output dictionary to store cells with header cripples
+            scc_cells: Output dictionary to store cells with sill cripples
+        """
+        print("\nProcessing header cripples:")
+        header_cripples_found = 0
+        
+        base_plane = self.wall_data.get('base_plane')
+        print(f"Base plane: Origin({base_plane.Origin.X:.4f}, {base_plane.Origin.Y:.4f}, {base_plane.Origin.Z:.4f})")
+        print(f"Base plane X-axis: ({base_plane.XAxis.X:.4f}, {base_plane.XAxis.Y:.4f}, {base_plane.XAxis.Z:.4f})")
+        print(f"Base plane Y-axis: ({base_plane.YAxis.X:.4f}, {base_plane.YAxis.Y:.4f}, {base_plane.YAxis.Z:.4f})")
+        
+        # Process header cripples
+        for hc in self.header_cripples:
+            header_cripples_found += 1
+            
+            # Get the u-coordinate and height range
+            try:
+                # For Brep objects, we need to extract the centerpoint
+                if isinstance(hc, rg.Brep):
+                    # Get the bounding box and use its center point
+                    bbox = hc.GetBoundingBox(True)
+                    hc_point = bbox.Center
+                    print(f"  HC{header_cripples_found} using bounding box center: ({hc_point.X:.4f}, {hc_point.Y:.4f}, {hc_point.Z:.4f})")
+                else:
+                    # Try to use centerline method if available
+                    if hasattr(hc, 'get_centerline_start_point'):
+                        hc_point = hc.get_centerline_start_point()
+                        print(f"  HC{header_cripples_found} using centerline start point")
+                    else:
+                        # Fallback to center of mass if neither available
+                        hc_point = rg.AreaMassProperties.Compute(hc).Centroid
+                        print(f"  HC{header_cripples_found} using centroid: ({hc_point.X:.4f}, {hc_point.Y:.4f}, {hc_point.Z:.4f})")
+            except Exception as e:
+                print(f"  Error getting point for header cripple: {str(e)}")
+                continue
+            
+            print(f"  HC{header_cripples_found} point: ({hc_point.X:.4f}, {hc_point.Y:.4f}, {hc_point.Z:.4f})")
+            
+            # Get the u-coordinate (position along wall length)
+            u_coord = self._project_point_to_u_coordinate(hc_point, base_plane)
+            print(f"  Header Cripple {header_cripples_found}: u-coordinate = {u_coord:.4f}, height range: {hc_point.Z:.4f} to {hc_point.Z:.4f}")
+            
+            # Find the HCC cell this cripple belongs to
+            found_cell = False
+            for cell_key, cell in cells.items():
+                if not cell_key.startswith("HCC_"):
+                    continue
+                    
+                # Extract u-range from cell key (format: HCC_start_end)
+                parts = cell_key.split("_")
+                if len(parts) >= 3:
+                    try:
+                        u_start = float(parts[1])
+                        u_end = float(parts[2])
+                        
+                        # Check if cripple is in this cell's range
+                        if u_start <= u_coord <= u_end:
+                            # Add the u-coordinate to the cell's vertical elements
+                            if 'vertical_elements' not in cell:
+                                cell['vertical_elements'] = []
+                            
+                            # Add as string to match format from framing generator
+                            u_str = f"{u_coord:.4f}"
+                            if u_str not in cell['vertical_elements']:
+                                cell['vertical_elements'].append(u_str)
+                                
+                            # Also add to HCC cells dictionary
+                            hcc_cells[cell_key] = cell
+                            found_cell = True
+                            
+                            print(f"    Assigned header cripple at position {u_coord:.4f} to cell {cell_key}")
+                    except (ValueError, IndexError):
+                        continue
+            
+            if not found_cell:
+                print(f"    WARNING: Could not assign header cripple at position {u_coord:.4f} to any HCC cell")
+        
+        print(f"Total header cripples found: {header_cripples_found}")
+        
+        # Process sill cripples
+        print("\nProcessing sill cripples:")
+        sill_cripples_found = 0
+        
+        for sc in self.sill_cripples:
+            sill_cripples_found += 1
+            
+            # Get the u-coordinate and height range
+            try:
+                # For Brep objects, we need to extract the centerpoint
+                if isinstance(sc, rg.Brep):
+                    # Get the bounding box and use its center point
+                    bbox = sc.GetBoundingBox(True)
+                    sc_point = bbox.Center
+                    print(f"  SC{sill_cripples_found} using bounding box center: ({sc_point.X:.4f}, {sc_point.Y:.4f}, {sc_point.Z:.4f})")
+                else:
+                    # Try to use centerline method if available
+                    if hasattr(sc, 'get_centerline_start_point'):
+                        sc_point = sc.get_centerline_start_point()
+                        print(f"  SC{sill_cripples_found} using centerline start point")
+                    else:
+                        # Fallback to center of mass if neither available
+                        sc_point = rg.AreaMassProperties.Compute(sc).Centroid
+                        print(f"  SC{sill_cripples_found} using centroid: ({sc_point.X:.4f}, {sc_point.Y:.4f}, {sc_point.Z:.4f})")
+            except Exception as e:
+                print(f"  Error getting point for sill cripple: {str(e)}")
+                continue
+            
+            print(f"  SC{sill_cripples_found} point: ({sc_point.X:.4f}, {sc_point.Y:.4f}, {sc_point.Z:.4f})")
+            
+            # Get the u-coordinate (position along wall length)
+            u_coord = self._project_point_to_u_coordinate(sc_point, base_plane)
+            print(f"  Sill Cripple {sill_cripples_found}: u-coordinate = {u_coord:.4f}, height range: {sc_point.Z:.4f} to {sc_point.Z:.4f}")
+            
+            # Find the SCC cell this cripple belongs to
+            found_cell = False
+            for cell_key, cell in cells.items():
+                if not cell_key.startswith("SCC_"):
+                    continue
+                    
+                # Extract u-range from cell key (format: SCC_start_end)
+                parts = cell_key.split("_")
+                if len(parts) >= 3:
+                    try:
+                        u_start = float(parts[1])
+                        u_end = float(parts[2])
+                        
+                        # Check if cripple is in this cell's range
+                        if u_start <= u_coord <= u_end:
+                            # Add the u-coordinate to the cell's vertical elements
+                            if 'vertical_elements' not in cell:
+                                cell['vertical_elements'] = []
+                            
+                            # Add as string to match format from framing generator
+                            u_str = f"{u_coord:.4f}"
+                            if u_str not in cell['vertical_elements']:
+                                cell['vertical_elements'].append(u_str)
+                                
+                            # Also add to SCC cells dictionary
+                            scc_cells[cell_key] = cell
+                            found_cell = True
+                            
+                            print(f"    Assigned sill cripple at position {u_coord:.4f} to cell {cell_key}")
+                    except (ValueError, IndexError):
+                        continue
+            
+            if not found_cell:
+                print(f"    WARNING: Could not assign sill cripple at position {u_coord:.4f} to any SCC cell")
+        
+        print(f"Total sill cripples found: {sill_cripples_found}")
+        print(f"Completed processing header and sill cripples")
+    
+    def _generate_row_blocking(self, cells, block_width, block_thickness, base_plane):
+        """
+        Generate row blocking elements for the given cells.
+        
+        Args:
+            cells: Dictionary of cells with vertical elements
+            block_width: Width of blocking elements
+            block_thickness: Thickness of blocking elements
+            base_plane: Base plane of the wall
+            
+        Returns:
+            List of row blocking Brep elements
+        """
+        blocks = []
+        include_blocking = self.blocking_params.include_blocking
+        if not include_blocking:
+            print("Blocking is disabled via parameters")
+            return blocks
+        
+        # Get blocking heights based on wall height
+        wall_height = self.wall_top_elevation - self.wall_base_elevation
+        print(f"Wall height: {wall_height}")
+        print(f"Wall elevations: base={self.wall_base_elevation}, top={self.wall_top_elevation}")
+        
+        # Get block heights from pattern or calculate them
+        if self.blocking_params.first_block_height:
+            first_block_height = self.blocking_params.first_block_height
+            block_heights = [first_block_height]
+            
+            # If wall is higher than twice the first block height, add additional blocks
+            remaining_height = wall_height - first_block_height
+            spacing = self.blocking_params.block_spacing
+            
+            if remaining_height > spacing:
+                num_additional_blocks = int(remaining_height / spacing)
+                for i in range(num_additional_blocks):
+                    block_heights.append(first_block_height + spacing * (i + 1))
+        else:
+            # Default to 1/3 and 2/3 of wall height
+            block_heights = [wall_height / 3, 2 * wall_height / 3]
+        
+        print(f"Block profile dimensions: {{'thickness': {block_thickness}, 'width': {block_width}}}")
+        print(f"Block profile: 2x4, width: {block_width}, thickness: {block_thickness}")
+        print(f"Calculated block heights: {block_heights}")
+        
+        # Process header and sill cripples
+        hcc_cells = {}
+        scc_cells = {}
+        self._process_cripples(cells, hcc_cells, scc_cells)
+        
+        # For each cell type, create blocks between studs
+        cells_with_studs = 0
+        for cell_key, stud_positions in cells.items():
+            # Skip cells without stud positions
+            if not stud_positions:
+                continue
+            
+            print(f"Processing cell {cell_key} with {len(stud_positions)} vertical elements")
+            cells_with_studs += 1
+            
+            # Create a cell dictionary with the required structure
+            cell_dict = {
+                'vertical_elements': stud_positions,
+                'cell_id': cell_key
+            }
+            
+            blocks_in_cell = self._create_blocking_for_cell(
+                cell_dict, 
+                block_heights, 
+                block_thickness, 
+                block_width,
+                base_plane
+            )
+            blocks.extend(blocks_in_cell)
+        
+        print(f"Total cells with stud positions: {cells_with_studs}")
+        print(f"Total blocks created: {len(blocks)}")
+        return blocks
+    
+    def _create_blocking_for_cell(self, cell, block_heights, block_thickness, block_width, base_plane):
+        """
+        Create blocking elements for a single cell.
+        
+        Args:
+            cell: Dictionary with cell data
+            block_heights: List of heights for blocking elements
+            block_thickness: Thickness of blocking elements
+            block_width: Width of blocking elements
+            base_plane: Base plane of the wall
+            
+        Returns:
+            List of blocking Brep elements
+        """
+        blocks = []
+        
+        # Extract vertical elements (stud positions)
+        # Sometimes these are stored as strings, so convert to floats
+        vertical_elements = cell.get('vertical_elements', [])
+        
+        # Try to handle both list and string formats
+        stud_positions = []
+        for pos in vertical_elements:
+            try:
+                # Handle string representation
+                if isinstance(pos, str):
+                    stud_positions.append(float(pos))
+                else:
+                    stud_positions.append(float(pos))
+            except (ValueError, TypeError) as e:
+                print(f"Error converting stud position {pos}: {str(e)}")
+                # Skip this position
+                continue
+        
+        # Sort stud positions
+        stud_positions = sorted(stud_positions)
+        
+        if len(stud_positions) < 2:
+            cell_id = cell.get('cell_id', 'unknown')
+            print(f"Not enough studs in cell {cell_id} to create blocking. Found {len(stud_positions)} positions.")
+            return blocks  # Need at least 2 studs to create blocking
+        
+        # Create blocking between adjacent studs
+        for i in range(len(stud_positions) - 1):
+            left_stud_pos = stud_positions[i]
+            right_stud_pos = stud_positions[i + 1]
+            
+            # Skip if studs are too close
+            if right_stud_pos - left_stud_pos < 0.5:  # Minimum 6" between studs
+                continue
+            
+            # Create a block at each height
+            for block_height in block_heights:
+                # Convert from feet to actual height
+                block_center_z = self.wall_base_elevation + block_height
+                
+                # Create center point for the block
+                center_u = (left_stud_pos + right_stud_pos) / 2
+                center_point = self._create_point_at_u_coordinate(
+                    center_u, block_center_z, base_plane
+                )
+                
+                # Calculate length (span between studs minus stud width)
+                block_length = right_stud_pos - left_stud_pos - 0.125
+                
+                # Create the block
+                block = self._create_block_brep(
+                    center_point, 
+                    block_length, 
                     block_width, 
-                    block_thickness
+                    block_thickness,
+                    base_plane
                 )
                 
                 if block:
                     blocks.append(block)
-                    blocks_at_height[height] += 1
-                    print(f"  Added block at height {height} between studs {start_stud_idx} and {end_stud_idx}")
-                else:
-                    print(f"  Failed to create block at height {height} between studs {start_stud_idx} and {end_stud_idx}")
-                    
-            print(f"Created {blocks_at_height[height]} blocks at height {height}")
+                    print(f"Created block between studs at {left_stud_pos:.4f} and {right_stud_pos:.4f} at height {block_height:.4f}")
         
-        print(f"Total blocks created: {len(blocks)}")
-        print("===== END ROW BLOCKING DIAGNOSTIC INFO =====")
         return blocks
-    
-    def _create_block_geometry(
-        self,
-        base_plane: rg.Plane,
-        start_u: float,
-        end_u: float,
-        height: float,
-        width: float, 
-        thickness: float,
-    ) -> Optional[rg.Brep]:
+        
+    def _create_point_at_u_coordinate(self, u_coordinate, z_coordinate, base_plane):
         """
-        Create the 3D geometry for a single block.
-
+        Create a 3D point at the given U and Z coordinates.
+        
         Args:
+            u_coordinate: U coordinate along the wall
+            z_coordinate: Z coordinate (height)
             base_plane: Base plane of the wall
-            start_u: U-coordinate of start stud centerline
-            end_u: U-coordinate of end stud centerline
-            height: Height from the base of the wall to the block centerline
-            width: Width of the blocking element (usually the nominal height)
-            thickness: Thickness of the blocking element (usually the nominal width)
-
+            
         Returns:
-            Brep representing the blocking element or None if creation failed
+            3D point
         """
         try:
-            # Calculate block center and length
-            center_u = (start_u + end_u) / 2
-            length = abs(end_u - start_u)
+            # Start at the origin of the base plane
+            point = rg.Point3d(base_plane.Origin)
             
-            # Get wall base elevation from wall data
-            wall_base_elevation = self.wall_data.get('wall_base_elevation', 0)
+            # Move along the X axis of the base plane by u_coordinate
+            x_vector = rg.Vector3d(base_plane.XAxis)
+            x_vector *= u_coordinate
+            point += x_vector
             
-            # Calculate the center point of the block in world coordinates
-            block_origin_pt = base_plane.PointAt(center_u, 0)
+            # Move along the Z axis by z_coordinate
+            z_vector = rg.Vector3d(0, 0, 1)  # World Z axis
+            z_vector *= z_coordinate
+            point += z_vector
             
-            # Adjust the height to be relative to wall base
-            absolute_height = wall_base_elevation + height
-            
-            # Create a 3D point at the center of the block
-            block_origin = rg.Point3d(block_origin_pt.X, block_origin_pt.Y, absolute_height)
-            
-            # Create vectors for the block orientation
-            # X axis is along the wall length (U direction)
-            x_axis = base_plane.XAxis
-            
-            # Y axis is the vertical direction (up)
-            y_axis = base_plane.YAxis
-            
-            # Z axis is perpendicular to the wall (outward/inward)
-            z_axis = base_plane.ZAxis
-            
-            # Create the block plane at the center of the block
-            block_plane = rg.Plane(block_origin, x_axis, y_axis)
-            
-            # Store this plane for debugging
-            self.debug_geometry["planes"].append(block_plane)
-            
-            # Get stud width for adjusting the block length
-            stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)  # Default to 1.5 inches in feet
-            
-            # Calculate the sweep path (will stretch between studs)
-            # Adjust for stud width to make block fit between inner faces of studs
-            adjusted_length = length - stud_width
-            
-            # Create path curve in the block plane
-            # The path runs along the X axis of the block plane (between studs)
-            path_start = block_plane.PointAt(-adjusted_length/2, 0)
-            path_end = block_plane.PointAt(adjusted_length/2, 0)
-            path_curve = rg.LineCurve(path_start, path_end)
-            
-            # Store the path for debugging
-            self.debug_geometry["paths"].append(path_curve.DuplicateCurve())
-            
-            # Create cross-section profile for the block
-            # The profile is perpendicular to the path, with height along Y and thickness along Z
-            profile_plane = rg.Plane(
-                path_start,  # Start at beginning of path
-                z_axis,      # Y axis is vertical (up)
-                y_axis       # Z axis is perpendicular to wall
-            )
-            
-            # Create rectangle for profile - in the Y-Z plane
-            # Width is vertical dimension, thickness is through-wall dimension
-            profile_rect = rg.Rectangle3d(profile_plane, width, thickness)
-            profile_curve = profile_rect.ToNurbsCurve()
-            
-            # Center the profile vertically on the path
-            # Move the profile down by half its height so it's centered on the path
-            translation_vector = rg.Vector3d(base_plane.ZAxis * -width / 2)
-            
-            translation = rg.Transform.Translation(translation_vector)
-            profile_curve.Transform(translation)
-            
-            # Store the profile for debugging
-            self.debug_geometry["profiles"].append(profile_curve.DuplicateCurve())
-            
-            # Create the block geometry by sweeping the profile along the path
-            sweep = rg.SweepOneRail()
-            sweep.AngleToleranceRadians = 0.01
-            sweep.ClosedSweep = False
-            sweep.SweepTolerance = 0.01
-            
-            # Perform the sweep operation
-            breps = sweep.PerformSweep(path_curve, [profile_curve])
-            
-            if breps and len(breps) > 0:
-                self.debug_geometry["points"].append(block_origin)
-                return breps[0]
-            else:
-                print(f"  Error in sweep operation - no breps created")
-                return None
-                
+            return point
         except Exception as e:
-            print(f"Error creating block geometry: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
+            print(f"Error creating point at u-coordinate: {str(e)}")
+            
+            # Use direct coordinate extraction as fallback
+            try:
+                # Just extract X coordinate (assumes wall is aligned with world X axis)
+                print(f"Using fallback coordinate extraction, point X: {u_coordinate}")
+                return rg.Point3d(u_coordinate, 0, z_coordinate)
+            except Exception as e2:
+                print(f"Fallback also failed: {str(e2)}")
+                return None
+            
+    def _create_block_brep(self, center_point, length, width, thickness, base_plane):
+        """
+        Create a block Brep at the specified location.
+        
+        Args:
+            center_point: Center point of the block
+            length: Length of the block (along wall)
+            width: Width of the block (perpendicular to wall)
+            thickness: Thickness of the block (height)
+            base_plane: Base plane of the wall
+            
+        Returns:
+            Block Brep
+        """
+        try:
+            # Create a box centered at the point
+            half_length = length / 2
+            half_width = width / 2
+            half_thickness = thickness / 2
+            
+            # Create transform from world to wall coordinates
+            plane_at_center = rg.Plane(center_point, base_plane.XAxis, base_plane.YAxis)
+            
+            # Create the box
+            block = rg.Box(plane_at_center, 
+                          rg.Interval(-half_length, half_length),
+                          rg.Interval(-half_width, half_width),
+                          rg.Interval(-half_thickness, half_thickness))
+            
+            return block.ToBrep()
+        except Exception as e:
+            print(f"Error creating block brep: {str(e)}")
             return None
+
+    def generate(self) -> List[rg.Brep]:
+        """
+        Generate row blocking elements based on configured cells and studs.
+        
+        Returns:
+            List of row blocking Brep elements
+        """
+        blocks = []
+        include_blocking = self.blocking_params.include_blocking
+        if not include_blocking:
+            print("Blocking is disabled via parameters")
+            return blocks
+            
+        # Get wall height
+        wall_height = self.wall_top_elevation - self.wall_base_elevation
+        print(f"Wall height: {wall_height}")
+        print(f"Wall elevations: base={self.wall_base_elevation}, top={self.wall_top_elevation}")
+        
+        # Get block heights from pattern or calculate them
+        if self.blocking_params.first_block_height:
+            first_block_height = self.blocking_params.first_block_height
+            block_heights = [first_block_height]
+            
+            # If wall is higher than twice the first block height, add additional blocks
+            remaining_height = wall_height - first_block_height
+            spacing = self.blocking_params.block_spacing
+            
+            if remaining_height > spacing:
+                num_additional_blocks = int(remaining_height / spacing)
+                for i in range(num_additional_blocks):
+                    block_heights.append(first_block_height + spacing * (i + 1))
+        else:
+            # Default to 1/3 and 2/3 of wall height
+            block_heights = [wall_height / 3, 2 * wall_height / 3]
+        
+        # Get blocking pattern
+        pattern = self.blocking_params.pattern
+        
+        # Get base plane from wall data - always use this for consistency
+        base_plane = self.wall_data.get("base_plane")
+        if base_plane is None:
+            print("No base plane found in wall data, using WorldXY")
+            base_plane = rg.Plane.WorldXY
+        
+        # Get dimensions for stud width adjustment
+        try:
+            dims = self.block_profile.get_dimensions()
+            block_width = dims["width"]  # Vertical dimension (usually 1.5" for 2x4)
+            block_thickness = dims["thickness"]  # Horizontal dimension (usually 3.5" for 2x4)
+            print(f"Using block profile dimensions: {dims}")
+        except (AttributeError, KeyError) as e:
+            # Fallback to direct attributes if get_dimensions not available
+            print(f"Using direct profile attributes - get_dimensions failed: {str(e)}")
+            try:
+                # Try nominal_width/nominal_depth
+                block_width = self.block_profile.nominal_width
+                block_thickness = self.block_profile.nominal_depth
+            except AttributeError:
+                # Last resort - try width/depth directly
+                try:
+                    block_width = self.block_profile.width
+                    block_thickness = self.block_profile.depth
+                except AttributeError:
+                    # Default to standard 2x4 dimensions
+                    print("WARNING: Could not determine block dimensions, using defaults for 2x4")
+                    block_width = 1.5 / 12.0  # 1.5 inches in feet
+                    block_thickness = 3.5 / 12.0  # 3.5 inches in feet
+            
+        print(f"Using block dimensions: width={block_width}, thickness={block_thickness}")
+            
+        if pattern == BlockingPattern.STAGGERED:
+            print("Using STAGGERED blocking pattern")
+            # Create cells dictionary from stud_positions
+            cells_dict = {}
+            for cell_id, positions in self.stud_positions.items():
+                if positions:  # Only include cells with stud positions
+                    cells_dict[cell_id] = positions
+            
+            if cells_dict:
+                blocks = self._create_staggered_blocking(cells_dict, block_heights, block_thickness, block_width, base_plane)
+            else:
+                print("No cells with stud positions found for staggered blocking")
+        elif pattern == BlockingPattern.INLINE:
+            print("Using INLINE blocking pattern")
+            
+            # Check if we have stud positions
+            if self.stud_positions:
+                blocks = self._generate_row_blocking(self.stud_positions, block_width, block_thickness, base_plane)
+            else:
+                print("No stud positions found for inline blocking")
+        else:
+            print(f"Unsupported blocking pattern: {pattern}")
+        
+        print(f"Generated {len(blocks)} blocking elements")
+        return blocks
+    
+    def _create_staggered_blocking(self, cells, block_heights, block_thickness, block_width, base_plane):
+        """
+        Create staggered pattern blocking across cells.
+        
+        Args:
+            cells: Dictionary of cells
+            block_heights: List of block heights
+            block_thickness: Thickness of blocking
+            block_width: Width of blocking
+            base_plane: Base plane for coordinates
+            
+        Returns:
+            List of blocking Brep elements
+        """
+        blocks = []
+        pattern = self.blocking_params.pattern
+        
+        print(f"Creating staggered blocking with pattern: {pattern}")
+        
+        # TODO: Implement staggered blocking pattern
+        
+        return blocks

@@ -7,7 +7,9 @@
       "WebFetch(domain:discourse.mcneel.com)",
       "WebFetch(domain:www.grasshopper3d.com)",
       "WebFetch(domain:www.rhino3d.com)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(git rm:*)"
     ]
   }
 }

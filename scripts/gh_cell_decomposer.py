@@ -26,6 +26,15 @@ import json
 from dataclasses import asdict
 
 # =============================================================================
+# Force Module Reload (CPython 3 in Rhino 8)
+# =============================================================================
+# Clear cached modules to ensure fresh imports when script changes
+_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+for mod in _modules_to_clear:
+    del sys.modules[mod]
+print(f"[RELOAD] Cleared {len(_modules_to_clear)} cached timber_framing_generator modules")
+
+# =============================================================================
 # RhinoCommon Setup
 # =============================================================================
 
@@ -114,14 +123,23 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
     # 1. Create stud cells for regions without openings
     # 2. Create opening cells, header cripple cells, sill cripple cells
 
-    # Debug: Print opening data
+    # Debug: Print opening data with ALL relevant fields
     print(f"\n=== CELL DECOMPOSER DEBUG for {wall_id} ===")
     print(f"  Wall length: {wall_length}, height: {wall_height}")
     print(f"  Openings count: {len(openings)}")
     for idx, op in enumerate(openings):
-        print(f"    Opening {idx}: type={op.get('opening_type', 'unknown')}, "
-              f"u_start={op.get('u_start', 'N/A')}, u_end={op.get('u_end', 'N/A')}, "
-              f"v_start={op.get('v_start', 'N/A')}, v_end={op.get('v_end', 'N/A')}")
+        # Show all fields to diagnose SCC creation issue
+        op_type = op.get('opening_type', 'MISSING')
+        v_start = op.get('v_start', 'MISSING')
+        v_end = op.get('v_end', 'MISSING')
+        sill_height = op.get('sill_height', 'MISSING')
+        print(f"    Opening {idx}:")
+        print(f"      opening_type = '{op_type}'")
+        print(f"      v_start = {v_start}")
+        print(f"      v_end = {v_end}")
+        print(f"      sill_height = {sill_height}")
+        print(f"      SCC condition: v_start > 0 = {v_start > 0 if isinstance(v_start, (int, float)) else 'N/A'}, "
+              f"type == 'window' = {op_type == 'window'}")
 
     if not openings:
         # No openings - single stud cell spanning entire wall

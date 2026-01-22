@@ -31,6 +31,15 @@ from dataclasses import asdict
 from io import StringIO
 
 # =============================================================================
+# Force Module Reload (CPython 3 in Rhino 8)
+# =============================================================================
+# Clear cached modules to ensure fresh imports when script changes
+_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+for mod in _modules_to_clear:
+    del sys.modules[mod]
+print(f"[RELOAD] Cleared {len(_modules_to_clear)} cached timber_framing_generator modules")
+
+# =============================================================================
 # RhinoCommon Setup
 # =============================================================================
 

@@ -2,7 +2,14 @@
 
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
+from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_create_extrusion
 from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+
+# Import our custom logging module
+from ..utils.logging_config import get_logger
+
+# Initialize logger for this module
+logger = get_logger(__name__)
 
 
 class TrimmerGenerator:
@@ -26,11 +33,15 @@ class TrimmerGenerator:
                 - wall_base_elevation: Base elevation of the wall
                 - wall_top_elevation: Top elevation of the wall
         """
+        logger.debug("Initializing TrimmerGenerator")
+        logger.debug(f"Wall data: {wall_data}")
+        
         # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
 
         # Initialize storage for debug geometry
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
+        logger.debug("TrimmerGenerator initialized successfully")
 
     def generate_trimmers(
         self,
@@ -57,6 +68,11 @@ class TrimmerGenerator:
         Returns:
             List of trimmer stud Brep geometries (typically two - left and right)
         """
+        logger.debug("Generating trimmer studs for wall opening")
+        logger.debug(f"Opening data: {opening_data}")
+        logger.debug(f"Plate data: {plate_data}")
+        logger.debug(f"Header bottom elevation: {header_bottom_elevation}")
+        
         try:
             # Extract opening information
             opening_u_start = opening_data.get("start_u_coordinate")
@@ -64,13 +80,15 @@ class TrimmerGenerator:
             opening_height = opening_data.get("rough_height")
             opening_v_start = opening_data.get("base_elevation_relative_to_wall_base")
 
+            logger.debug(f"Opening parameters - u_start: {opening_u_start}, width: {opening_width}, height: {opening_height}, v_start: {opening_v_start}")
+
             if None in (
                 opening_u_start,
                 opening_width,
                 opening_height,
                 opening_v_start,
             ):
-                print("Missing required opening data")
+                logger.warning("Missing required opening data for trimmer generation")
                 return []
 
             # Get essential wall parameters
@@ -78,10 +96,10 @@ class TrimmerGenerator:
 
             # Get bottom elevation from plate boundary data
             bottom_elevation = plate_data.get("boundary_elevation", 0.0)
-            print(f"Using bottom plate elevation: {bottom_elevation}")
+            logger.debug(f"Using bottom plate elevation: {bottom_elevation}")
 
             if base_plane is None:
-                print("No base plane available")
+                logger.warning("No base plane available for trimmer generation")
                 return []
 
             # Calculate trimmer dimensions from framing parameters
@@ -91,6 +109,8 @@ class TrimmerGenerator:
             trimmer_depth = FRAMING_PARAMS.get(
                 "trimmer_depth", 3.5 / 12
             )  # Typically 3.5 inches
+            
+            logger.debug(f"Trimmer dimensions - width: {trimmer_width}, depth: {trimmer_depth}")
 
             # Calculate header bottom elevation if not provided
             opening_v_end = opening_v_start + opening_height
@@ -99,10 +119,12 @@ class TrimmerGenerator:
                 if header_bottom_elevation is not None
                 else opening_v_end
             )
+            logger.debug(f"Calculated header bottom elevation: {header_bottom}")
 
             # Calculate trimmer vertical extent
             bottom_v = bottom_elevation  # Start at bottom plate
             top_v = header_bottom  # End at underside of header
+            logger.debug(f"Trimmer vertical extent - bottom: {bottom_v}, top: {top_v}")
 
             # Calculate horizontal positions with offset from opening edges
             # Typically trimmers are centered at the rough opening edges
@@ -111,12 +133,15 @@ class TrimmerGenerator:
             # Calculate actual u-coordinates for left and right trimmers
             u_left = opening_u_start - trimmer_offset
             u_right = opening_u_start + opening_width + trimmer_offset
+            
+            logger.debug(f"Trimmer horizontal positions - left: {u_left}, right: {u_right}")
 
             # Store trimmer studs
             trimmer_studs = []
 
             # Generate both left and right trimmers
             for u_position in [u_left, u_right]:
+                logger.debug(f"Creating trimmer at u-coordinate: {u_position}")
                 try:
                     # Create the trimmer stud
                     trimmer = self._create_trimmer_geometry(
@@ -130,16 +155,19 @@ class TrimmerGenerator:
 
                     if trimmer is not None:
                         trimmer_studs.append(trimmer)
+                        logger.debug(f"Successfully created trimmer at u={u_position}")
+                    else:
+                        logger.warning(f"Failed to create trimmer at u={u_position}")
                 except Exception as e:
-                    print(f"Error creating trimmer at u={u_position}: {str(e)}")
+                    logger.error(f"Error creating trimmer at u={u_position}: {str(e)}")
 
+            logger.debug(f"Generated {len(trimmer_studs)} trimmer studs")
             return trimmer_studs
 
         except Exception as e:
-            print(f"Error generating trimmers: {str(e)}")
+            logger.error(f"Error generating trimmers: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return []
 
     def _create_trimmer_geometry(
@@ -187,12 +215,11 @@ class TrimmerGenerator:
                     rg.Vector3d.Multiply(base_plane.YAxis, top_v),
                 ),
             )
-
-            # Create the centerline as a curve
-            centerline = rg.LineCurve(start_point, end_point)
-            self.debug_geometry["paths"].append(centerline)
+            self.debug_geometry["points"].extend([start_point, end_point])
+            logger.debug(f"Created trimmer centerline from {start_point} to {end_point}")
 
             # 2. Create a profile plane at the start point
+            # Profile plane is perpendicular to the centerline
             # X axis goes across wall thickness (for width)
             profile_x_axis = base_plane.ZAxis
             # Y axis goes along wall length (for depth)
@@ -200,34 +227,187 @@ class TrimmerGenerator:
 
             profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
             self.debug_geometry["planes"].append(profile_plane)
+            logger.debug("Created profile plane for trimmer cross-section")
 
-            # 3. Create a rectangular profile centered on the plane
-            profile_rect = rg.Rectangle3d(
-                profile_plane,
-                rg.Interval(-depth / 2, depth / 2),
-                rg.Interval(-width / 2, width / 2),
-            )
+            # 3. Create a rectangle for the profile
+            half_width = width / 2
+            half_depth = depth / 2
+            rect_corners = [
+                rg.Point3d(-half_width, -half_depth, 0),  # lower left
+                rg.Point3d(half_width, -half_depth, 0),   # lower right
+                rg.Point3d(half_width, half_depth, 0),    # upper right
+                rg.Point3d(-half_width, half_depth, 0),   # upper left
+            ]
+            logger.debug("Created rectangle corners for trimmer cross-section")
 
-            profile_curve = profile_rect.ToNurbsCurve()
-            self.debug_geometry["profiles"].append(profile_rect)
+            # Transform corners to profile plane
+            transform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, profile_plane)
+            for i, corner in enumerate(rect_corners):
+                corner.Transform(transform)
+                self.debug_geometry["points"].append(corner)
 
-            # 4. Extrude the profile along the centerline path
-            # Calculate the vector from start to end
-            path_vector = rg.Vector3d(end_point - start_point)
+            # Create polygon from corners
+            profile_poly = rg.Polyline([*rect_corners, rect_corners[0]])  # Close the loop
+            profile_curve = profile_poly.ToNurbsCurve()
+            self.debug_geometry["profiles"].append(profile_curve)
+            logger.debug("Transformed rectangle to profile plane")
 
-            # Create the extrusion
-            extrusion = rg.Extrusion.CreateExtrusion(profile_curve, path_vector)
+            # 4. Extrude the profile along the centerline
+            # Calculate direction vector from start to end point
+            direction_vector = rg.Vector3d(end_point - start_point)
+            logger.debug(f"Extrusion vector: ({direction_vector.X}, {direction_vector.Y}, {direction_vector.Z})")
 
-            # Convert to Brep and return
-            if extrusion and extrusion.IsValid:
-                return extrusion.ToBrep().CapPlanarHoles(0.001)
-            else:
-                print("Failed to create valid trimmer extrusion")
-                return None
-
+            try:
+                # Primary method: extrusion
+                brep = safe_create_extrusion(profile_curve, direction_vector)
+                
+                if brep is not None and hasattr(brep, 'IsValid') and brep.IsValid:
+                    logger.debug("Successfully created trimmer Brep using extrusion")
+                    # Check if we need to convert to Brep
+                    if hasattr(brep, 'ToBrep'):
+                        return brep.ToBrep()
+                    else:
+                        return brep
+                else:
+                    logger.warning("Failed to create trimmer Brep from extrusion operation")
+            except Exception as extrusion_error:
+                logger.warning(f"Extrusion error: {str(extrusion_error)}")
+            
+            # Fallback method 1: Try creating a box
+            try:
+                logger.debug("Attempting box creation for trimmer")
+                # Create a box for the trimmer using the dimensions
+                height = safe_get_length(direction_vector)
+                
+                # Handle None or invalid height
+                if height is None or height <= 0:
+                    logger.warning("Could not calculate curve length, using default")
+                    if start_point is not None and end_point is not None:
+                        height = start_point.DistanceTo(end_point)
+                    else:
+                        # Default value as last resort
+                        height = 8.0 / 12.0  # 8 inches in feet
+                        
+                # Ensure we have valid dimensions for the box
+                if half_width is None or half_width <= 0:
+                    half_width = 0.75 / 12.0  # Default 1.5 inches / 2
+                    logger.warning(f"Invalid half_width, using default: {half_width}")
+                
+                if half_depth is None or half_depth <= 0:
+                    half_depth = 1.75 / 12.0  # Default 3.5 inches / 2
+                    logger.warning(f"Invalid half_depth, using default: {half_depth}")
+                
+                # Create a plane at the start point with proper orientation
+                box_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
+                
+                # Create box
+                box = rg.Box(
+                    box_plane,
+                    rg.Interval(-half_width, half_width),
+                    rg.Interval(-half_depth, half_depth),
+                    rg.Interval(0, height)
+                )
+                
+                if box and hasattr(box, 'IsValid') and box.IsValid:
+                    logger.debug("Successfully created trimmer using box")
+                    trimmer_brep = box.ToBrep()
+                    return trimmer_brep
+                else:
+                    logger.warning("Box creation error: Invalid box geometry")
+            except Exception as box_error:
+                logger.warning(f"Box creation error: {str(box_error)}")
+            
+            # Fallback method 2: Try creating a sweep
+            try:
+                logger.debug("Attempting sweep creation for trimmer")
+                
+                # Create line for path
+                if start_point is None or end_point is None:
+                    raise ValueError("Invalid start or end point for sweep")
+                    
+                path_line = rg.Line(start_point, end_point)
+                path_curve = path_line.ToNurbsCurve()
+                
+                if path_curve is None:
+                    raise ValueError("Failed to create path curve")
+                
+                # Create new profile
+                new_profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
+                new_profile = rg.Rectangle3d(
+                    new_profile_plane,
+                    rg.Interval(-half_width, half_width),
+                    rg.Interval(-half_depth, half_depth)
+                )
+                
+                if new_profile is None or not new_profile.IsValid:
+                    raise ValueError("Failed to create profile rectangle")
+                    
+                new_profile_curve = new_profile.ToNurbsCurve()
+                if new_profile_curve is None:
+                    raise ValueError("Failed to convert profile to curve")
+                
+                # Perform sweep
+                sweep = rg.SweepOneRail()
+                sweep.AngleToleranceRadians = 0.1
+                sweep.ClosedSweep = False
+                sweep.SweepTolerance = 0.01
+                
+                breps = sweep.PerformSweep(path_curve, new_profile_curve)
+                
+                if breps and len(breps) > 0 and breps[0].IsValid:
+                    logger.debug("Successfully created trimmer using sweep")
+                    return breps[0]
+                else:
+                    logger.warning("Sweep creation error: Failed to create valid sweep")
+            except Exception as sweep_error:
+                logger.warning(f"Sweep creation error: {str(sweep_error)}")
+            
+            # Final fallback method: Create an emergency box at origin and transform
+            try:
+                logger.debug("Creating emergency fallback for trimmer")
+                
+                # Ensure we have valid values for the dimensions
+                emergency_height = 8.0 / 12.0  # 8 inches in feet
+                if start_point is not None and end_point is not None:
+                    emergency_height = start_point.DistanceTo(end_point)
+                    if emergency_height <= 0:
+                        emergency_height = 8.0 / 12.0
+                        
+                emergency_width = 1.5 / 12.0  # 1.5 inches in feet
+                emergency_depth = 3.5 / 12.0  # 3.5 inches in feet
+                
+                # Create box at origin
+                emergency_box = rg.Box(
+                    rg.Plane.WorldXY,
+                    rg.Interval(-emergency_width/2, emergency_width/2),
+                    rg.Interval(-emergency_depth/2, emergency_depth/2),
+                    rg.Interval(0, emergency_height)
+                )
+                
+                # Transform to correct position if we have start point
+                if start_point is not None:
+                    transform = rg.Transform.Translation(
+                        start_point.X,
+                        start_point.Y,
+                        start_point.Z
+                    )
+                    emergency_box.Transform(transform)
+                
+                emergency_brep = emergency_box.ToBrep()
+                if emergency_brep and hasattr(emergency_brep, 'IsValid') and emergency_brep.IsValid:
+                    logger.warning("Using emergency fallback geometry for trimmer")
+                    return emergency_brep
+                else:
+                    logger.error("Emergency fallback failed: Invalid emergency box")
+            except Exception as emergency_error:
+                logger.error(f"Emergency fallback failed: {str(emergency_error)}")
+            
+            logger.error("All trimmer creation methods failed")
+            return None
+            
         except Exception as e:
-            print(f"Error creating trimmer geometry: {str(e)}")
+            # Main try/except block for the entire function
+            logger.error(f"Error creating trimmer geometry: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None

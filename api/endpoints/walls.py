@@ -3,7 +3,6 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, 
 from fastapi.responses import JSONResponse
 from api.models.wall_models import WallDataInput, WallAnalysisJob
 from api.utils.db import create_job, update_job, get_job, list_jobs
-from api.utils.serialization import create_mock_wall_analysis
 from api.utils.errors import ResourceNotFoundError, handle_exception
 from typing import Dict, List, Any, Optional
 import uuid
@@ -163,10 +162,6 @@ async def process_wall_analysis(job_id: str, wall_data: WallDataInput):
         update_result = update_job(job_id, {"status": "processing"})
         if not update_result:
             logger.error(f"Failed to update job status to 'processing' for job {job_id}")
-        
-        # For MVP - just use mock data
-        logger.info(f"Creating mock analysis result for job {job_id}")
-        result = create_mock_wall_analysis(wall_data)
         
         # Update job with results
         logger.info(f"Updating job {job_id} with analysis results")

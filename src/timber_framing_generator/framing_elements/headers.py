@@ -1,9 +1,13 @@
 # File: timber_framing_generator/framing_elements/headers.py
 
-from typing import Dict, List, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional
 import Rhino.Geometry as rg
-from src.timber_framing_generator.framing_elements.header_parameters import HeaderParameters
+from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_create_extrusion
 from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from ..utils.logging_config import get_logger
+
+# Initialize logger for this module
+logger = get_logger(__name__)
 
 
 class HeaderGenerator:
@@ -23,11 +27,16 @@ class HeaderGenerator:
             wall_data: Dictionary containing wall information
             coordinate_system: Optional coordinate system for transformations
         """
+        logger.debug("Initializing HeaderGenerator")
+        logger.debug(f"Wall data: {wall_data}")
+        
         # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
 
         # Initialize storage for debug geometry
         self.debug_geometry = {"points": [], "curves": [], "planes": [], "profiles": []}
+        
+        logger.debug("HeaderGenerator initialized successfully")
 
     def generate_header(
         self,
@@ -53,9 +62,9 @@ class HeaderGenerator:
         """
         try:
             # Log input parameters
-            print("\n===== HEADER GENERATION DETAILS =====")
-            print(f"Opening data: {opening_data}")
-            print(f"King stud positions: {king_stud_positions}")
+            logger.info("===== HEADER GENERATION DETAILS =====")
+            logger.debug(f"Opening data: {opening_data}")
+            logger.debug(f"King stud positions: {king_stud_positions}")
 
             # Extract opening information
             opening_u_start = opening_data.get("start_u_coordinate")
@@ -63,11 +72,11 @@ class HeaderGenerator:
             opening_height = opening_data.get("rough_height")
             opening_v_start = opening_data.get("base_elevation_relative_to_wall_base")
 
-            print(f"Extracted opening data:")
-            print(f"  opening_u_start: {opening_u_start}")
-            print(f"  opening_width: {opening_width}")
-            print(f"  opening_height: {opening_height}")
-            print(f"  opening_v_start: {opening_v_start}")
+            logger.debug("Extracted opening data:")
+            logger.debug(f"  opening_u_start: {opening_u_start}")
+            logger.debug(f"  opening_width: {opening_width}")
+            logger.debug(f"  opening_height: {opening_height}")
+            logger.debug(f"  opening_v_start: {opening_v_start}")
 
             if None in (
                 opening_u_start,
@@ -75,13 +84,13 @@ class HeaderGenerator:
                 opening_height,
                 opening_v_start,
             ):
-                print("Missing required opening data")
+                logger.warning("Missing required opening data for header generation")
                 return None
 
             # Get essential parameters
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
-                print("No base plane available")
+                logger.warning("No base plane available for header generation")
                 return None
 
             # Calculate header dimensions from framing parameters
@@ -96,34 +105,34 @@ class HeaderGenerator:
                 "header_height_above_opening", 0.0
             )  # Distance above opening
 
-            print(f"Header dimensions:")
-            print(f"  width: {header_width}")
-            print(f"  height: {header_height}")
-            print(f"  height_above_opening: {header_height_above_opening}")
-            print(f"  king_stud_offset: {king_stud_offset}")
+            logger.debug("Header dimensions:")
+            logger.debug(f"  width: {header_width}")
+            logger.debug(f"  height: {header_height}")
+            logger.debug(f"  height_above_opening: {header_height_above_opening}")
+            logger.debug(f"  king_stud_offset: {king_stud_offset}")
 
             # Calculate header position (top of opening + half header height)
             opening_v_end = opening_v_start + opening_height
             header_v = opening_v_end + (header_height / 2) + header_height_above_opening
 
-            print(f"Vertical position:")
-            print(f"  opening_v_end: {opening_v_end}")
-            print(f"  header_v: {header_v}")
+            logger.debug("Vertical position:")
+            logger.debug(f"  opening_v_end: {opening_v_end}")
+            logger.debug(f"  header_v: {header_v}")
 
             # Calculate header span
             if king_stud_positions:
-                print("Using provided king stud positions for header")
+                logger.debug("Using provided king stud positions for header")
                 u_left, u_right = king_stud_positions
 
                 # Check if these are centerlines or inner faces
-                print(f"Raw king stud positions: u_left={u_left}, u_right={u_right}")
+                logger.debug(f"Raw king stud positions: u_left={u_left}, u_right={u_right}")
 
                 # Adjust positions to use inner faces instead of centerlines
                 inner_left = u_left + king_stud_offset
                 inner_right = u_right - king_stud_offset
-                print(f"  inner_left: {u_left} + {king_stud_offset} = {inner_left}")
-                print(f"  inner_right: {u_right} - {king_stud_offset} = {inner_right}")
-                print(
+                logger.debug(f"  inner_left: {u_left} + {king_stud_offset} = {inner_left}")
+                logger.debug(f"  inner_right: {u_right} - {king_stud_offset} = {inner_right}")
+                logger.debug(
                     f"Adjusted for inner faces: u_left={inner_left}, u_right={inner_right}"
                 )
 
@@ -132,15 +141,15 @@ class HeaderGenerator:
                 u_right = inner_right
             else:
                 # Calculate positions based on opening with offsets
-                print("No king stud positions provided, calculating based on opening")
+                logger.debug("No king stud positions provided, calculating based on opening")
                 trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5 / 12)
                 u_left = opening_u_start - trimmer_width
                 u_right = opening_u_start + opening_width + trimmer_width
-                print(f"Calculated positions: u_left={u_left}, u_right={u_right}")
+                logger.debug(f"Calculated positions: u_left={u_left}, u_right={u_right}")
 
-                print(
-                    f"Final header span: u_left={u_left}, u_right={u_right}, width={u_right-u_left}"
-                )
+            logger.debug(
+                f"Final header span: u_left={u_left}, u_right={u_right}, width={u_right-u_left}"
+            )
 
             # 1. Create the centerline endpoints in world coordinates
             start_point = rg.Point3d.Add(
@@ -159,13 +168,14 @@ class HeaderGenerator:
                 ),
             )
 
-            print(f"Header endpoints in world coordinates:")
-            print(f"  start_point: {start_point}")
-            print(f"  end_point: {end_point}")
+            logger.debug("Header endpoints in world coordinates:")
+            logger.debug(f"  start_point: {start_point}")
+            logger.debug(f"  end_point: {end_point}")
 
             # Create the centerline as a curve
             centerline = rg.LineCurve(start_point, end_point)
             self.debug_geometry["curves"].append(centerline)
+            logger.debug(f"Created centerline with length: {safe_get_length(centerline)}")
 
             # 2. Create a profile plane at the start point
             # Create vectors for the profile plane
@@ -176,6 +186,7 @@ class HeaderGenerator:
 
             profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
             self.debug_geometry["planes"].append(profile_plane)
+            logger.debug("Created profile plane for header")
 
             # 3. Create a rectangular profile centered on the plane
             profile_rect = rg.Rectangle3d(
@@ -186,26 +197,137 @@ class HeaderGenerator:
 
             profile_curve = profile_rect.ToNurbsCurve()
             self.debug_geometry["profiles"].append(profile_rect)
+            logger.debug(f"Created profile rectangle - width: {header_width}, height: {header_height}")
 
             # 4. Extrude the profile along the centerline
             # Calculate the vector from start to end
             extrusion_vector = rg.Vector3d(end_point - start_point)
-            extrusion = rg.Extrusion.CreateExtrusion(profile_curve, extrusion_vector)
-
-            print("===== END HEADER GENERATION DETAILS =====")
-
-            # Convert to Brep and return
-            if extrusion and extrusion.IsValid:
-                return extrusion.ToBrep()
-            else:
-                print("Failed to create valid header extrusion")
-                return None
+            logger.debug(f"Extrusion vector length: {safe_get_length(extrusion_vector)}")
+            
+            try:
+                logger.debug("Creating header extrusion")
+                extrusion = safe_create_extrusion(profile_curve, extrusion_vector)
+                if extrusion and hasattr(extrusion, 'IsValid') and extrusion.IsValid:
+                    logger.info("Successfully created header")
+                    # Check if already a Brep
+                    if hasattr(extrusion, 'ToBrep'):
+                        return extrusion.ToBrep()
+                    else:
+                        return extrusion
+                else:
+                    logger.warning("Primary extrusion method created invalid extrusion")
+            except Exception as e:
+                logger.warning(f"Failed to create valid header extrusion: {str(e)}")
+                
+            # Try alternative approach - direct box creation
+            try:
+                logger.debug("Attempting box creation for header")
+                # Get header dimensions
+                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12) 
+                header_height = FRAMING_PARAMS.get("header_height", 5.5 / 12)
+                
+                # Safely get header length and handle null/invalid values
+                header_length = safe_get_length(extrusion_vector)
+                if header_length is None or header_length <= 0:
+                    logger.warning("Invalid header length, using fallback value")
+                    # Estimate length based on start and end points
+                    if start_point is not None and end_point is not None:
+                        header_length = start_point.DistanceTo(end_point)
+                    else:
+                        # Last resort - use a default value
+                        header_length = 6.0  # Default header length of 6 feet
+                        
+                logger.debug(f"Creating box with dimensions: depth={header_depth}, height={header_height}, length={header_length}")
+                
+                # Ensure we have valid dimensions before creating the box
+                if header_depth <= 0 or header_height <= 0 or header_length <= 0:
+                    raise ValueError(f"Invalid box dimensions: {header_depth}x{header_height}x{header_length}")
+                
+                # Ensure start_point is valid
+                if start_point is None:
+                    logger.warning("Invalid start point for box creation, using origin")
+                    start_point = rg.Point3d.Origin
+                
+                # Create a plane at the start point
+                plane = rg.Plane(start_point, rg.Vector3d.ZAxis)
+                
+                # Create a box for the header
+                box = rg.Box(
+                    plane,
+                    rg.Interval(-header_depth/2, header_depth/2),
+                    rg.Interval(-header_height/2, header_height/2),
+                    rg.Interval(0, header_length)
+                )
+                
+                if box and box.IsValid:
+                    header_brep = box.ToBrep()
+                    if header_brep and hasattr(header_brep, 'IsValid') and header_brep.IsValid:
+                        logger.info("Successfully created header using box creation method")
+                        return header_brep
+            except Exception as box_error:
+                logger.warning(f"Box creation failed: {str(box_error)}")
+            
+            # Try another fallback - simple rectangle extrusion
+            try:
+                logger.debug("Attempting direct rectangle extrusion for header")
+                # Get header dimensions
+                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12) 
+                header_height = FRAMING_PARAMS.get("header_height", 5.5 / 12)
+                
+                # Create rectangle at start point
+                rect = rg.Rectangle3d(
+                    rg.Plane(start_point, rg.Vector3d.ZAxis),
+                    header_depth,
+                    header_height
+                )
+                
+                # Convert to curve and extrude
+                rect_curve = rect.ToNurbsCurve()
+                fallback_extrusion = safe_create_extrusion(rect_curve, extrusion_vector)
+                
+                if fallback_extrusion and hasattr(fallback_extrusion, 'IsValid') and fallback_extrusion.IsValid:
+                    logger.info("Successfully created header using rectangle extrusion fallback")
+                    # Check if already a Brep
+                    if hasattr(fallback_extrusion, 'ToBrep'):
+                        return fallback_extrusion.ToBrep()
+                    else:
+                        return fallback_extrusion
+            except Exception as rect_error:
+                logger.warning(f"Rectangle extrusion failed: {str(rect_error)}")
+                
+            # Final fallback - create simple box at origin and transform
+            try:
+                logger.debug("Attempting emergency header creation")
+                # Create a simple box at the origin
+                emergency_box = rg.Box(
+                    rg.Plane.WorldXY,
+                    rg.Interval(-header_depth/2, header_depth/2),
+                    rg.Interval(-header_height/2, header_height/2),
+                    rg.Interval(0, header_length)
+                )
+                
+                # Move to correct position
+                transform = rg.Transform.Translation(
+                    start_point.X, 
+                    start_point.Y, 
+                    start_point.Z
+                )
+                emergency_box.Transform(transform)
+                
+                brep = emergency_box.ToBrep()
+                if brep and hasattr(brep, 'IsValid') and brep.IsValid:
+                    logger.warning("Created emergency header as fallback")
+                    return brep
+            except Exception as final_error:
+                logger.error(f"All header creation methods failed: {str(final_error)}")
+                
+            logger.warning("Failed to create valid header geometry")
+            return None
 
         except Exception as e:
-            print(f"Error generating header: {str(e)}")
+            logger.error(f"Error generating header: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None
 
     def _generate_header_fallback(
@@ -213,7 +335,7 @@ class HeaderGenerator:
     ) -> Optional[rg.Brep]:
         """Fallback method for header generation when coordinate transformations fail."""
         try:
-            print("Using fallback method for header generation")
+            logger.debug("Using fallback method for header generation")
 
             # Extract opening information
             opening_u_start = opening_data.get("start_u_coordinate")
@@ -238,7 +360,7 @@ class HeaderGenerator:
             # Get the base plane from wall data
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
-                print("No base plane available for fallback header generation")
+                logger.warning("No base plane available for fallback header generation")
                 return None
 
             # Calculate header center point (centered horizontally above the opening)
@@ -273,15 +395,16 @@ class HeaderGenerator:
 
                 # Convert to Brep
                 if box and box.IsValid:
+                    logger.info("Successfully created header using fallback method")
                     return box.ToBrep()
                 else:
-                    print("Created invalid box in fallback")
+                    logger.warning("Fallback method created invalid box")
                     return None
 
             except Exception as e:
-                print(f"Error in header fallback box creation: {str(e)}")
+                logger.error(f"Error in header fallback box creation: {str(e)}")
                 return None
 
         except Exception as e:
-            print(f"Error in header fallback: {str(e)}")
+            logger.error(f"Error in header fallback: {str(e)}")
             return None

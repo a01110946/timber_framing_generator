@@ -15,6 +15,12 @@ from src.timber_framing_generator.framing_elements.plate_parameters import (
 )
 from src.timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
 
+# Import our custom logging module
+from ..utils.logging_config import get_logger
+
+# Initialize logger for this module
+logger = get_logger(__name__)
+
 
 def create_plates(
     wall_data: Dict,
@@ -72,11 +78,12 @@ def create_plates(
             layers=2
         )
     """
-    print(f"\nCreating plates with configuration:")
-    print(f"- Plate type: {plate_type}")
-    print(f"- Representation: {representation_type}")
-    print(f"- Profile override: {profile_override}")
-    print(f"- Layers: {layers}")
+    logger.info(f"Creating plates with configuration:")
+    logger.info(f"- Plate type: {plate_type}")
+    logger.info(f"- Representation: {representation_type}")
+    logger.info(f"- Profile override: {profile_override}")
+    logger.info(f"- Layers: {layers}")
+    logger.trace(f"Wall data: {wall_data}")
 
     plates = []
 
@@ -85,55 +92,77 @@ def create_plates(
     if plate_type == "bottom_plate":
         if layers == 2:
             plate_types.extend(["sole_plate", "bottom_plate"])
-            print(f"Creating double bottom plates (sole plate + bottom plate)")
+            logger.debug(f"Creating double bottom plates (sole plate + bottom plate)")
         else:
             plate_types.append("bottom_plate")
-            print(f"Creating single bottom plate")
+            logger.debug(f"Creating single bottom plate")
     elif plate_type == "top_plate":
         if layers == 2:
             plate_types.extend(["top_plate", "cap_plate"])
-            print(f"Creating double top plates (top plate + cap plate)")
+            logger.debug(f"Creating double top plates (top plate + cap plate)")
         else:
             plate_types.append("top_plate")
-            print(f"Creating single top plate")
+            logger.debug(f"Creating single top plate")
     else:
-        raise ValueError(f"Unsupported plate type: {plate_type}")
+        error_msg = f"Unsupported plate type: {plate_type}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 
     # Create plates for each type
     for idx, current_plate_type in enumerate(plate_types):
-        print(f"\nProcessing {current_plate_type}:")
+        logger.debug(f"Processing {current_plate_type}:")
 
         # Get location data for this plate type
-        print(f"- Getting location data with {representation_type} representation")
-        location_data = get_plate_location_data(
-            wall_data,
-            plate_type=current_plate_type,
-            representation_type=representation_type,
-        )
-        print(f"  Reference elevation: {location_data['reference_elevation']:.3f}")
+        logger.debug(f"- Getting location data with {representation_type} representation")
+        try:
+            location_data = get_plate_location_data(
+                wall_data,
+                plate_type=current_plate_type,
+                representation_type=representation_type,
+            )
+            logger.debug(f"  Reference elevation: {location_data['reference_elevation']:.3f}")
+            logger.trace(f"  Complete location data: {location_data}")
+        except Exception as e:
+            logger.error(f"Failed to get location data for {current_plate_type}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
 
         # Create parameters with optional profile override
-        print(f"- Creating plate parameters")
-        parameters = PlateParameters.from_wall_type(
-            wall_data["wall_type"],
-            framing_type=current_plate_type,
-            layer_config=PlateLayerConfig(
-                position=PlatePosition.BOTTOM if idx == 0 else PlatePosition.TOP,
-                num_layers=len(plate_types),
-            ),
-            layer_idx=idx,
-            representation_type=representation_type,
-            profile_override=profile_override,
-        )
-        print(f"  Profile: {parameters.profile_name}")
-        print(f"  Dimensions: {parameters.thickness:.3f} x {parameters.width:.3f}")
-        print(f"  Vertical offset: {parameters.vertical_offset:.3f}")
+        logger.debug(f"- Creating plate parameters")
+        try:
+            parameters = PlateParameters.from_wall_type(
+                wall_data["wall_type"],
+                framing_type=current_plate_type,
+                layer_config=PlateLayerConfig(
+                    position=PlatePosition.BOTTOM if idx == 0 else PlatePosition.TOP,
+                    num_layers=len(plate_types),
+                ),
+                layer_idx=idx,
+                representation_type=representation_type,
+                profile_override=profile_override,
+            )
+            logger.debug(f"  Profile: {parameters.profile_name}")
+            logger.debug(f"  Dimensions: {parameters.thickness:.3f} x {parameters.width:.3f}")
+            logger.debug(f"  Vertical offset: {parameters.vertical_offset:.3f}")
+            logger.trace(f"  Complete parameters: {parameters}")
+        except Exception as e:
+            logger.error(f"Failed to create parameters for {current_plate_type}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
 
         # Create and append the plate geometry object
-        print(f"- Creating plate geometry")
-        plate = PlateGeometry(location_data, parameters)
-        plates.append(plate)
-        print(f"  Successfully created {current_plate_type} geometry")
+        logger.debug(f"- Creating plate geometry")
+        try:
+            plate = PlateGeometry(location_data, parameters)
+            plates.append(plate)
+            logger.info(f"  Successfully created {current_plate_type} geometry")
+        except Exception as e:
+            logger.error(f"Failed to create geometry for {current_plate_type}: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
 
-    print(f"\nCreated {len(plates)} plate elements total")
+    logger.info(f"Created {len(plates)} plate elements total")
     return plates

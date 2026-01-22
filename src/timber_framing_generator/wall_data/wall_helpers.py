@@ -7,21 +7,74 @@ import Rhino.Geometry as rg
 def compute_wall_base_elevation(revit_wall, doc) -> float:
     """
     Computes the wall's base elevation based on the wall's base level and base offset.
+    
+    Args:
+        revit_wall: Revit wall element
+        doc: Revit document
+        
+    Returns:
+        Base elevation value in feet
+        
+    Raises:
+        ValueError: If base level cannot be determined
     """
-    base_level_param = revit_wall.get_Parameter(
-        DB.BuiltInParameter.WALL_BASE_CONSTRAINT
-    )
-    base_offset_param = revit_wall.get_Parameter(DB.BuiltInParameter.WALL_BASE_OFFSET)
-
-    base_level = (
-        doc.GetElement(base_level_param.AsElementId())
-        if base_level_param
-        and base_level_param.AsElementId() != DB.ElementId.InvalidElementId
-        else None
-    )
-    base_offset = base_offset_param.AsDouble() if base_offset_param else 0.0
-
-    return (base_level.Elevation if base_level else 0.0) + base_offset
+    try:
+        print(f"DEBUG: compute_wall_base_elevation for wall ID: {revit_wall.Id}")
+        
+        # Get base constraint parameter and log what we find
+        base_level_param = revit_wall.get_Parameter(
+            DB.BuiltInParameter.WALL_BASE_CONSTRAINT
+        )
+        print(f"DEBUG: base_level_param exists: {base_level_param is not None}")
+        
+        if base_level_param:
+            base_level_id = base_level_param.AsElementId()
+            print(f"DEBUG: base_level_id: {base_level_id}")
+            print(f"DEBUG: base_level_id is valid: {base_level_id != DB.ElementId.InvalidElementId}")
+            
+            base_level = (
+                doc.GetElement(base_level_id)
+                if base_level_id != DB.ElementId.InvalidElementId
+                else None
+            )
+            print(f"DEBUG: base_level exists: {base_level is not None}")
+        else:
+            base_level = None
+            print("DEBUG: base_level_param is None, trying alternative methods")
+            
+            # Try to get level from LevelId
+            if hasattr(revit_wall, "LevelId"):
+                print(f"DEBUG: revit_wall has LevelId: {revit_wall.LevelId}")
+                base_level = doc.GetElement(revit_wall.LevelId)
+                print(f"DEBUG: base_level from LevelId exists: {base_level is not None}")
+            else:
+                print("DEBUG: revit_wall has no LevelId attribute")
+        
+        # Get base offset parameter
+        base_offset_param = revit_wall.get_Parameter(DB.BuiltInParameter.WALL_BASE_OFFSET)
+        print(f"DEBUG: base_offset_param exists: {base_offset_param is not None}")
+        
+        base_offset = base_offset_param.AsDouble() if base_offset_param else 0.0
+        print(f"DEBUG: base_offset: {base_offset}")
+        
+        base_elevation = (base_level.Elevation if base_level else 0.0) + base_offset
+        print(f"DEBUG: calculated base_elevation: {base_elevation}")
+        
+        return base_elevation
+        
+    except Exception as e:
+        print(f"ERROR: Failed to compute wall base elevation for Revit wall: {revit_wall.Id}")
+        print(f"ERROR details: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        
+        # Here's where you need to make a decision:
+        # 1. Return None (will require handling None values)
+        # 2. Return a default value (might cause subtle bugs)
+        # 3. Re-raise the exception (will stop execution)
+        
+        # For now, re-raise the exception for clearer error messages
+        raise
 
 
 def get_wall_base_curve(revit_wall) -> rg.Curve:

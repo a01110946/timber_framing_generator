@@ -1,99 +1,36 @@
-# AI Reference Guide for Timber Framing Blocking System
+# Timber Framing Blocking System Implementation
 
-## Introduction
+## Overview
 
-This document provides definitive guidance for implementing a cell-aware blocking system in the Timber Framing Generator. Blocking elements are horizontal members installed between vertical studs to provide lateral support, bracing, and structural integrity. Current implementation issues show blocking elements ignoring cell boundaries, running through openings, and positioned at improper elevations.
+This document provides the definitive guide for implementing blocking elements in the Timber Framing Generator. Blocking elements are horizontal members installed between vertical studs to provide lateral support, bracing, and structural integrity.
 
-## Key Data Structures and Cell System
+## Technical Definition
 
-### Wall Data Structure
+Row blocking (also called "solid blocking" or simply "blocking") consists of lumber pieces of the same dimension as the studs, cut to fit between studs, and installed in one or more horizontal rows at specified heights in a wall assembly.
 
-The foundation of all framing operations:
+## Implementation Requirements
 
-```python
-{
-    "wall_type": str,                    # E.g., "2x4 EXT", "2x6 INT"
-    "wall_base_curve": rg.Curve,         # Base curve defining wall path
-    "wall_length": float,                # Length along base curve
-    "base_plane": rg.Plane,              # Reference plane for wall
-    "wall_base_elevation": float,        # Z-height of wall base
-    "wall_top_elevation": float,         # Z-height of wall top
-    "wall_height": float,                # Vertical height of wall
-    "is_exterior_wall": bool,            # Whether wall is exterior
-    "openings": List[Dict],              # Opening data
-    "cells": List[Dict]                  # Cell decomposition data
-}
-```
+### Configuration Parameters
+- **Block Spacing**: Vertical distance between rows (default: 4 feet)
+- **Block Pattern**: How blocks should be arranged (inline, staggered, etc.)
+- **First Block Height**: Height from bottom plate to first row
+- **Block Profile**: Lumber profile to use (default: same as wall studs)
+- **Include Blocking**: Boolean to toggle blocking generation
 
-### Cell Data Structure
+### Geometry Requirements
+- Blocks must maintain the same profile and orientation as wall studs
+- Blocks must fit precisely between studs with appropriate end cuts
+- Support for both perpendicular and parallel wall intersections
 
-Cells provide space division and organization:
+## Cell-Based Approach
 
-```python
-{
-    "cell_type": str,                    # Type code (WBC, OC, SC, SCC, HCC)
-    "u_start": float,                    # Start position along wall length
-    "u_end": float,                      # End position along wall length
-    "v_start": float,                    # Start height from wall base
-    "v_end": float,                      # End height from wall base
-    "corner_points": List[rg.Point3d],   # 3D corner points in world space
-}
-```
-
-### Cell Type Definitions
-
-The system uses these cell types:
-
-1. **WBC (Wall Boundary Cell)**: Entire wall boundary
-2. **OC (Opening Cell)**: Door or window openings
-3. **SC (Stud Cell)**: Regions between openings for standard studs
-4. **SCC (Sill Cripple Cell)**: Area below window openings
-5. **HCC (Header Cripple Cell)**: Area above openings
-
-## Why Blocking Must Use the Cell System
-
-The screenshot reveals fundamental issues with current blocking implementations:
-
-1. **Spatial Awareness Issue**: Blocking elements run through openings - a clear violation of structural reality
-2. **Uniform Height Problem**: Blocking appears at uniform wall heights regardless of cell types
-3. **Inconsistent Termination**: Blocking elements don't properly terminate at cell boundaries
-4. **Elevation Inconsistency**: Blocking heights don't reflect proper positioning relative to headers/sills
-
-Using the cell system for blocking is **mandatory** because:
-
+Blocking must use the cell system because:
 1. Cells define valid **spatial boundaries** where blocking can exist
-2. Cells provide **contextual information** about what type of space the blocking occupies
+2. Cells provide **contextual information** about space types
 3. Cells establish **relationship hierarchies** between framing elements
 4. Cells ensure **structural validity** by preventing impossible configurations
 
-## Blocking Element Dependencies
-
-A proper blocking system has these critical dependencies:
-
-### 1. Cell-Based Positioning Dependencies
-
-- **Parent Cell** → The specific cell where blocking will be placed, defining its horizontal span (u_start to u_end) and vertical zone (v_start to v_end)
-- **Cell Type** → Classification of the parent cell that determines if blocking is appropriate and how it should be configured
-
-These cell relationships are critical because:
-1. The parent cell establishes the primary spatial boundaries for the blocking
-2. Adjacent cells provide context for proper termination and continuity
-3. Cell type determines the structural role and requirements for blocking
-
-### 2. Element-Based Positioning Dependencies
-
-- **Studs** → Provide connection points and affect blocking count
-- **Plates** → Define the overall height boundaries
-- **King Studs** → Provide termination points around openings
-- **Headers/Sills** → May require special blocking conditions
-
-### 3. Configuration Dependencies
-
-- **Code Requirements** → Dictate spacing rules and minimum blocking
-- **Framing Type** → Affects blocking dimensions and attachment methods
-- **Spacing Rules** → Control vertical distribution of multiple blocking rows
-
-## Decision Tree for Blocking Placement
+### Cell Type Decision Tree
 
 For each cell in the wall:
 
@@ -102,41 +39,21 @@ For each cell in the wall:
    - YES for SCC (Sill Cripple Cell) with sufficient height (≥ blocking_height * 3)
    - YES for HCC (Header Cripple Cell) with sufficient height (≥ blocking_height * 3)
    - NO for OC (Opening Cell)
-   - NO for WBC (Wall Boundary Cell) - already covered by sub-cells
+   - NO for WBC (Wall Boundary Cell)
 
 2. **If appropriate, how many rows of blocking?**
-   - Default rules (should be configurable via FRAMING_PARAMS):
-     - Single row: When cell height < 48 inches
-     - Two rows: When cell height ≥ 48 inches and < 96 inches
-     - Three rows: When cell height ≥ 96 inches
-   - These values should be read from configuration parameters:
-     ```python
-     FRAMING_PARAMS = {
-         # Other parameters...
-         "blocking_row_height_threshold_1": 48/12,  # 48 inches in feet
-         "blocking_row_height_threshold_2": 96/12,  # 96 inches in feet
-         "blocking_min_cell_height": None,  # Calculated from blocking_height if None
-     }
-     ```
-   - Special cases: Follow specific code requirements or custom configurations
+   - Single row: When cell height < 48 inches
+   - Two rows: When cell height ≥ 48 inches and < 96 inches
+   - Three rows: When cell height ≥ 96 inches
 
 3. **Where should blocking be positioned vertically?**
    - Single row: At v_start + (v_end - v_start) / 2 (mid-height)
    - Two rows: At v_start + height/3 and v_start + 2*height/3
    - Three rows: At quarter points of height
-   - Adjust to avoid conflicts with other elements
 
-4. **What are the blocking start and end points?**
-   - Start: cell.u_start + (regular_stud_width/2) - adjust further if connecting to king stud
-   - End: cell.u_end - (regular_stud_width/2) - adjust further if connecting to king stud
-   - Always adjust for the standard stud width at both ends, then make additional adjustments for special cases
-   - Validate against actual stud positions in this cell to ensure proper connections
+## Implementation Structure
 
-## Implementation Requirements
-
-### 1. BlockingGenerator Class
-
-Create a `BlockingGenerator` class following the established generator pattern:
+### BlockingGenerator Class
 
 ```python
 class BlockingGenerator:
@@ -167,194 +84,9 @@ class BlockingGenerator:
                         blocking_elements.append(blocking)
         
         return blocking_elements
-        
-    def _is_blocking_appropriate(self, cell: Dict[str, Any]) -> bool:
-        """Determine if blocking is appropriate for this cell type."""
-        # Implementation logic here
-        
-    def _determine_blocking_count(self, cell: Dict[str, Any]) -> int:
-        """Determine how many rows of blocking are needed in this cell."""
-        # Implementation logic here
-        
-    def _calculate_blocking_elevations(
-        self, cell: Dict[str, Any], count: int
-    ) -> List[float]:
-        """Calculate the elevations for blocking rows."""
-        # Implementation logic here
-        
-    def _create_blocking_for_cell(
-        self, cell: Dict[str, Any], elevation: float
-    ) -> Optional[rg.Brep]:
-        """Create blocking geometry at the specified elevation in the cell."""
-        # Implementation logic here
 ```
 
-### 2. Integration with FramingGenerator
-
-Add blocking generation to the framing sequence in `FramingGenerator.generate_framing()`:
-
-```python
-def generate_framing(self):
-    # Generate plates first since king studs depend on them
-    self._generate_plates()
-    
-    # Generate king studs using the generated plates
-    self._generate_king_studs()
-    
-    # Generate headers and sills
-    self._generate_headers_and_sills()
-    
-    # Generate trimmers
-    self._generate_trimmers()
-    
-    # Generate header cripples
-    self._generate_header_cripples()
-    
-    # Generate sill cripples
-    self._generate_sill_cripples()
-    
-    # Generate standard studs
-    self._generate_studs()
-    
-    # NEW: Generate blocking after all vertical elements
-    self._generate_blocking()
-```
-
-### 3. Complete Blocking Element Creation
-
-Follow this algorithm for the `_create_blocking_for_cell` method:
-
-```python
-def _create_blocking_for_cell(
-    self, cell: Dict[str, Any], elevation: float
-) -> Optional[rg.Brep]:
-    """Create blocking geometry at the specified elevation in the cell."""
-    try:
-        base_plane = self.wall_data.get("base_plane")
-        if not base_plane:
-            return None
-            
-        # 1. Determine horizontal span
-        u_start = cell.get("u_start")
-        u_end = cell.get("u_end")
-        
-        # Adjust for stud connections
-        stud_positions = self._get_stud_positions_in_cell(cell)
-        if stud_positions:
-            # Find left-most and right-most studs in this cell
-            left_stud = min(stud_positions)
-            right_stud = max(stud_positions)
-            
-            # Always adjust by half the regular stud width first
-            stud_width = FRAMING_PARAMS.get("stud_width", 1.5/12)
-            
-            # Start with cell boundaries plus half stud width
-            u_start = cell.get("u_start") + (stud_width / 2)
-            u_end = cell.get("u_end") - (stud_width / 2)
-            
-            # Then check if we need to adjust for special studs like king studs
-            king_stud_width = FRAMING_PARAMS.get("king_stud_width", stud_width)
-            
-            # Identify if left stud is a king stud by checking proximity to opening
-            is_left_king_stud = any(
-                abs(left_stud - (op.get("start_u_coordinate") - stud_width)) < 0.01
-                for op in self.wall_data.get("openings", [])
-            )
-            
-            # Identify if right stud is a king stud by checking proximity to opening
-            is_right_king_stud = any(
-                abs(right_stud - (op.get("start_u_coordinate") + op.get("rough_width") + stud_width)) < 0.01
-                for op in self.wall_data.get("openings", [])
-            )
-            
-            # Apply additional king stud adjustments if needed
-            if is_left_king_stud:
-                u_start = left_stud - (king_stud_width / 2)
-            else:
-                u_start = left_stud - (stud_width / 2)
-                
-            if is_right_king_stud:
-                u_end = right_stud + (king_stud_width / 2)
-            else:
-                u_end = right_stud + (stud_width / 2)
-            
-        # 2. Create centerline endpoints
-        start_point = rg.Point3d.Add(
-            base_plane.Origin,
-            rg.Vector3d.Add(
-                rg.Vector3d.Multiply(base_plane.XAxis, u_start),
-                rg.Vector3d.Multiply(base_plane.YAxis, elevation),
-            ),
-        )
-        
-        end_point = rg.Point3d.Add(
-            base_plane.Origin,
-            rg.Vector3d.Add(
-                rg.Vector3d.Multiply(base_plane.XAxis, u_end),
-                rg.Vector3d.Multiply(base_plane.YAxis, elevation),
-            ),
-        )
-        
-        # Create centerline
-        centerline = rg.LineCurve(start_point, end_point)
-        self.debug_geometry["paths"].append(centerline)
-        
-        # 3. Create profile
-        blocking_width = FRAMING_PARAMS.get("blocking_width", 1.5/12)
-        blocking_height = FRAMING_PARAMS.get("blocking_height", 3.5/12)
-        
-        profile_x_axis = base_plane.ZAxis
-        profile_y_axis = base_plane.YAxis
-        
-        profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
-        self.debug_geometry["planes"].append(profile_plane)
-        
-        profile_rect = rg.Rectangle3d(
-            profile_plane,
-            rg.Interval(-blocking_width / 2, blocking_width / 2),
-            rg.Interval(-blocking_height / 2, blocking_height / 2),
-        )
-        
-        profile_curve = profile_rect.ToNurbsCurve()
-        self.debug_geometry["profiles"].append(profile_rect)
-        
-        # 4. Create extrusion
-        extrusion_vector = rg.Vector3d(end_point - start_point)
-        extrusion = rg.Extrusion.CreateExtrusion(profile_curve, extrusion_vector)
-        
-        if extrusion and extrusion.IsValid:
-            return extrusion.ToBrep().CapPlanarHoles(0.001)
-        else:
-            return None
-            
-    except Exception as e:
-        print(f"Error creating blocking: {str(e)}")
-        return None
-```
-
-## Validation Criteria
-
-A correctly implemented blocking system should:
-
-1. **Never have blocking running through openings**
-2. **Always connect to proper vertical elements** (studs, king studs)
-3. **Have proper elevations based on cell height**
-4. **Maintain consistent dimensions and offsets**
-5. **Follow proper building code requirements for spacing**
-6. **Adapt to different wall configurations**
-
-## Best Practices
-
-1. **Always start with cell filtering** - Know which cells need blocking
-2. **Calculate elevations based on cell height** - Avoid fixed elevations
-3. **Terminate at appropriate elements** - Connect to studs, not empty space
-4. **Use debug geometry** - Visualize calculation steps
-5. **Validate results** - Check for collisions with openings
-6. **Follow established geometry creation patterns** - Be consistent with other generators
-
-## Implementation Example
-
-Here's a sample implementation of the `_is_blocking_appropriate` and `_determine_blocking_count` methods:
+### Key Methods
 
 ```python
 def _is_blocking_appropriate(self, cell: Dict[str, Any]) -> bool:
@@ -378,7 +110,6 @@ def _is_blocking_appropriate(self, cell: Dict[str, Any]) -> bool:
     min_cell_height = FRAMING_PARAMS.get("blocking_min_cell_height")
     
     # If not configured, use 3x blocking height as reasonable minimum
-    # This ensures enough space for the blocking plus clearance above and below
     if min_cell_height is None:
         min_cell_height = blocking_height * 3
     
@@ -393,29 +124,278 @@ def _is_blocking_appropriate(self, cell: Dict[str, Any]) -> bool:
         return height >= min_cell_height
         
     return False  # Default to no blocking if cell type unknown
+```
 
-def _determine_blocking_count(self, cell: Dict[str, Any]) -> int:
-    """Determine how many rows of blocking are needed in this cell."""
+### Blocking Creation
+
+```python
+def _create_blocking_for_cell(
+    self, cell: Dict[str, Any], elevation: float
+) -> Optional[rg.Brep]:
+    """Create blocking geometry at the specified elevation in the cell."""
+    try:
+        base_plane = self.wall_data.get("base_plane")
+        if not base_plane:
+            return None
+            
+        # 1. Determine horizontal span (adjusted for stud connections)
+        u_start = cell.get("u_start") 
+        u_end = cell.get("u_end")
+        # ... [stud position adjustment logic]
+        
+        # 2. Create centerline endpoints in UVW space
+        start_point = base_plane.PointAt(u_start, elevation, 0)
+        end_point = base_plane.PointAt(u_end, elevation, 0)
+        
+        # 3. Create centerline
+        centerline = rg.LineCurve(start_point, end_point)
+        
+        # 4. Create profile and extrusion
+        # ... [profile and extrusion generation logic]
+        
+        return extrusion.ToBrep().CapPlanarHoles(0.001)
+            
+    except Exception as e:
+        print(f"Error creating blocking: {str(e)}")
+        return None
+```
+
+## Integration with FramingGenerator
+
+Add blocking generation to the framing sequence:
+
+```python
+def generate_framing(self):
+    """Generate all framing elements for the wall."""
+    # Generate plates first since king studs depend on them
+    self._generate_plates()
+    
+    # Generate studs and other elements
+    self._generate_king_studs()
+    self._generate_headers_and_sills()
+    self._generate_trimmers()
+    self._generate_header_cripples()
+    self._generate_sill_cripples()
+    self._generate_studs()
+    
+    # NEW: Generate blocking after all vertical elements
+    self._generate_blocking()
+```
+
+## Validation Criteria
+
+A correctly implemented blocking system should:
+1. Never have blocking running through openings
+2. Always connect to proper vertical elements
+3. Have proper elevations based on cell height
+4. Maintain consistent dimensions and offsets
+
+## Configuration Parameters
+
+```python
+FRAMING_PARAMS = {
+    # Other parameters...
+    "blocking_row_height_threshold_1": 48/12,  # 48 inches in feet
+    "blocking_row_height_threshold_2": 96/12,  # 96 inches in feet
+    "blocking_min_cell_height": None,  # Calculated from blocking_height if None
+    "block_spacing": 48.0/12.0,  # 4ft default
+    "first_block_height": 24.0/12.0,  # 2ft default
+    "blocking_pattern": "staggered"  # "inline" or "staggered"
+}
+```
+
+## Best Practices for Blocking Implementation
+
+### Algorithmic Approach
+1. **Always start with cell filtering** - Identify cells appropriate for blocking
+2. **Calculate elevations based on cell height** - Avoid fixed elevations that ignore cell context
+3. **Terminate at appropriate elements** - Connect blocks to proper vertical elements
+4. **Validate results** - Check for collisions with openings
+
+### Position Calculation
+
+```python
+def _calculate_blocking_elevations(
+    self, cell: Dict[str, Any], count: int
+) -> List[float]:
+    """Calculate the elevations for blocking rows."""
     v_start = cell.get("v_start", 0)
     v_end = cell.get("v_end", 0)
     height = v_end - v_start
     
-    # Read thresholds from configuration with defaults
-    threshold_1 = FRAMING_PARAMS.get("blocking_row_height_threshold_1", 48/12)  # 4 feet default
-    threshold_2 = FRAMING_PARAMS.get("blocking_row_height_threshold_2", 96/12)  # 8 feet default
+    # Apply first block height if configured
+    first_block_height = FRAMING_PARAMS.get("first_block_height")
+    if first_block_height is not None and count == 1:
+        # Use configured height for single block
+        return [v_start + first_block_height]
     
-    # Custom function for special cases (if defined)
-    custom_blocking_count_func = FRAMING_PARAMS.get("custom_blocking_count_function")
-    if custom_blocking_count_func and callable(custom_blocking_count_func):
-        return custom_blocking_count_func(cell, height)
-    
-    # Standard configurable blocking count rules
-    if height < threshold_1:
-        return 1
-    elif height < threshold_2:
-        return 2
+    # Calculate evenly distributed blocking positions
+    elevations = []
+    if count == 1:
+        # Single row at mid-height
+        elevations.append(v_start + height / 2)
+    elif count == 2:
+        # Two rows at 1/3 and 2/3 height
+        elevations.append(v_start + height / 3)
+        elevations.append(v_start + 2 * height / 3)
+    elif count == 3:
+        # Three rows at quarter points
+        elevations.append(v_start + height / 4)
+        elevations.append(v_start + height / 2)
+        elevations.append(v_start + 3 * height / 4)
     else:
-        return 3
+        # For more than 3 rows, distribute evenly
+        for i in range(count):
+            elevations.append(v_start + height * (i + 1) / (count + 1))
+    
+    return elevations
 ```
 
-By following these guidelines, the blocking generator will correctly respect cell boundaries, properly position blocking elements, and maintain structural integrity throughout the framing system.
+### Stud Connection Logic
+
+```python
+def _get_stud_positions_in_cell(self, cell: Dict[str, Any]) -> List[float]:
+    """Get positions of all studs within this cell."""
+    u_start = cell.get("u_start")
+    u_end = cell.get("u_end")
+    
+    # Filter stud positions to those within this cell
+    positions = []
+    for position in self.stud_positions.get("regular_studs", []):
+        if u_start <= position <= u_end:
+            positions.append(position)
+    
+    # Add king stud positions at cell boundaries
+    for position in self.stud_positions.get("king_studs", []):
+        if abs(position - u_start) < 0.01 or abs(position - u_end) < 0.01:
+            positions.append(position)
+    
+    return sorted(positions)
+```
+
+## Advanced Features
+
+### Staggered Blocking Pattern
+
+For "staggered" blocking pattern:
+
+```python
+def _apply_blocking_pattern(self, cells: List[Dict[str, Any]]) -> None:
+    """Apply the configured blocking pattern to cells."""
+    pattern = FRAMING_PARAMS.get("blocking_pattern", "inline")
+    
+    if pattern == "staggered":
+        # For staggered pattern, offset every other cell's blocks
+        for i, cell in enumerate(cells):
+            if i % 2 == 1:  # Odd-indexed cells
+                # Adjust blocking elevations
+                elevations = cell.get("blocking_elevations", [])
+                if elevations:
+                    # Offset by 1/4 of the spacing between blocks
+                    block_spacing = FRAMING_PARAMS.get("block_spacing", 4.0/12.0)
+                    offset = block_spacing / 4
+                    
+                    # Apply offset
+                    cell["blocking_elevations"] = [
+                        elevation + offset for elevation in elevations
+                    ]
+```
+
+### Fire Blocking Compliance
+
+```python
+def _apply_fire_blocking_requirements(self, cells: List[Dict[str, Any]]) -> None:
+    """Apply fire blocking requirements to cells."""
+    # Check if fire blocking is required
+    fire_blocking_required = FRAMING_PARAMS.get("fire_blocking_required", False)
+    if not fire_blocking_required:
+        return
+        
+    # Get maximum allowed distance between fire blocks
+    max_distance = FRAMING_PARAMS.get("fire_blocking_max_distance", 10.0)
+    
+    # Process each cell
+    for cell in cells:
+        v_start = cell.get("v_start", 0)
+        v_end = cell.get("v_end", 0)
+        height = v_end - v_start
+        
+        # If cell height exceeds maximum distance, ensure blocking exists
+        if height > max_distance:
+            # Get existing blocking elevations
+            elevations = cell.get("blocking_elevations", [])
+            
+            # Check if we need to add more blocks
+            if not elevations:
+                # Add block at mid-height
+                cell["blocking_elevations"] = [v_start + height / 2]
+            else:
+                # Check distances between existing blocks
+                prev_elevation = v_start
+                new_elevations = []
+                
+                for elevation in sorted(elevations):
+                    # If distance from previous elevation is too large, add block
+                    if elevation - prev_elevation > max_distance:
+                        # Add block at midpoint
+                        new_elevations.append(prev_elevation + (elevation - prev_elevation) / 2)
+                    
+                    new_elevations.append(elevation)
+                    prev_elevation = elevation
+                
+                # Check distance from last block to top
+                if v_end - prev_elevation > max_distance:
+                    new_elevations.append(prev_elevation + (v_end - prev_elevation) / 2)
+                
+                cell["blocking_elevations"] = new_elevations
+```
+
+## Integration with FramingGenerator
+
+```python
+def _generate_blocking(self):
+    """Generate all blocking elements."""
+    # Get stud positions
+    stud_positions = self._collect_stud_positions()
+    
+    # Initialize blocking generator
+    blocking_generator = BlockingGenerator(
+        wall_data=self.wall_data,
+        stud_positions=stud_positions,
+        plate_data=self._get_plate_data()
+    )
+    
+    # Generate blocking
+    blocking_elements = blocking_generator.generate_blocking()
+    
+    # Add to framing results
+    self.framing_result["row_blocking"] = blocking_elements
+    
+    # Add debug geometry
+    self.debug_geometry["points"].extend(blocking_generator.debug_geometry["points"])
+    self.debug_geometry["planes"].extend(blocking_generator.debug_geometry["planes"])
+    self.debug_geometry["profiles"].extend(blocking_generator.debug_geometry["profiles"])
+    self.debug_geometry["paths"].extend(blocking_generator.debug_geometry["paths"])
+```
+
+## Testing Strategy
+
+1. **Unit testing** - Test blocking logic with different cell configurations
+2. **Visual validation** - Visualize blocking placement for verification
+3. **Edge cases** - Test with minimal wall heights, unusual openings
+4. **Configuration testing** - Verify all configuration parameters work correctly
+
+### Test Cases
+1. Simple wall without openings
+2. Wall with single door
+3. Wall with multiple windows at different heights
+4. Wall with tight spacing between openings
+5. Very tall and very short walls
+
+## Implementation Timeline
+
+1. **Configuration parameters** - Add parameters to framing.py (1-2 hours)
+2. **Core generator** - Implement BlockingGenerator class (4-6 hours)
+3. **Integration** - Add to FramingGenerator workflow (2-3 hours)
+4. **Testing & debugging** - Validate results and fix issues (3-4 hours)
+5. **Documentation** - Update docs with new feature (1-2 hours)

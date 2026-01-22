@@ -15,6 +15,7 @@ import sys
 from typing import Dict, List, Any, Optional, Tuple
 import math
 import Rhino.Geometry as rg
+from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_get_bounding_box
 
 from src.timber_framing_generator.config.framing import (
     FRAMING_PARAMS, 
@@ -229,7 +230,7 @@ class RowBlockingGenerator:
         for i, cripple in enumerate(self.header_cripples):
             try:
                 # Get the bounding box of the cripple
-                bbox = cripple.GetBoundingBox(True)
+                bbox = safe_get_bounding_box(cripple, True)
                 if not bbox:
                     print(f"  Header Cripple {i+1}: Could not get bounding box")
                     continue
@@ -279,7 +280,7 @@ class RowBlockingGenerator:
         for i, cripple in enumerate(self.sill_cripples):
             try:
                 # Get the bounding box of the cripple
-                bbox = cripple.GetBoundingBox(True)
+                bbox = safe_get_bounding_box(cripple, True)
                 if not bbox:
                     print(f"  Sill Cripple {i+1}: Could not get bounding box")
                     continue
@@ -399,7 +400,7 @@ class RowBlockingGenerator:
                 # For Brep objects, we need to extract the centerpoint
                 if isinstance(hc, rg.Brep):
                     # Get the bounding box and use its center point
-                    bbox = hc.GetBoundingBox(True)
+                    bbox = safe_get_bounding_box(hc, True)
                     hc_point = bbox.Center
                     print(f"  HC{header_cripples_found} using bounding box center: ({hc_point.X:.4f}, {hc_point.Y:.4f}, {hc_point.Z:.4f})")
                 else:
@@ -470,7 +471,7 @@ class RowBlockingGenerator:
                 # For Brep objects, we need to extract the centerpoint
                 if isinstance(sc, rg.Brep):
                     # Get the bounding box and use its center point
-                    bbox = sc.GetBoundingBox(True)
+                    bbox = safe_get_bounding_box(sc, True)
                     sc_point = bbox.Center
                     print(f"  SC{sill_cripples_found} using bounding box center: ({sc_point.X:.4f}, {sc_point.Y:.4f}, {sc_point.Z:.4f})")
                 else:

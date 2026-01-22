@@ -4,6 +4,11 @@ from typing import Dict, List, Any, Optional
 import Rhino.Geometry as rg
 import math
 from src.timber_framing_generator.config.framing import FRAMING_PARAMS, PROFILES
+from src.timber_framing_generator.utils.safe_rhino import safe_closest_point, safe_get_length, safe_create_extrusion, safe_get_bounding_box
+from ..utils.logging_config import get_logger
+
+# Initialize logger for this module
+logger = get_logger(__name__)
 
 
 def calculate_stud_locations(
@@ -24,44 +29,79 @@ def calculate_stud_locations(
     Returns:
         list: A list of rg.Point3d objects representing stud locations.
     """
+    logger.debug("Calculating stud locations")
+    logger.debug(f"Parameters - stud_spacing: {stud_spacing}, remove_first: {remove_first}, remove_last: {remove_last}")
+    
     # Assume the cell contains a key "base_line" with a Rhino.Geometry.Curve representing the stud area.
     base_line = cell.get("base_line")
     if not base_line or not isinstance(base_line, rg.Curve):
+        logger.error("Invalid base_line for stud placement")
         raise ValueError(
             "Cell must contain a valid 'base_line' (Rhino.Geometry.Curve) for stud placement."
         )
 
     # Determine the starting parameter. If start_location is given and is a point, get its parameter on the line.
     if start_location and isinstance(start_location, rg.Point3d):
-        success, t0 = base_line.ClosestPoint(start_location)
+        logger.debug(f"Using start location point: ({start_location.X}, {start_location.Y}, {start_location.Z})")
+        success, t0 = safe_closest_point(base_line, start_location)
+        if not success:
+            logger.warning("Failed to find closest point on base_line, using parameter 0.0")
+            t0 = 0.0
+        else:
+            logger.debug(f"Found parameter t0={t0} on base_line")
     else:
+        logger.debug("No start location provided, using parameter 0.0")
         t0 = 0.0
 
     # Compute the total length of the base_line.
-    length = base_line.GetLength()
+    length = safe_get_length(base_line)
+    logger.debug(f"Base line length: {length}")
+    
     # Determine number of studs (using stud_spacing)
     num_intervals = int(length / stud_spacing)
+    logger.debug(f"Calculated {num_intervals+1} studs at spacing {stud_spacing}")
+    
     # Create stud locations uniformly along the line.
     stud_points = [
         base_line.PointAt(t0 + (i / float(num_intervals)) * length)
         for i in range(num_intervals + 1)
     ]
+    logger.debug(f"Generated {len(stud_points)} initial stud points")
 
     # Optionally remove the first and/or last stud.
     if remove_first and stud_points:
+        logger.debug("Removing first stud")
         stud_points = stud_points[1:]
     if remove_last and stud_points:
+        logger.debug("Removing last stud")
         stud_points = stud_points[:-1]
 
+    logger.debug(f"Returning {len(stud_points)} stud locations")
     return stud_points
 
-
 def generate_stud(profile="2x4", stud_height=2.4, stud_thickness=None, stud_width=None):
+    """
+    Generate a stud data structure with the specified profile or dimensions.
+    
+    Args:
+        profile (str): Standard lumber profile (e.g., "2x4")
+        stud_height (float): Height of the stud
+        stud_thickness (float, optional): Override thickness from profile
+        stud_width (float, optional): Override width from profile
+        
+    Returns:
+        dict: Dictionary containing stud information
+    """
+    logger.debug(f"Generating stud with profile: {profile}")
+    
     dimensions = PROFILES.get(profile, {})
     thickness = stud_thickness or dimensions.get("thickness", 0.04)
     width = stud_width or dimensions.get("width", 0.09)
+    
+    logger.debug(f"Using dimensions - thickness: {thickness}, width: {width}, height: {stud_height}")
 
     if thickness is None or width is None:
+        logger.error("Missing dimensions for custom profile")
         raise ValueError("Explicit dimensions must be provided for custom profiles.")
 
     stud = {
@@ -72,7 +112,8 @@ def generate_stud(profile="2x4", stud_height=2.4, stud_thickness=None, stud_widt
         "height": stud_height,
         "geometry": "placeholder_for_geometry",
     }
-
+    
+    logger.debug("Stud data structure created successfully")
     return stud
 
 
@@ -104,17 +145,25 @@ class StudGenerator:
             top_plate: The top plate object (for elevation reference)
             king_studs: Optional list of king stud geometries to avoid overlap
         """
+        logger.debug("Initializing StudGenerator")
+        logger.debug(f"Wall data: {wall_data}")
+        
         # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
         self.bottom_plate = bottom_plate
         self.top_plate = top_plate
         self.king_studs = king_studs or []
+        
+        logger.debug(f"Bottom plate: {bottom_plate}")
+        logger.debug(f"Top plate: {top_plate}")
+        logger.debug(f"King studs count: {len(self.king_studs)}")
 
         # Initialize storage for debug geometry
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
 
         # Extract and store king stud positions for reference
         self.king_stud_positions = self._extract_king_stud_positions()
+        logger.debug(f"Extracted {len(self.king_stud_positions)} king stud positions")
 
     def _extract_king_stud_positions(self) -> List[float]:
         """
@@ -123,44 +172,48 @@ class StudGenerator:
         Returns:
             List of U-coordinates (along wall length) where king studs are positioned
         """
+        logger.debug("Extracting king stud positions")
         positions = []
 
         if not self.king_studs:
-            print("No king studs provided to avoid overlap")
+            logger.info("No king studs provided to avoid overlap")
             return positions
 
         try:
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
-                print("No base plane available for king stud position extraction")
+                logger.warning("No base plane available for king stud position extraction")
                 return positions
 
             # Process each king stud to extract its U-coordinate
-            for stud in self.king_studs:
+            for i, stud in enumerate(self.king_studs):
+                logger.debug(f"Processing king stud {i+1}")
                 # Get bounding box of king stud
-                bbox = stud.GetBoundingBox(True)
+                bbox = safe_get_bounding_box(stud, True)
                 if not bbox.IsValid:
+                    logger.warning(f"Invalid bounding box for king stud {i+1}")
                     continue
 
                 # Calculate center point of bounding box
                 center_x = (bbox.Min.X + bbox.Max.X) / 2
                 center_y = (bbox.Min.Y + bbox.Max.Y) / 2
                 center_point = rg.Point3d(center_x, center_y, bbox.Min.Z)
+                logger.debug(f"King stud center point: ({center_point.X}, {center_point.Y}, {center_point.Z})")
 
                 # Project onto wall base plane to get u-coordinate
                 u_coordinate = self._project_point_to_u_coordinate(
                     center_point, base_plane
                 )
                 positions.append(u_coordinate)
+                logger.debug(f"King stud {i+1} u-coordinate: {u_coordinate}")
 
-            print(f"Extracted {len(positions)} king stud positions: {positions}")
+            logger.debug(f"Extracted {len(positions)} king stud positions: {positions}")
             return positions
 
         except Exception as e:
-            print(f"Error extracting king stud positions: {str(e)}")
+            logger.error(f"Error extracting king stud positions: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return positions
 
     def _project_point_to_u_coordinate(
@@ -176,6 +229,7 @@ class StudGenerator:
         Returns:
             The u-coordinate (distance along wall)
         """
+        logger.debug(f"Projecting point ({point.X}, {point.Y}, {point.Z}) to u-coordinate")
         try:
             # Vector from base plane origin to the point
             vec = point - base_plane.Origin
@@ -183,11 +237,12 @@ class StudGenerator:
             # Project this vector onto the u-axis (XAxis)
             # Use the dot product for projection
             u = vec * base_plane.XAxis
+            logger.debug(f"Calculated u-coordinate: {u}")
 
             return u
 
         except Exception as e:
-            print(f"Error projecting point to u-coordinate: {str(e)}")
+            logger.error(f"Error projecting point to u-coordinate: {str(e)}")
             return 0.0
 
     def generate_studs(self) -> List[rg.Brep]:
@@ -198,365 +253,256 @@ class StudGenerator:
         proper spacing according to the configured stud spacing parameter.
 
         Returns:
-            List of stud Brep geometries
+            List of Brep geometries representing wall studs
         """
+        logger.debug("Generating standard wall studs")
+        
         try:
-            # Get wall cells from the wall data
+            # Extract cell data from wall data
             cells = self.wall_data.get("cells", [])
-            if not cells:
-                print("No cells found in wall data")
-                return []
-
-            # Extract only Stud Cells (SC)
-            stud_cells = [cell for cell in cells if cell.get("cell_type") == "SC"]
-
-            print(f"\nFound {len(stud_cells)} Stud Cells (SC) in wall data")
-
-            if not stud_cells:
-                print("No Stud Cells (SC) found in wall data")
-                return []
-
-            # Get plate boundary elevations
-            try:
-                plate_data = self._get_plate_boundary_data()
-                if not plate_data:
-                    print("Failed to get plate boundary data")
-                    return []
-
-                bottom_elevation = plate_data["bottom_elevation"]
-                top_elevation = plate_data["top_elevation"]
-
-                print(
-                    f"Stud vertical bounds: bottom={bottom_elevation}, top={top_elevation}"
-                )
-
-                # Create debug point at these elevations for verification
-                base_plane = self.wall_data.get("base_plane")
-                if base_plane:
-                    debug_bottom = rg.Point3d.Add(
-                        base_plane.Origin,
-                        rg.Vector3d.Multiply(base_plane.YAxis, bottom_elevation),
-                    )
-                    debug_top = rg.Point3d.Add(
-                        base_plane.Origin,
-                        rg.Vector3d.Multiply(base_plane.YAxis, top_elevation),
-                    )
-                    self.debug_geometry["points"].extend([debug_bottom, debug_top])
-
-            except Exception as e:
-                print(f"Error getting plate boundary data: {str(e)}")
-                import traceback
-
-                print(traceback.format_exc())
-                return []
-
-            # Get essential parameters
             base_plane = self.wall_data.get("base_plane")
-            if base_plane is None:
-                print("No base plane available")
+            
+            if not cells:
+                logger.warning("No cells available for stud generation")
                 return []
+                
+            if base_plane is None:
+                logger.warning("No base plane available for stud generation")
+                return []
+                
+            logger.debug(f"Found {len(cells)} cells for stud processing")
 
-            # Calculate stud dimensions from framing parameters
-            stud_width = FRAMING_PARAMS.get(
-                "stud_width", 1.5 / 12
-            )  # Typically 1.5 inches
-            stud_depth = FRAMING_PARAMS.get(
-                "stud_depth", 3.5 / 12
-            )  # Typically 3.5 inches
-            stud_spacing = FRAMING_PARAMS.get(
-                "stud_spacing", 16 / 12
-            )  # Typically 16 inches
+            # Extract dimensions from framing parameters
+            stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)  # Default to 1.5 inches
+            stud_depth = FRAMING_PARAMS.get("stud_depth", 3.5 / 12)  # Default to 3.5 inches
+            stud_spacing = FRAMING_PARAMS.get("stud_spacing", 16 / 12)  # Default to 16 inches on center
+            logger.debug(f"Stud dimensions - width: {stud_width}, depth: {stud_depth}, spacing: {stud_spacing}")
 
-            print(
-                f"Stud parameters: width={stud_width}, depth={stud_depth}, spacing={stud_spacing}"
-            )
+            # Calculate vertical extents for studs
+            bottom_elevation = self._get_bottom_elevation()
+            top_elevation = self._get_top_elevation()
+            
+            if bottom_elevation is None or top_elevation is None:
+                logger.warning("Could not determine stud extents from plates")
+                return []
+                
+            logger.debug(f"Stud vertical extents - bottom: {bottom_elevation}, top: {top_elevation}")
 
-            # Store all generated studs
+            # Process all cells marked as stud cells (SC)
             all_studs = []
-
-            # Initialize stud_positions dictionary if it doesn't exist
-            if not hasattr(self, 'stud_positions'):
-                self.stud_positions = {}
-
-            # Process each stud cell
-            for i, cell in enumerate(stud_cells):
+            processed_cells = 0
+            
+            for cell in cells:
+                cell_type = cell.get("type")
+                
+                # Skip cells that are not stud cells
+                if cell_type != "SC":
+                    continue
+                    
+                processed_cells += 1
+                logger.debug(f"Processing stud cell {processed_cells}")
+                
                 try:
-                    print(f"\nProcessing Stud Cell {i+1}")
-
-                    # Extract cell boundaries
+                    # Get the horizontal region of the cell
                     u_start = cell.get("u_start")
                     u_end = cell.get("u_end")
-                    cell_id = cell.get("cell_id", f"SC_{u_start}_{u_end}")
-
-                    if None in (u_start, u_end):
-                        print(
-                            f"Invalid stud cell boundaries: u_start={u_start}, u_end={u_end}"
-                        )
+                    
+                    if u_start is None or u_end is None:
+                        logger.warning("Stud cell missing u-coordinate boundaries")
                         continue
+                        
+                    logger.debug(f"Stud cell boundaries - u_start: {u_start}, u_end: {u_end}")
 
-                    cell_width = u_end - u_start
-                    print(
-                        f"Cell bounds: u_start={u_start}, u_end={u_end}, width={cell_width}"
+                    # Calculate stud positions within this cell
+                    stud_positions = self._calculate_stud_positions(u_start, u_end, stud_spacing)
+                    logger.debug(f"Calculated {len(stud_positions)} stud positions in cell")
+
+                    # Filter out positions too close to king studs
+                    stud_positions = self._filter_positions_by_king_studs(
+                        stud_positions, stud_width * 1.5
                     )
+                    logger.debug(f"{len(stud_positions)} positions remain after king stud filtering")
 
-                    # Adjust cell boundaries to account for stud depth (half width at each end)
-                    adjusted_u_start = u_start + (stud_width / 2)
-                    adjusted_u_end = u_end - (stud_width / 2)
-
-                    # Check if we still have valid width after adjustment
-                    if adjusted_u_end <= adjusted_u_start:
-                        print(f"Cell too narrow after boundary adjustment")
-                        continue
-
-                    print(
-                        f"Adjusted bounds: u_start={adjusted_u_start}, u_end={adjusted_u_end}"
-                    )
-
-                    # Calculate stud positions within this cell, accounting for king studs
-                    stud_positions = self._calculate_stud_positions(
-                        adjusted_u_start, adjusted_u_end, stud_spacing, stud_depth
-                    )
-
-                    # Filter out positions that would conflict with king studs
-                    filtered_positions = self._filter_king_stud_conflicts(
-                        stud_positions, stud_depth
-                    )
-
-                    print(f"Calculated {len(stud_positions)} stud positions in cell")
-                    print(
-                        f"After filtering king stud conflicts: {len(filtered_positions)} positions"
-                    )
-
-                    # Create or update the entry in stud_positions dictionary for this cell
-                    if cell_id not in self.stud_positions:
-                        self.stud_positions[cell_id] = []
-
-                    # Generate a stud at each position
-                    cell_studs = []
-                    for j, u_pos in enumerate(filtered_positions):
+                    # Create studs at each position
+                    for pos in stud_positions:
                         stud = self._create_stud_geometry(
                             base_plane,
-                            u_pos,
+                            pos,
                             bottom_elevation,
                             top_elevation,
                             stud_width,
                             stud_depth,
                         )
-
-                        if stud is not None:
-                            cell_studs.append(stud)
-                            print(f"  Created stud {j+1} at u={u_pos}")
-                            # Add this stud position to the stud_positions dictionary
-                            self.stud_positions[cell_id].append(u_pos)
-                        else:
-                            print(f"  Failed to create stud {j+1} at u={u_pos}")
-
-                    all_studs.extend(cell_studs)
-
-                    print(f"Registered {len(self.stud_positions[cell_id])} stud positions for cell {cell_id}")
+                        if stud:
+                            all_studs.append(stud)
+                            logger.debug(f"Created stud at u={pos}")
 
                 except Exception as e:
-                    print(f"Error processing stud cell {i+1}: {str(e)}")
-                    import traceback
-
-                    print(traceback.format_exc())
+                    logger.error(f"Error processing stud cell: {str(e)}")
                     continue
 
-            print(f"\nGenerated {len(all_studs)} studs total")
-            print(f"Registered studs in {len(self.stud_positions)} cells")
-            for cell_id, positions in self.stud_positions.items():
-                print(f"  Cell {cell_id}: {len(positions)} stud positions")
-
+            logger.info(f"Generated {len(all_studs)} standard wall studs")
             return all_studs
 
         except Exception as e:
-            print(f"Error generating studs: {str(e)}")
+            logger.error(f"Error generating studs: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return []
 
-    def _get_plate_boundary_data(self) -> Dict[str, float]:
+    def _get_bottom_elevation(self) -> Optional[float]:
         """
-        Extract boundary elevations from the top and bottom plates.
-
-        Returns a dictionary with bottom_elevation (top face of bottom plate)
-        and top_elevation (bottom face of top plate) for positioning studs.
+        Get the elevation of the top of the bottom plate.
 
         Returns:
-            Dictionary with boundary elevations, or None if extraction fails
+            The elevation value, or None if it cannot be determined
         """
+        logger.debug("Getting bottom elevation for studs")
         try:
-            print("\nExtracting plate boundary data:")
+            # If we have a bottom plate reference, extract its top elevation
+            if self.bottom_plate is not None:
+                # Get bounding box of bottom plate
+                bbox = safe_get_bounding_box(self.bottom_plate, True)
+                if bbox.IsValid:
+                    elevation = bbox.Max.Z
+                    logger.debug(f"Bottom elevation from plate bounding box: {elevation}")
+                    return elevation
 
-            # Get boundary data from bottom plate
-            bottom_plate_data = self.bottom_plate.get_boundary_data()
-            if not bottom_plate_data:
-                print("Failed to get bottom plate boundary data")
-                return None
-
-            # Get boundary data from top plate
-            top_plate_data = self.top_plate.get_boundary_data()
-            if not top_plate_data:
-                print("Failed to get top plate boundary data")
-                return None
-
-            # Debug - print ALL data from the plates to identify what's going wrong
-            print(f"Full bottom plate data: {bottom_plate_data}")
-            print(f"Full top plate data: {top_plate_data}")
-
-            # Check what absolute elevation data is available
+            # Fallback to wall data if available
+            bottom_plate_thickness = FRAMING_PARAMS.get("plate_thickness", 1.5 / 12)
             wall_base_elevation = self.wall_data.get("wall_base_elevation", 0.0)
-            wall_top_elevation = self.wall_data.get("wall_top_elevation", 0.0)
-            print(f"Wall base elevation: {wall_base_elevation}")
-            print(f"Wall top elevation: {wall_top_elevation}")
-
-            # Get absolute elevations from plate data
-            # Using "boundary_elevation" values which should be absolute world coordinates
-            bottom_elevation = bottom_plate_data.get("boundary_elevation")
-            top_elevation = top_plate_data.get("boundary_elevation")
-
-            print(f"Bottom plate data: {bottom_plate_data}")
-            print(f"Top plate data: {top_plate_data}")
-
-            if bottom_elevation is None or top_elevation is None:
-                print(
-                    "WARNING: Missing elevation data - falling back to relative calculations"
-                )
-                # Try to calculate absolute elevations using wall data
-                bottom_elevation = wall_base_elevation + bottom_plate_data.get(
-                    "thickness", 0.0
-                )
-                top_elevation = wall_top_elevation - top_plate_data.get(
-                    "thickness", 0.0
-                )
-
-            print(f"Using bottom elevation: {bottom_elevation}")
-            print(f"Using top elevation: {top_elevation}")
-
-            # Validate that elevations make sense (bottom should be below top)
-            if bottom_elevation >= top_elevation:
-                print(
-                    f"WARNING: Invalid elevations - bottom ({bottom_elevation}) is not below top ({top_elevation})"
-                )
-                # Try to correct by using relative wall heights if available
-                if wall_top_elevation > wall_base_elevation:
-                    bottom_elevation = wall_base_elevation + (
-                        1.5 * 2 / 12
-                    )  # 3 inches (double 2x layers) up from base
-                    top_elevation = wall_top_elevation - (
-                        1.5 * 2 / 12
-                    )  # 3 inches (double 2x layers) down from top
-                    print(
-                        f"Corrected to bottom: {bottom_elevation}, top: {top_elevation}"
-                    )
-
-            return {
-                "bottom_elevation": bottom_elevation,
-                "top_elevation": top_elevation,
-            }
+            elevation = wall_base_elevation + bottom_plate_thickness
+            logger.debug(f"Bottom elevation from wall data: {elevation}")
+            return elevation
 
         except Exception as e:
-            print(f"Error getting plate boundary data: {str(e)}")
-            import traceback
+            logger.error(f"Error determining bottom elevation: {str(e)}")
+            return None
 
-            print(traceback.format_exc())
+    def _get_top_elevation(self) -> Optional[float]:
+        """
+        Get the elevation of the bottom of the top plate.
+
+        Returns:
+            The elevation value, or None if it cannot be determined
+        """
+        logger.debug("Getting top elevation for studs")
+        try:
+            # If we have a top plate reference, extract its bottom elevation
+            if self.top_plate is not None:
+                # Get bounding box of top plate
+                bbox = safe_get_bounding_box(self.top_plate, True)
+                if bbox.IsValid:
+                    elevation = bbox.Min.Z
+                    logger.debug(f"Top elevation from plate bounding box: {elevation}")
+                    return elevation
+
+            # Fallback to wall data if available
+            wall_height = self.wall_data.get("wall_height")
+            wall_base_elevation = self.wall_data.get("wall_base_elevation", 0.0)
+            
+            if wall_height is not None:
+                elevation = wall_base_elevation + wall_height
+                logger.debug(f"Top elevation from wall data: {elevation}")
+                return elevation
+
+            logger.warning("Could not determine top elevation")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error determining top elevation: {str(e)}")
             return None
 
     def _calculate_stud_positions(
-        self, start_u: float, end_u: float, spacing: float, stud_depth: float
+        self, u_start: float, u_end: float, stud_spacing: float
     ) -> List[float]:
         """
-        Calculate stud positions within a cell with proper spacing.
-
-        This method determines where to place studs within the given
-        U-coordinate range, using the specified on-center spacing.
+        Calculate stud positions within a cell based on spacing.
 
         Args:
-            start_u: Starting U-coordinate of the cell (already adjusted for stud depth)
-            end_u: Ending U-coordinate of the cell (already adjusted for stud depth)
-            spacing: On-center spacing between studs
-            stud_depth: Depth of stud along wall length
+            u_start: Starting u-coordinate of the cell
+            u_end: Ending u-coordinate of the cell
+            stud_spacing: Desired spacing between studs
 
         Returns:
-            List of U-coordinates for stud placement
+            List of u-coordinates where studs should be placed
         """
+        logger.debug(f"Calculating stud positions from {u_start} to {u_end} with spacing {stud_spacing}")
         try:
-            # Verify that the cell has valid width
-            cell_width = end_u - start_u
-            if cell_width <= 0:
-                print(f"Invalid cell width: {cell_width}")
+            # Calculate the width of the cell
+            cell_width = u_end - u_start
+            logger.debug(f"Cell width: {cell_width}")
+
+            # If cell is too narrow, return empty list
+            if cell_width < stud_spacing / 2:
+                logger.debug("Cell too narrow for studs")
                 return []
 
-            # Place first stud at adjusted start of cell
-            positions = [start_u]
+            # Calculate number of studs that can fit in this cell
+            # Subtract 1 to account for the possibility of studs at the cell boundaries
+            num_studs = max(0, int(cell_width / stud_spacing))
+            logger.debug(f"Can fit {num_studs} studs in cell")
 
-            # Calculate how many full spacing intervals fit in the cell
-            available_distance = cell_width - stud_depth
-            num_intervals = int(available_distance / spacing)
+            # If only 1 stud fits, place it in the center
+            if num_studs == 1:
+                logger.debug("Single stud fits - placing at center")
+                return [u_start + cell_width / 2]
 
-            print(
-                f"Cell adjusted width: {cell_width}, Available distance: {available_distance}"
-            )
-            print(f"Spacing: {spacing}, Number of spacing intervals: {num_intervals}")
-
-            # Place intermediate studs at regular intervals
-            for i in range(1, num_intervals + 1):
-                pos = start_u + i * spacing
-                # Ensure we don't exceed the end boundary
-                if pos < end_u:
-                    positions.append(pos)
-
-            # If there's enough space for another stud at the end, add it
-            # Only add if it's at least half a stud depth away from the last stud
-            last_stud_pos = positions[-1] if positions else start_u
-            if (end_u - last_stud_pos) >= stud_depth:
-                positions.append(end_u)
-
-            print(f"Calculated {len(positions)} stud positions: {positions}")
+            # Calculate positions for multiple studs
+            positions = []
+            for i in range(num_studs + 1):
+                # Distribute studs evenly, including at boundaries
+                pos = u_start + (i * cell_width / num_studs)
+                positions.append(pos)
+                
+            logger.debug(f"Calculated stud positions: {positions}")
             return positions
 
         except Exception as e:
-            print(f"Error calculating stud positions: {str(e)}")
+            logger.error(f"Error calculating stud positions: {str(e)}")
             return []
 
-    def _filter_king_stud_conflicts(
-        self, stud_positions: List[float], stud_depth: float
+    def _filter_positions_by_king_studs(
+        self, positions: List[float], min_distance: float
     ) -> List[float]:
         """
-        Filter out stud positions that would conflict with king studs.
+        Filter out stud positions that are too close to king studs.
 
         Args:
-            stud_positions: List of potential stud U-coordinates
-            stud_depth: Depth of stud along wall length for collision checking
+            positions: List of candidate stud positions (u-coordinates)
+            min_distance: Minimum distance to keep from king studs
 
         Returns:
-            Filtered list of stud positions with no king stud conflicts
+            Filtered list of positions that are safe from king studs
         """
+        logger.debug(f"Filtering {len(positions)} positions to avoid king studs")
+        logger.debug(f"Using minimum distance: {min_distance}")
+        
         if not self.king_stud_positions:
-            return stud_positions
+            logger.debug("No king stud positions to filter against")
+            return positions
 
-        filtered_positions = []
+        try:
+            filtered_positions = []
+            for pos in positions:
+                # Check distance to all king studs
+                too_close = False
+                for king_pos in self.king_stud_positions:
+                    distance = abs(pos - king_pos)
+                    if distance < min_distance:
+                        logger.debug(f"Position {pos} too close to king stud at {king_pos} (distance: {distance})")
+                        too_close = True
+                        break
 
-        for pos in stud_positions:
-            # Check if this position conflicts with any king stud
-            conflicts = False
+                if not too_close:
+                    filtered_positions.append(pos)
 
-            for king_pos in self.king_stud_positions:
-                # Calculate the distance between this stud and the king stud
-                distance = abs(pos - king_pos)
+            logger.debug(f"Filtered to {len(filtered_positions)} positions")
+            return filtered_positions
 
-                # If the distance is less than the sum of their half-depths,
-                # they overlap and we should skip this position
-                if distance < stud_depth:
-                    conflicts = True
-                    print(f"Stud at u={pos} conflicts with king stud at u={king_pos}")
-                    break
-
-            if not conflicts:
-                filtered_positions.append(pos)
-
-        return filtered_positions
+        except Exception as e:
+            logger.error(f"Error filtering positions by king studs: {str(e)}")
+            return positions
 
     def _create_stud_geometry(
         self,
@@ -570,43 +516,45 @@ class StudGenerator:
         """
         Create the geometry for a single stud.
 
-        This method creates a stud by:
-        1. Calculating the horizontal position using the base plane and u_coordinate
-        2. Creating start and end points at the correct absolute elevations
-        3. Creating a profile perpendicular to the stud's centerline
-        4. Extruding the profile along the centerline path
-
         Args:
             base_plane: Wall's base plane for coordinate system
             u_coordinate: Position along wall (horizontal)
-            bottom_v: Bottom elevation of stud (top of bottom plate)
-            top_v: Top elevation of stud (bottom of top plate)
+            bottom_v: Bottom elevation of stud
+            top_v: Top elevation of stud
             width: Width of stud (perpendicular to wall face)
             depth: Depth of stud (parallel to wall length)
 
         Returns:
             Brep geometry for the stud, or None if creation fails
         """
+        logger.debug(f"Creating stud geometry at u={u_coordinate}, v range={bottom_v}-{top_v}")
+        logger.debug(f"Stud dimensions - width: {width}, depth: {depth}")
+        
         try:
-            print(f"Creating stud at u={u_coordinate}")
-            print(f"  Absolute elevations: bottom={bottom_v}, top={top_v}")
+            # 1. Create the centerline endpoints in world coordinates
+            start_point = rg.Point3d.Add(
+                base_plane.Origin,
+                rg.Vector3d.Add(
+                    rg.Vector3d.Multiply(base_plane.XAxis, u_coordinate),
+                    rg.Vector3d.Multiply(base_plane.YAxis, bottom_v),
+                ),
+            )
 
-            # Calculate the components of the horizontal offset
-            x_offset = base_plane.XAxis.X * u_coordinate
-            y_offset = base_plane.XAxis.Y * u_coordinate
-            z_offset = base_plane.XAxis.Z * u_coordinate
-
-            # Calculate the base point coordinates
-            base_x = base_plane.Origin.X + x_offset
-            base_y = base_plane.Origin.Y + y_offset
-
-            # Create start and end points with correct coordinates
-            start_point = rg.Point3d(base_x, base_y, bottom_v)
-            end_point = rg.Point3d(base_x, base_y, top_v)
+            end_point = rg.Point3d.Add(
+                base_plane.Origin,
+                rg.Vector3d.Add(
+                    rg.Vector3d.Multiply(base_plane.XAxis, u_coordinate),
+                    rg.Vector3d.Multiply(base_plane.YAxis, top_v),
+                ),
+            )
+            
+            logger.debug(f"Centerline start point: ({start_point.X}, {start_point.Y}, {start_point.Z})")
+            logger.debug(f"Centerline end point: ({end_point.X}, {end_point.Y}, {end_point.Z})")
 
             # Create the centerline as a curve
             centerline = rg.LineCurve(start_point, end_point)
             self.debug_geometry["paths"].append(centerline)
+            logger.debug(f"Centerline length: {safe_get_length(centerline)}")
 
             # 2. Create a profile plane at the start point
             # X axis goes across wall thickness (for width)
@@ -616,34 +564,51 @@ class StudGenerator:
 
             profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
             self.debug_geometry["planes"].append(profile_plane)
+            logger.debug("Created profile plane for stud cross-section")
 
-            # 3. Create a rectangular profile centered on the plane
-            profile_rect = rg.Rectangle3d(
-                profile_plane,
-                rg.Interval(-depth / 2, depth / 2),
-                rg.Interval(-width / 2, width / 2),
-            )
+            # 3. Create a rectangle for the profile
+            half_width = width / 2
+            half_depth = depth / 2
+            rect_corners = [
+                rg.Point3d(-half_width, -half_depth, 0),  # lower left
+                rg.Point3d(half_width, -half_depth, 0),   # lower right
+                rg.Point3d(half_width, half_depth, 0),    # upper right
+                rg.Point3d(-half_width, half_depth, 0),   # upper left
+            ]
+            logger.debug("Created rectangle corners for stud cross-section")
 
-            profile_curve = profile_rect.ToNurbsCurve()
-            self.debug_geometry["profiles"].append(profile_rect)
+            # Transform corners to profile plane
+            transform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, profile_plane)
+            for i, corner in enumerate(rect_corners):
+                corner.Transform(transform)
+                self.debug_geometry["points"].append(corner)
 
-            # 4. Extrude the profile along the centerline path
-            # Calculate the vector from start to end
-            path_vector = rg.Vector3d(end_point - start_point)
+            # Create polygon from corners
+            profile_poly = rg.Polyline([*rect_corners, rect_corners[0]])  # Close the loop
+            profile_curve = profile_poly.ToNurbsCurve()
+            self.debug_geometry["profiles"].append(profile_curve)
+            logger.debug("Transformed rectangle to profile plane")
 
-            # Create the extrusion
-            extrusion = rg.Extrusion.CreateExtrusion(profile_curve, path_vector)
+            # 4. Extrude the profile along the centerline
+            # Create shape by sweeping profile along centerline
+            sweep = rg.SweepOneRail()
+            sweep.AngleToleranceRadians = 0.1  # Optional adjustment
+            sweep.ClosedSweep = False
+            sweep.SweepTolerance = 0.01  # Optional adjustment
 
-            # Convert to Brep and return
-            if extrusion and extrusion.IsValid:
-                return extrusion.ToBrep().CapPlanarHoles(0.001)
-            else:
-                print("Failed to create valid stud extrusion")
+            curves = [profile_curve]
+            rails = [centerline]
+            breps = sweep.PerformSweep(rails, curves)
+            
+            if breps is None or len(breps) == 0:
+                logger.warning("Failed to create stud Brep from sweep operation")
                 return None
+                
+            logger.debug("Successfully created stud Brep")
+            return breps[0]
 
         except Exception as e:
-            print(f"Error creating stud geometry: {str(e)}")
+            logger.error(f"Error creating stud geometry: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None

@@ -189,8 +189,7 @@ The system includes a FastAPI interface that allows:
 
 The system includes:
 1. Unit tests for core functionality
-2. Mock objects for Rhino/Revit dependencies in CI environments
-3. Visual validation tools in Grasshopper
+2. Visual validation tools in Grasshopper
 
 ## Configuration and Extensibility
 

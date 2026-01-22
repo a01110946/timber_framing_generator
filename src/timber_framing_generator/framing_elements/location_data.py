@@ -7,18 +7,11 @@ import os
 # Check if we're running in Grasshopper/Rhino
 is_rhino_environment = 'rhinoscriptsyntax' in sys.modules or 'Rhino' in sys.modules
 
-# First, try to import our CI mocks
+# Try to import rhinoinside and Rhino.Geometry
 try:
-    from src.timber_framing_generator.ci_mock import is_ci_environment
-
-    # Only do regular imports if we're not in CI and not in Rhino
-    if not is_ci_environment() and not is_rhino_environment:
-        import rhinoinside
-        rhinoinside.load()
-        import Rhino.Geometry as rg
-    else:
-        # In CI or already in Rhino, we won't use rhinoinside
-        import Rhino.Geometry as rg
+    import rhinoinside
+    rhinoinside.load()
+    import Rhino.Geometry as rg
 except ImportError:
     # Fall back based on environment
     if not is_rhino_environment:

@@ -30,7 +30,6 @@ Consider these label categories:
 - documentation: Documentation updates or improvements
 - test: Test additions or modifications
 - ci: CI/CD configuration changes
-- mock: CI mocking system changes
 - wall-data: Wall data extraction or processing components
 - framing-elements: Changes to framing element generation
 - utils: Utility functions and helpers

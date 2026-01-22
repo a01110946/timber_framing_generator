@@ -206,15 +206,7 @@ The Timber Framing Generator is a Python-based tool that automates the generatio
 - Modern HTTP client
 - Used for testing API endpoints
 - Supports async testing
-- Enables request mocking
 - Facilitates comprehensive API validation
-
-### Mock objects
-- Used for testing CAD/BIM dependent code
-- Eliminates dependency on actual applications
-- Improves test speed and reliability
-- Supports testing in CI environments
-- Enables comprehensive test coverage
 
 ## AI Integration (MCP Components)
 

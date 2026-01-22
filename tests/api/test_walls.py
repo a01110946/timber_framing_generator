@@ -43,10 +43,6 @@ def sample_wall_data():
     }
 
 @pytest.fixture
-def mock_job_id():
-    """Generate a consistent mock job ID for tests."""
-    return str(uuid.uuid4())
-
 def test_auth_required(sample_wall_data):
     """Test that authentication is required for protected endpoints."""
     # Try without API key

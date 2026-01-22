@@ -101,7 +101,7 @@ def get_wall_data(wall_id: str) -> str:
         Formatted text describing the wall and its properties
     """
     try:
-        # Get the wall element from Revit (or mock data for testing)
+        # Get the wall element from Revit
         wall_element = get_wall_by_id(wall_id)
         
         # Extract wall data using our existing function
@@ -633,8 +633,8 @@ def test_get_wall_data():
     # Set up test environment
     setup_test_environment()
     
-    # Create a mock wall
-    wall_id = create_mock_wall()
+    # Create a wall
+    wall_id = create_wall()
     
     # Call the resource function directly
     result = get_wall_data(wall_id)
@@ -658,8 +658,8 @@ def test_full_workflow():
     # Set up test environment
     setup_test_environment()
     
-    # Create a mock wall
-    wall_id = create_mock_wall()
+    # Create a wall
+    wall_id = create_wall()
     
     # Get wall data via resource
     wall_data_response = get_wall_data(wall_id)
@@ -679,13 +679,13 @@ def test_full_workflow():
     assert "Successfully exported" in export_response
 ```
 
-### Mock Data for Testing
+### Wall for Testing
 
 ```python
-def create_mock_wall():
-    """Create a mock wall for testing."""
+def create_wall():
+    """Create a wall for testing."""
     # Create a unique ID
-    wall_id = f"mock-{uuid.uuid4()}"
+    wall_id = f"test-{uuid.uuid4()}"
     
     # Create a dictionary with test wall data
     wall_data = {
@@ -708,7 +708,7 @@ def create_mock_wall():
     }
     
     # Store in the test database
-    mock_database[wall_id] = wall_data
+    test_database[wall_id] = wall_data
     
     return wall_id
 ```

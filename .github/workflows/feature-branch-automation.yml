@@ -110,7 +110,6 @@ jobs:
           - documentation: Documentation updates or improvements
           - test: Test additions or modifications
           - ci: CI/CD configuration changes
-          - mock: CI mocking system changes
           - wall-data: Wall data extraction or processing components
           - framing-elements: Changes to framing element generation
           - utils: Utility functions and helpers
@@ -207,7 +206,6 @@ jobs:
               {name: 'documentation', color: '0075ca', description: 'Documentation updates or improvements'},
               {name: 'test', color: '6e5494', description: 'Test additions or modifications'},
               {name: 'ci', color: 'f9d0c4', description: 'CI/CD configuration changes'},
-              {name: 'mock', color: 'bfd4f2', description: 'CI mocking system changes'},
               {name: 'wall-data', color: 'c5def5', description: 'Wall data extraction or processing components'},
               {name: 'framing-elements', color: 'd4c5f9', description: 'Changes to framing element generation'},
               {name: 'utils', color: 'ededed', description: 'Utility functions and helpers'},

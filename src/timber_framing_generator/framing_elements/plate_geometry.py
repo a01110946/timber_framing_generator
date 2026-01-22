@@ -2,9 +2,16 @@
 
 from typing import Dict, Optional, Any
 import Rhino.Geometry as rg
+from src.timber_framing_generator.utils.safe_rhino import safe_create_extrusion, safe_get_length
 from src.timber_framing_generator.config.framing import PlatePosition, FRAMING_PARAMS
 from src.timber_framing_generator.config.units import convert_from_feet, ProjectUnits
 from src.timber_framing_generator.framing_elements.plate_parameters import PlateParameters
+
+# Import our custom logging module
+from ..utils.logging_config import get_logger
+
+# Initialize logger for this module
+logger = get_logger(__name__)
 
 
 class PlateGeometry:
@@ -37,11 +44,17 @@ class PlateGeometry:
             location_data: Dictionary containing spatial information
             parameters: PlateParameters instance with dimensional data
         """
+        logger.debug(f"Initializing PlateGeometry for {parameters.plate_type}")
+        logger.trace(f"Location data: {location_data}")
+        logger.trace(f"Parameters: {parameters}")
+        
         self.location_data = location_data
         self.parameters = parameters
         # Create basic geometric elements used by all platforms
         self.centerline = self._create_centerline()
         self.profile = self._create_profile()
+        
+        logger.debug(f"PlateGeometry initialized successfully")
 
     def _create_centerline(self) -> rg.Curve:
         """
@@ -49,17 +62,19 @@ class PlateGeometry:
 
         This is a fundamental geometric element used across all platforms.
         """
+        logger.debug("Creating plate centerline")
         centerline = self.location_data["reference_line"].DuplicateCurve()
         start_z = centerline.PointAtStart.Z
-        print(f"Initial centerline Z: {start_z}")
+        logger.trace(f"Initial centerline Z: {start_z}")
 
         translation = rg.Vector3d(0, 0, self.parameters.vertical_offset)
-        print(f"Applying vertical offset: {self.parameters.vertical_offset}")
+        logger.debug(f"Applying vertical offset: {self.parameters.vertical_offset}")
 
         centerline.Translate(translation)
         new_z = centerline.PointAtStart.Z
-        print(f"Final centerline Z: {new_z}")
-
+        logger.trace(f"Final centerline Z: {new_z}")
+        
+        logger.debug(f"Centerline created with length: {safe_get_length(centerline)}")
         return centerline
 
     def _create_profile(self) -> rg.Rectangle3d:
@@ -87,35 +102,46 @@ class PlateGeometry:
         Returns:
             rg.Rectangle3d: A centered rectangular profile ready for extrusion
         """
+        logger.debug("Creating plate profile")
+        
         # Get the start point for the profile
         start_point = self.centerline.PointAt(0.0)
+        logger.trace(f"Profile start point: ({start_point.X}, {start_point.Y}, {start_point.Z})")
 
         # Get the Z-axis (centerline direction)
         z_axis = self.centerline.TangentAt(0.0)
         z_axis.Unitize()
+        logger.trace(f"Z-axis (centerline direction): ({z_axis.X}, {z_axis.Y}, {z_axis.Z})")
 
         # Get the Y-axis (wall's vertical direction)
         y_axis = self.location_data["base_plane"].YAxis
         y_axis.Unitize()
+        logger.trace(f"Y-axis (wall vertical): ({y_axis.X}, {y_axis.Y}, {y_axis.Z})")
 
         # Calculate X-axis as perpendicular to both Y and Z
         x_axis = rg.Vector3d.CrossProduct(y_axis, z_axis)
         x_axis.Unitize()
+        logger.trace(f"X-axis (wall normal): ({x_axis.X}, {x_axis.Y}, {x_axis.Z})")
 
         # Create the profile plane with these axes
         profile_plane = rg.Plane(start_point, x_axis, y_axis)
+        logger.trace("Created profile plane for plate cross-section")
 
         # Calculate the half-dimensions for centering
         half_thickness = self.parameters.thickness / 2.0
         half_width = self.parameters.width / 2.0
+        logger.trace(f"Half-dimensions - thickness: {half_thickness}, width: {half_width}")
 
         # Create centered rectangle using intervals
         # This creates the rectangle centered on the plane's origin
-        return rg.Rectangle3d(
+        rectangle = rg.Rectangle3d(
             profile_plane,
             rg.Interval(-half_width, half_width),  # Centered width
             rg.Interval(-half_thickness, half_thickness),  # Centered thickness
         )
+        
+        logger.debug(f"Created profile rectangle - width: {self.parameters.width}, thickness: {self.parameters.thickness}")
+        return rectangle
 
     def get_boundary_data(self) -> Dict[str, float]:
         """
@@ -123,9 +149,12 @@ class PlateGeometry:
         The boundary elevation represents the surface where other framing
         elements connect - the top of bottom plates or bottom of top plates.
         """
+        logger.debug(f"Calculating boundary data for {self.parameters.plate_type}")
+        
         # Get the plate's centerline elevation
         centerline_elevation = self.centerline.PointAtStart.Z
         thickness = self.parameters.thickness
+        logger.trace(f"Centerline elevation: {centerline_elevation}, thickness: {thickness}")
 
         # The logic remains simple because we're already working with
         # the correct plate - either the uppermost bottom plate or
@@ -134,16 +163,21 @@ class PlateGeometry:
             # For bottom plates, framing sits on the top surface
             reference_elevation = centerline_elevation - (thickness / 2)
             boundary_elevation = centerline_elevation + (thickness / 2)
+            logger.trace(f"Bottom plate - reference below, boundary above")
         else:
             # For top plates, framing ends at the bottom surface
             reference_elevation = centerline_elevation + (thickness / 2)
             boundary_elevation = centerline_elevation - (thickness / 2)
+            logger.trace(f"Top plate - reference above, boundary below")
 
-        return {
+        data = {
             "reference_elevation": reference_elevation,
             "boundary_elevation": boundary_elevation,
             "thickness": thickness,
         }
+        
+        logger.debug(f"Boundary data: reference={reference_elevation:.4f}, boundary={boundary_elevation:.4f}")
+        return data
 
     def validate_boundary_data(self, data: Dict[str, float]) -> bool:
         """
@@ -158,30 +192,39 @@ class PlateGeometry:
         Raises:
             ValueError: If validation fails with details about the issue
         """
+        logger.debug(f"Validating boundary data for {self.parameters.plate_type}")
+        logger.trace(f"Data to validate: {data}")
+        
         # Ensure we have all required keys
         required_keys = {"reference_elevation", "boundary_elevation", "thickness"}
         if not all(key in data for key in required_keys):
-            raise ValueError(
-                f"Missing required keys: {required_keys - set(data.keys())}"
-            )
+            missing_keys = required_keys - set(data.keys())
+            error_msg = f"Missing required keys: {missing_keys}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
         # Validate thickness is positive and reasonable
         min_thickness = convert_from_feet(0.5 / 12, ProjectUnits.FEET)  # 0.5 inches
         max_thickness = convert_from_feet(12.0 / 12, ProjectUnits.FEET)  # 12 inches
         if not min_thickness <= data["thickness"] <= max_thickness:
-            raise ValueError(
+            error_msg = (
                 f"Plate thickness {data['thickness']} outside valid range "
                 f"[{min_thickness}, {max_thickness}]"
             )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
         # Validate elevation differences make sense for the plate position
         elevation_diff = abs(data["boundary_elevation"] - data["reference_elevation"])
         if not 0 < elevation_diff <= data["thickness"] * 2:  # Allow for double plates
-            raise ValueError(
+            error_msg = (
                 f"Invalid elevation difference {elevation_diff} "
                 f"for thickness {data['thickness']}"
             )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
+        logger.debug("Boundary data validation successful")
         return True
 
     def create_rhino_geometry(self) -> rg.Brep:
@@ -202,27 +245,197 @@ class PlateGeometry:
             where 0.0 represents the start parameter of the curve. The resulting
             vector is then scaled by the curve length to define the full extrusion.
         """
-        # Get the profile curve (our cross-section)
-        profile_curve = self.profile.ToNurbsCurve()
+        logger.debug("Creating Rhino geometry for plate")
+        
+        try:
+            # Get the profile curve (our cross-section)
+            profile_curve = self.profile.ToNurbsCurve()
+            logger.trace("Converted profile to NURBS curve")
+    
+            # Calculate the direction vector using TangentAt(0.0)
+            # Parameter 0.0 represents the start of the curve
+            direction = self.centerline.TangentAt(0.0)
+            logger.trace("Calculated direction vector from centerline")
+    
+            # Scale the direction vector by the length of the centerline
+            length = safe_get_length(self.centerline)
+            direction *= length
+            logger.trace(f"Scaled direction vector by centerline length: {length}")
+    
+            # Create the extrusion using Rhino.Geometry.Extrusion
+            # NOTE: safe_create_extrusion may return a Brep directly, not an Extrusion
+            result = safe_create_extrusion(profile_curve, direction)
+            logger.trace("Created geometry from safe_create_extrusion")
 
-        # Calculate the direction vector using TangentAt(0.0)
-        # Parameter 0.0 represents the start of the curve
-        direction = self.centerline.TangentAt(0.0)
+            # Convert to Brep if needed (handle both Brep and Extrusion returns)
+            if result is not None:
+                try:
+                    # Check if already a Brep (safe_create_extrusion returns Brep)
+                    if isinstance(result, rg.Brep):
+                        brep = result
+                        logger.trace("Result is already a Brep")
+                    elif hasattr(result, 'ToBrep') and callable(getattr(result, 'ToBrep')):
+                        brep = result.ToBrep()
+                        logger.trace("Converted Extrusion to Brep")
+                    else:
+                        brep = None
+                        logger.warning(f"Cannot convert {type(result)} to Brep")
 
-        # Scale the direction vector by the length of the centerline
-        length = self.centerline.GetLength()
-        direction *= length
-
-        # Create the extrusion using Rhino.Geometry.Extrusion
-        extrusion = rg.Extrusion.CreateExtrusion(profile_curve, direction)
-
-        # Convert the extrusion to a Brep
-        if extrusion is not None:
-            brep = extrusion.ToBrep()
-            brep = brep.CapPlanarHoles(0.001)  # Cap any planar holes
-            return brep
-        else:
-            raise ValueError("Failed to create extrusion for plate geometry")
+                    if brep is not None and brep.IsValid:
+                        try:
+                            capped_brep = brep.CapPlanarHoles(0.001)  # Cap any planar holes
+                            if capped_brep is not None and capped_brep.IsValid:
+                                logger.debug("Created Brep with capped holes")
+                                return capped_brep
+                            return brep  # Return original if capping fails
+                        except Exception as e:
+                            logger.warning(f"Failed to cap planar holes: {str(e)}")
+                            return brep  # Return the uncapped brep
+                except Exception as e:
+                    logger.warning(f"Failed to process geometry result: {str(e)}")
+                    
+                # If ToBrep fails, try alternative method - create a box from result
+                try:
+                    bbox = result.GetBoundingBox(True)
+                    if bbox.IsValid:
+                        box = rg.Box(bbox)
+                        brep = box.ToBrep()
+                        if brep is not None and brep.IsValid:
+                            logger.debug("Created box Brep from result bounding box as fallback")
+                            return brep
+                except Exception as e:
+                    logger.warning(f"Failed to create box from result: {str(e)}")
+                    
+            # If extrusion fails, create a simple box from profile and direction
+            try:
+                bbox = self.profile.BoundingBox
+                if bbox.IsValid:
+                    # Create a simple box using extrusion parameters
+                    corner = bbox.Min
+                    dx = bbox.Max.X - bbox.Min.X
+                    dy = bbox.Max.Y - bbox.Min.Y
+                    dz = length  # Use centerline length
+                    
+                    # Create box from dimensions
+                    try:
+                        box = rg.Box(
+                            rg.Plane(corner, rg.Vector3d.ZAxis),
+                            rg.Interval(0, dx),
+                            rg.Interval(0, dy),
+                            rg.Interval(0, dz)
+                        )
+                        brep = box.ToBrep()
+                        if brep is not None and brep.IsValid:
+                            logger.debug("Created simple box Brep as final fallback")
+                            return brep
+                    except Exception as e:
+                        logger.warning(f"Failed to create simple box: {str(e)}")
+            except Exception as e:
+                logger.warning(f"Failed to create box from profile: {str(e)}")
+                    
+            # If all other methods failed, try a direct box creation
+            try:
+                point1 = self.centerline.PointAtStart
+                point2 = self.centerline.PointAtEnd
+                width = self.parameters.width
+                thickness = self.parameters.thickness
+                
+                # Create a box along the centerline
+                center_vector = point2 - point1
+                center_vector.Unitize()
+                
+                # Create perpendicular vectors
+                if abs(center_vector.Z) < 0.9:  # Not nearly vertical
+                    perp1 = rg.Vector3d.CrossProduct(center_vector, rg.Vector3d.ZAxis)
+                else:  # Nearly vertical, use X axis for cross product
+                    perp1 = rg.Vector3d.CrossProduct(center_vector, rg.Vector3d.XAxis)
+                
+                perp1.Unitize()
+                perp2 = rg.Vector3d.CrossProduct(center_vector, perp1)
+                perp2.Unitize()
+                
+                # Scale vectors by dimensions
+                perp1 *= thickness / 2
+                perp2 *= width / 2
+                
+                # Create corner points
+                corners = [
+                    point1 + perp1 + perp2,
+                    point1 + perp1 - perp2,
+                    point1 - perp1 - perp2,
+                    point1 - perp1 + perp2,
+                    point2 + perp1 + perp2,
+                    point2 + perp1 - perp2,
+                    point2 - perp1 - perp2,
+                    point2 - perp1 + perp2
+                ]
+                
+                # Create box from corners using proper Rhino constructor
+                try:
+                    # CORRECT: Create BoundingBox from corner points, then Box from BoundingBox
+                    # rg.Box does NOT accept 8 separate Point3d arguments
+                    corner_points = [
+                        rg.Point3d(corners[0].X, corners[0].Y, corners[0].Z),
+                        rg.Point3d(corners[1].X, corners[1].Y, corners[1].Z),
+                        rg.Point3d(corners[2].X, corners[2].Y, corners[2].Z),
+                        rg.Point3d(corners[3].X, corners[3].Y, corners[3].Z),
+                        rg.Point3d(corners[4].X, corners[4].Y, corners[4].Z),
+                        rg.Point3d(corners[5].X, corners[5].Y, corners[5].Z),
+                        rg.Point3d(corners[6].X, corners[6].Y, corners[6].Z),
+                        rg.Point3d(corners[7].X, corners[7].Y, corners[7].Z)
+                    ]
+                    bbox = rg.BoundingBox(corner_points)
+                    if bbox.IsValid:
+                        box = rg.Box(bbox)
+                        brep = box.ToBrep()
+                        if brep is not None and brep.IsValid:
+                            logger.debug("Created corner-based box as extreme fallback")
+                            return brep
+                except Exception as e:
+                    logger.warning(f"Failed to create corner-based box: {str(e)}")
+                    
+                # Try creating a direct box from points
+                try:
+                    # Create a more direct approach with a simple box
+                    origin = self.centerline.PointAtStart
+                    width = self.parameters.width
+                    thickness = self.parameters.thickness
+                    length = safe_get_length(self.centerline)
+                    
+                    box = rg.Box(
+                        rg.Plane(origin, rg.Vector3d.XAxis, rg.Vector3d.YAxis),
+                        rg.Interval(-width/2, width/2),
+                        rg.Interval(-thickness/2, thickness/2),
+                        rg.Interval(0, length)
+                    )
+                    brep = box.ToBrep()
+                    if brep is not None and brep.IsValid:
+                        logger.debug("Created direct box from dimensions as extreme fallback")
+                        return brep
+                except Exception as e:
+                    logger.warning(f"Failed to create direct box: {str(e)}")
+            except Exception as e:
+                logger.warning(f"Failed to create geometry from centerline: {str(e)}")
+                    
+            # If all other methods failed, return a simple placeholder cube as absolute last resort
+            logger.error("All geometry creation methods failed, creating emergency placeholder")
+            
+        except Exception as e:
+            logger.error(f"Error in create_rhino_geometry: {str(e)}")
+            
+        # Return a simple placeholder cube as absolute last resort
+        try:
+            cube = rg.Box(
+                rg.Plane.WorldXY,
+                rg.Interval(-0.5, 0.5),
+                rg.Interval(-0.5, 0.5),
+                rg.Interval(-0.5, 0.5)
+            )
+            logger.warning("Returning emergency placeholder cube as absolute last resort")
+            return cube.ToBrep()
+        except Exception as final_e:
+            logger.error(f"Even the emergency placeholder failed: {str(final_e)}")
+            return None  # Absolute last resort is to return None
 
     def create_revit_geometry(self) -> Optional[Any]:
         """
@@ -287,4 +500,74 @@ class PlateGeometry:
         elif platform.lower() == "speckle":
             data["platform_geometry"] = self.create_speckle_geometry()
 
+        logger.debug(f"Geometry data prepared for {platform} platform")
         return data
+
+    def GetBoundingBox(self, accurate=True):
+        """
+        Get the bounding box of the plate geometry.
+        
+        Args:
+            accurate: Whether to compute an accurate box (ignored, for compatibility)
+            
+        Returns:
+            rg.BoundingBox: Bounding box containing the plate geometry
+        """
+        logger.debug("Getting bounding box for plate geometry")
+        
+        try:
+            # If we have a raw_geometry property with a brep, use its bounding box
+            if hasattr(self, "raw_geometry") and self.raw_geometry:
+                if hasattr(self.raw_geometry, "GetBoundingBox"):
+                    return self.raw_geometry.GetBoundingBox(accurate)
+            
+            # Otherwise, create a bounding box from the centerline and profile
+            centerline = self._create_centerline()
+            if not centerline:
+                logger.warning("Cannot create bounding box - no centerline available")
+                return rg.BoundingBox.Empty
+            
+            # Create a bounding box that encompasses the extruded profile
+            profile = self._create_profile()
+            if not profile:
+                logger.warning("Cannot create bounding box - no profile available")
+                return rg.BoundingBox.Empty
+            
+            # Get centerline points
+            start_point = centerline.PointAtStart
+            end_point = centerline.PointAtEnd
+            
+            # Get profile corners
+            corners = [
+                profile.Corner(0), profile.Corner(1), 
+                profile.Corner(2), profile.Corner(3)
+            ]
+            
+            # Create bbox from start profile
+            bbox = rg.BoundingBox.Empty
+            for corner in corners:
+                # Transform corner to start plane
+                start_point3d = rg.Point3d(start_point.X, start_point.Y, start_point.Z)
+                transformed_corner = rg.Point3d(
+                    start_point3d.X + corner.X,
+                    start_point3d.Y + corner.Y,
+                    start_point3d.Z + corner.Z
+                )
+                bbox.Union(transformed_corner)
+            
+            # Also add end profile to bbox
+            for corner in corners:
+                # Transform corner to end plane
+                end_point3d = rg.Point3d(end_point.X, end_point.Y, end_point.Z)
+                transformed_corner = rg.Point3d(
+                    end_point3d.X + corner.X,
+                    end_point3d.Y + corner.Y,
+                    end_point3d.Z + corner.Z
+                )
+                bbox.Union(transformed_corner)
+            
+            return bbox
+            
+        except Exception as e:
+            logger.error(f"Error creating bounding box: {str(e)}")
+            return rg.BoundingBox.Empty

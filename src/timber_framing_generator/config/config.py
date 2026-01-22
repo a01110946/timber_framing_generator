@@ -1,4 +1,4 @@
-# File: timber_framing_generator/config.py
+# File: timber_framing_generator/config/config.py
 """
 Global configuration for the Timber Framing Generator.
 

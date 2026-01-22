@@ -1,30 +1,46 @@
 # File: timber_framing_generator/framing_elements/framing_generator.py
 
+import os
+import tempfile
 import datetime
 from typing import Dict, List, Any, Optional, Tuple, Union
 import sys
 import math
 import traceback
 
+# Import our custom logging system
+from ..utils.logging_config import get_logger, TimberFramingLogger
+
+# Ensure logging is properly configured with TRACE level support
+# If not already configured elsewhere, configure it here
+log_dir = os.path.join(tempfile.gettempdir(), "timber_framing_generator")
+TimberFramingLogger.configure(log_dir=log_dir, debug_mode=True)
+
+# Initialize logger for this module with module-specific name
+logger = get_logger(__name__)
+
 try:
     import rhinoscriptsyntax as rs  # type: ignore
 except ImportError:
-    print("rhinoscriptsyntax not available")
+    logger.warning("rhinoscriptsyntax not available")
     
 try:
     import scriptcontext as sc  # type: ignore
 except ImportError:
-    print("scriptcontext not available")
+    logger.warning("scriptcontext not available")
 
 # Check if we're running in Grasshopper/Rhino
 is_rhino_environment: bool = 'rhinoscriptsyntax' in sys.modules or 'scriptcontext' in sys.modules
+logger.debug(f"Running in Rhino environment: {is_rhino_environment}")
 
 # Always import Rhino.Geometry for type annotations
 import Rhino  # type: ignore
 import Rhino.Geometry as rg  # type: ignore
+from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_get_bounding_box
 
 # Only import rhinoinside if not already in Rhino environment
 if not is_rhino_environment:
+    logger.info("Not in Rhino environment, loading rhinoinside")
     import rhinoinside
     rhinoinside.load()
     # Removed the import Rhino  # type: ignore and import Rhino.Geometry as rg  # type: ignore from here
@@ -61,6 +77,9 @@ class FramingGenerator:
         wall_data: Dict[str, Union[str, float, bool, List, Any]],
         framing_config=None,
     ):
+        logger.debug("Initializing FramingGenerator")
+        logger.debug(f"Wall data keys: {list(wall_data.keys())}")
+        
         # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
 
@@ -76,7 +95,11 @@ class FramingGenerator:
 
         # Update configuration with any provided values
         if framing_config:
+            logger.debug("Updating framing config with provided values")
+            logger.debug(f"Custom framing config: {framing_config}")
             self.framing_config.update(framing_config)
+        
+        logger.debug(f"Final framing config: {self.framing_config}")
 
         # Initialize storage for all framing elements
         self.framing_elements = {
@@ -99,6 +122,7 @@ class FramingGenerator:
 
         # Initialize debug geometry storage
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
+        logger.debug("FramingGenerator initialization complete")
 
     def generate_framing(self) -> Dict[str, List[rg.Brep]]:
         """
@@ -108,37 +132,46 @@ class FramingGenerator:
             A dictionary containing all generated framing elements.
         """
         start_time = datetime.datetime.now()
-        print("\nStarting framing generation...")
+        logger.info("\nStarting framing generation...")
         
         # Generate plates
+        logger.debug("Generating plates")
         self._generate_plates()
         
         # King studs
+        logger.debug("Generating king studs")
         self._generate_king_studs()
         
         # Headers and sills
+        logger.debug("Generating headers and sills")
         self._generate_headers_and_sills()
         
         # Trimmers
+        logger.debug("Generating trimmers")
         self._generate_trimmers()
         
         # Header cripples
+        logger.debug("Generating header cripples")
         self._generate_header_cripples()
         
         # Sill cripples
+        logger.debug("Generating sill cripples")
         self._generate_sill_cripples()
         
         # Standard studs
+        logger.debug("Generating standard studs")
         self._generate_studs()
         
         # Row blocking
+        logger.debug("Generating row blocking")
         try:
             # Check if row blocking is already generated
             if self.generation_status.get("blocking_generated", False):
-                print("Row blocking already generated, skipping.")
+                logger.info("Row blocking already generated, skipping.")
             else:
                 # Generate row blocking using the already generated studs
                 if "studs" in self.framing_elements and self.framing_elements["studs"]:
+                    logger.debug(f"Found {len(self.framing_elements['studs'])} studs for blocking")
                     blocking = self._generate_row_blocking(studs=self.framing_elements["studs"])
                     
                     # Store the generated blocking
@@ -149,39 +182,41 @@ class FramingGenerator:
                     
                     # Update generation status
                     self.generation_status["blocking_generated"] = True
-                    print(f"Row blocking generation complete: {len(blocking)} blocks created")
+                    logger.info(f"Row blocking generation complete: {len(blocking)} blocks created")
                 else:
-                    print("No studs available for row blocking, skipping.")
+                    logger.warning("No studs available for row blocking, skipping.")
                     self.framing_elements["row_blocking"] = []
                     self.generation_status["blocking_generated"] = True
         except Exception as e:
-            print(f"Error in main generate_framing while processing row blocking: {str(e)}")
+            logger.error(f"Error in main generate_framing while processing row blocking: {str(e)}")
+            logger.error(traceback.format_exc())
             # Initialize empty list to prevent errors downstream
             self.framing_elements["row_blocking"] = []
             self.generation_status["blocking_generated"] = True
         
         end_time = datetime.datetime.now()
-        print(f"Framing generation complete in {(end_time - start_time).total_seconds():.2f} seconds")
+        elapsed_time = (end_time - start_time).total_seconds()
+        logger.info(f"Framing generation complete in {elapsed_time:.2f} seconds")
         
         # Display debugging info for wall
-        self._print_wall_data_diagnostic()
+        self._log_wall_data_diagnostic()
         
-        print("Framing generation complete:")
-        print(f"Bottom plates: {len(self.framing_elements.get('bottom_plates', []))}")
-        print(f"Top plates: {len(self.framing_elements.get('top_plates', []))}")
-        print(f"King studs: {len(self.framing_elements.get('king_studs', []))}")
-        print(f"Headers: {len(self.framing_elements.get('headers', []))}")
-        print(f"Sills: {len(self.framing_elements.get('sills', []))}")
-        print(f"Trimmers: {len(self.framing_elements.get('trimmers', []))}")
-        print(f"Header cripples: {len(self.framing_elements.get('header_cripples', []))}")
-        print(f"Sill cripples: {len(self.framing_elements.get('sill_cripples', []))}")
-        print(f"Studs: {len(self.framing_elements.get('studs', []))}")
-        print(f"Row blocking: {len(self.framing_elements.get('row_blocking', []))}")
+        logger.info("Framing generation complete:")
+        logger.info(f"Bottom plates: {len(self.framing_elements.get('bottom_plates', []))}")
+        logger.info(f"Top plates: {len(self.framing_elements.get('top_plates', []))}")
+        logger.info(f"King studs: {len(self.framing_elements.get('king_studs', []))}")
+        logger.info(f"Headers: {len(self.framing_elements.get('headers', []))}")
+        logger.info(f"Sills: {len(self.framing_elements.get('sills', []))}")
+        logger.info(f"Trimmers: {len(self.framing_elements.get('trimmers', []))}")
+        logger.info(f"Header cripples: {len(self.framing_elements.get('header_cripples', []))}")
+        logger.info(f"Sill cripples: {len(self.framing_elements.get('sill_cripples', []))}")
+        logger.info(f"Studs: {len(self.framing_elements.get('studs', []))}")
+        logger.info(f"Row blocking: {len(self.framing_elements.get('row_blocking', []))}")
         
-        # Print debug geometry count
-        print("Debug geometry:")
+        # Log debug geometry count
+        logger.debug("Debug geometry:")
         for key, items in self.debug_geometry.items():
-            print(f"  {key}: {len(items)} items")
+            logger.debug(f"  {key}: {len(items)} items")
             
         return self.framing_elements
 
@@ -190,10 +225,15 @@ class FramingGenerator:
         Generate top and bottom wall plates.
         """
         try:
+            logger.debug("Starting plate generation")
+            logger.debug("Wall base curve type: " + str(type(self.wall_data.get("wall_base_curve"))))
+            
             # Skip if plates already generated
             if self.generation_status["plates_generated"]:
+                logger.debug("Plates already generated, skipping")
                 return
 
+            logger.debug("Creating bottom plates")
             self.framing_elements["bottom_plates"] = create_plates(
                 wall_data=self.wall_data,
                 plate_type="bottom_plate",
@@ -201,6 +241,7 @@ class FramingGenerator:
                 layers=self.framing_config["bottom_plate_layers"],
             )
 
+            logger.debug("Creating top plates")
             self.framing_elements["top_plates"] = create_plates(
                 wall_data=self.wall_data,
                 plate_type="top_plate",
@@ -210,11 +251,19 @@ class FramingGenerator:
 
             self.generation_status["plates_generated"] = True
             self.messages.append("Plates generated successfully")
-            print(f"Created {len(self.framing_elements['bottom_plates'])} bottom plates")
-            print(f"Created {len(self.framing_elements['top_plates'])} top plates")
+            logger.info(f"Created {len(self.framing_elements['bottom_plates'])} bottom plates")
+            logger.info(f"Created {len(self.framing_elements['top_plates'])} top plates")
+            
+            # Add more detailed logging for debug level
+            for i, plate in enumerate(self.framing_elements['bottom_plates']):
+                logger.debug(f"Bottom plate {i} - length: {plate.length if hasattr(plate, 'length') else 'unknown'}")
+            
+            for i, plate in enumerate(self.framing_elements['top_plates']):
+                logger.debug(f"Top plate {i} - length: {plate.length if hasattr(plate, 'length') else 'unknown'}")
             
         except Exception as e:
-            print(f"Error generating plates: {str(e)}")
+            logger.error(f"Error generating plates: {str(e)}")
+            logger.error(traceback.format_exc())
             self.messages.append(f"Error generating plates: {str(e)}")
             
             # Initialize empty collections as fallback
@@ -228,19 +277,29 @@ class FramingGenerator:
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
 
         try:
+            logger.debug("Starting king stud generation")
             if self.generation_status["king_studs_generated"]:
+                logger.debug("King studs already generated, skipping")
                 return
 
             if not self.generation_status["plates_generated"]:
+                logger.error("Cannot generate king studs before plates")
                 raise RuntimeError("Cannot generate king studs before plates")
 
             openings = self.wall_data.get("openings", [])
-            print(f"\nGenerating king studs for {len(openings)} openings")
+            logger.info(f"\nGenerating king studs for {len(openings)} openings")
+            logger.debug(f"Openings data: {openings}")
+
+            # Debug logging for bottom plate and top plate being used
+            bottom_plate = self.framing_elements["bottom_plates"][0]
+            top_plate = self.framing_elements["top_plates"][-1]
+            logger.debug(f"Using bottom plate: {id(bottom_plate)}")
+            logger.debug(f"Using top plate: {id(top_plate)}")
 
             king_stud_generator = KingStudGenerator(
                 self.wall_data,
-                self.framing_elements["bottom_plates"][0],
-                self.framing_elements["top_plates"][-1],
+                bottom_plate,
+                top_plate,
             )
 
             opening_king_studs = []
@@ -254,28 +313,35 @@ class FramingGenerator:
 
             for i, opening in enumerate(openings):
                 try:
-                    print(f"\nProcessing opening {i+1}")
+                    logger.info(f"\nProcessing opening {i+1}")
+                    logger.debug(f"Opening {i+1} data: {opening}")
+                    
                     king_studs = king_stud_generator.generate_king_studs(opening)
+                    logger.debug(f"Generated {len(king_studs)} king studs for opening {i+1}")
                     opening_king_studs.extend(king_studs)
+
+                    # Log details about each generated king stud
+                    for j, stud in enumerate(king_studs):
+                        logger.debug(f"King stud {j} for opening {i+1} - position: {'left' if j == 0 else 'right'}")
 
                     # Collect debug geometry
                     for key in all_debug_geometry:
-                        all_debug_geometry[key].extend(
-                            king_stud_generator.debug_geometry.get(key, [])
-                        )
+                        debug_items = king_stud_generator.debug_geometry.get(key, [])
+                        all_debug_geometry[key].extend(debug_items)
+                        logger.debug(f"Added {len(debug_items)} debug {key} for opening {i+1}")
 
                 except Exception as e:
-                    print(f"Error with opening {i+1}: {str(e)}")
-                    import traceback
-
-                    print(traceback.format_exc())
+                    logger.error(f"Error with opening {i+1}: {str(e)}")
+                    logger.error(traceback.format_exc())
 
             self.framing_elements["king_studs"] = opening_king_studs
             self.debug_geometry = all_debug_geometry
             self.generation_status["king_studs_generated"] = True
+            logger.info(f"King stud generation complete: {len(opening_king_studs)} king studs created")
 
         except Exception as e:
-            print(f"Error generating king studs: {str(e)}")
+            logger.error(f"Error generating king studs: {str(e)}")
+            logger.error(traceback.format_exc())
             raise
 
     def _get_king_stud_positions(self) -> Dict[int, Tuple[float, float]]:
@@ -294,7 +360,7 @@ class FramingGenerator:
 
             # Check if king studs have been generated
             if not self.generation_status.get("king_studs_generated", False):
-                print("King studs not yet generated, can't extract positions")
+                logger.warning("King studs not yet generated, can't extract positions")
                 return positions
 
             # Get openings and king studs
@@ -304,14 +370,12 @@ class FramingGenerator:
             # Get the base plane for position calculations
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
-                print("No base plane available for king stud position extraction")
+                logger.warning("No base plane available")
                 return positions
 
             # Verify we have enough king studs (should be pairs for each opening)
             if len(king_studs) < 2 or len(openings) == 0:
-                print(
-                    f"Not enough king studs ({len(king_studs)}) or openings ({len(openings)})"
-                )
+                logger.warning(f"Not enough king studs ({len(king_studs)}) or openings ({len(openings)})")
                 return positions
 
             # Process each opening
@@ -322,7 +386,7 @@ class FramingGenerator:
 
                 # Verify we have studs for this opening
                 if right_index >= len(king_studs):
-                    print(f"Missing king studs for opening {i+1}")
+                    logger.warning(f"Missing king studs for opening {i+1}")
                     continue
 
                 # Get the stud geometries
@@ -335,7 +399,7 @@ class FramingGenerator:
                     right_centerline = self._extract_centerline_from_stud(right_stud)
 
                     if left_centerline is None or right_centerline is None:
-                        print(f"Failed to extract centerlines for opening {i+1}")
+                        logger.warning(f"Failed to extract centerlines for opening {i+1}")
                         continue
 
                     # Get the u-coordinates (along the wall) for each stud
@@ -351,32 +415,26 @@ class FramingGenerator:
                     # Store the inner face positions for header placement
                     positions[i] = (left_u, right_u)
 
-                    print(f"Extracted king stud positions for opening {i+1}:")
-                    print(f"  Left stud centerline: u={left_u}")
-                    print(f"  Right stud centerline: u={right_u}")
+                    logger.info(f"Extracted king stud positions for opening {i+1}:")
+                    logger.info(f"  Left stud centerline: u={left_u}")
+                    logger.info(f"  Right stud centerline: u={right_u}")
 
                     # DEBUG: Calculate and report stud inner faces
                     king_stud_width = FRAMING_PARAMS.get("king_stud_width", 1.5 / 12)
                     inner_left = left_u + (king_stud_width / 2)
                     inner_right = right_u - (king_stud_width / 2)
-                    print(f"  Inner face positions: left={inner_left}, right={inner_right}")
-                    print(f"  Resulting span width: {inner_right - inner_left}")
+                    logger.info(f"  Inner face positions: left={inner_left}, right={inner_right}")
+                    logger.info(f"  Resulting span width: {inner_right - inner_left}")
 
                 except Exception as e:
-                    print(
-                        f"Error extracting king stud positions for opening {i+1}: {str(e)}"
-                    )
-                    import traceback
-
-                    print(traceback.format_exc())
+                    logger.error(f"Error extracting king stud positions for opening {i+1}: {str(e)}")
+                    logger.error(traceback.format_exc())
 
             return positions
 
         except Exception as e:
-            print(f"Error getting king stud positions: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error getting king stud positions: {str(e)}")
+            logger.error(traceback.format_exc())
             return {}
 
     def _extract_centerline_from_stud(self, stud_brep: rg.Brep) -> Optional[rg.Curve]:
@@ -410,15 +468,37 @@ class FramingGenerator:
                         test_point = path.PointAt(0)  # Generic curve
 
                     # Test if this path is related to our stud
-                    if stud_brep.IsPointInside(test_point, 0.01, True):
-                        return path
+                    # Check if IsPointInside method exists
+                    if hasattr(stud_brep, 'IsPointInside'):
+                        if stud_brep.IsPointInside(test_point, 0.01, True):
+                            return path
+                    else:
+                        # Fallback method if IsPointInside isn't available
+                        try:
+                            # Use closest point method instead
+                            closest_point = stud_brep.ClosestPoint(test_point)
+                            if closest_point and test_point.DistanceTo(closest_point) < 0.05:
+                                # If the point is very close to the Brep, consider it inside
+                                logger.debug("Using fallback proximity check for point inside Brep")
+                                return path
+                        except Exception as closest_point_error:
+                            logger.debug(f"Fallback closest point check failed: {str(closest_point_error)}")
+                            
+                            # Final fallback - check if point is within bounding box
+                            try:
+                                bbox = safe_get_bounding_box(stud_brep, True)
+                                if bbox and bbox.IsValid and bbox.Contains(test_point):
+                                    logger.debug("Using bounding box check for point inside Brep")
+                                    return path
+                            except Exception as bbox_error:
+                                logger.debug(f"Bounding box check failed: {str(bbox_error)}")
                 except Exception as e:
-                    print(f"Error checking path: {str(e)}")
+                    logger.error(f"Error checking path: {str(e)}")
                     continue
 
             # If we can't find a path curve, try to extract it from the Brep
             # For a typical extruded stud, we can use the Brep's bounding box
-            bbox = stud_brep.GetBoundingBox(True)
+            bbox = safe_get_bounding_box(stud_brep, True)
             if bbox.IsValid:
                 # Vertical centerline through the middle of the stud
                 center_x = (bbox.Min.X + bbox.Max.X) / 2
@@ -431,11 +511,11 @@ class FramingGenerator:
                 return rg.LineCurve(start, end)
 
             # If that fails, return None
-            print("Failed to extract centerline from stud Brep")
+            logger.warning("Failed to extract centerline from stud Brep")
             return None
 
         except Exception as e:
-            print(f"Error extracting centerline from stud: {str(e)}")
+            logger.error(f"Error extracting centerline from stud: {str(e)}")
             return None
 
     def _project_point_to_u_coordinate(
@@ -462,7 +542,7 @@ class FramingGenerator:
             return u
 
         except Exception as e:
-            print(f"Error projecting point to u-coordinate: {str(e)}")
+            logger.error(f"Error projecting point to u-coordinate: {str(e)}")
             return 0.0
 
     def _generate_headers_and_sills(self) -> None:
@@ -480,11 +560,11 @@ class FramingGenerator:
                 self._generate_king_studs()
 
             openings = self.wall_data.get("openings", [])
-            print(f"\nGenerating headers and sills for {len(openings)} openings")
+            logger.info(f"\nGenerating headers and sills for {len(openings)} openings")
 
             # Skip if no openings
             if not openings:
-                print("No openings to process - skipping headers and sills")
+                logger.info("No openings to process - skipping headers and sills")
                 self.generation_status["headers_and_sills_generated"] = True
                 return
 
@@ -500,7 +580,7 @@ class FramingGenerator:
             # Process each opening
             for i, opening in enumerate(openings):
                 try:
-                    print(f"\nProcessing opening {i+1}")
+                    logger.info(f"\nProcessing opening {i+1}")
 
                     # Get king stud positions for this opening if available
                     opening_king_stud_positions = self._get_king_stud_positions().get(i)
@@ -511,20 +591,18 @@ class FramingGenerator:
                     )
                     if header:
                         headers.append(header)
-                        print(f"Successfully created header for opening {i+1}")
+                        logger.info(f"Successfully created header for opening {i+1}")
 
                     # Generate sill using direct base plane approach
                     if opening["opening_type"].lower() == "window":
                         sill = sill_generator.generate_sill(opening)
                         if sill:
                             sills.append(sill)
-                            print(f"Successfully created sill for opening {i+1}")
+                            logger.info(f"Successfully created sill for opening {i+1}")
 
                 except Exception as e:
-                    print(f"Error with opening {i+1}: {str(e)}")
-                    import traceback
-
-                    print(traceback.format_exc())
+                    logger.error(f"Error with opening {i+1}: {str(e)}")
+                    logger.error(traceback.format_exc())
                     continue
 
             # Store the generated elements
@@ -549,10 +627,8 @@ class FramingGenerator:
             self.generation_status["headers_and_sills_generated"] = True
 
         except Exception as e:
-            print(f"Error generating headers and sills: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error generating headers and sills: {str(e)}")
+            logger.error(traceback.format_exc())
 
             # Mark as completed to prevent future attempts
             self.generation_status["headers_and_sills_generated"] = True
@@ -570,7 +646,7 @@ class FramingGenerator:
         """
         try:
             openings = self.wall_data.get("openings", [])
-            print(f"Using fallback approach for {len(openings)} openings")
+            logger.info(f"Using fallback approach for {len(openings)} openings")
 
             # Track generated elements
             headers = []
@@ -579,15 +655,13 @@ class FramingGenerator:
             # Get wall base plane
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
-                print(
-                    "Error: No base plane available for fallback header/sill generation"
-                )
+                logger.warning("No base plane available for fallback header/sill generation")
                 return
 
             # Process each opening
             for i, opening in enumerate(openings):
                 try:
-                    print(f"Processing opening {i+1} in fallback mode")
+                    logger.info(f"Processing opening {i+1} in fallback mode")
 
                     # Extract opening information
                     opening_type = opening.get("opening_type", "")
@@ -665,7 +739,7 @@ class FramingGenerator:
                             sills.append(sill_brep)
 
                 except Exception as e:
-                    print(f"Error with opening {i+1} in fallback mode: {str(e)}")
+                    logger.error(f"Error with opening {i+1} in fallback mode: {str(e)}")
 
             # Store the generated elements
             self.framing_elements["headers"] = headers
@@ -675,10 +749,8 @@ class FramingGenerator:
             self.generation_status["headers_and_sills_generated"] = True
 
         except Exception as e:
-            print(f"Error in fallback headers and sills generation: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error in fallback headers and sills generation: {str(e)}")
+            logger.error(traceback.format_exc())
 
     def _generate_trimmers(self) -> None:
         """
@@ -701,11 +773,11 @@ class FramingGenerator:
                 self._generate_headers_and_sills()
 
             openings = self.wall_data.get("openings", [])
-            print(f"\nGenerating trimmers for {len(openings)} openings")
+            logger.info(f"\nGenerating trimmers for {len(openings)} openings")
 
             # Skip if no openings
             if not openings:
-                print("No openings to process - skipping trimmers")
+                logger.info("No openings to process - skipping trimmers")
                 self.generation_status["trimmers_generated"] = True
                 self.framing_elements["trimmers"] = []
                 return
@@ -719,7 +791,7 @@ class FramingGenerator:
             # Process each opening
             for i, opening in enumerate(openings):
                 try:
-                    print(f"\nProcessing opening {i+1}")
+                    logger.info(f"\nProcessing opening {i+1}")
 
                     # Get header bottom elevation for this opening if available
                     header_bottom = self._get_header_bottom_elevation(i)
@@ -728,7 +800,7 @@ class FramingGenerator:
                     bottom_plate = self.framing_elements["bottom_plates"][0]
                     plate_boundary_data = bottom_plate.get_boundary_data()
 
-                    print(f"Bottom plate boundary data: {plate_boundary_data}")
+                    logger.info(f"Bottom plate boundary data: {plate_boundary_data}")
 
                     # Generate trimmers for this opening
                     opening_trimmers = trimmer_generator.generate_trimmers(
@@ -739,15 +811,13 @@ class FramingGenerator:
 
                     if opening_trimmers:
                         trimmers.extend(opening_trimmers)
-                        print(
+                        logger.info(
                             f"Successfully created {len(opening_trimmers)} trimmers for opening {i+1}"
                         )
 
                 except Exception as e:
-                    print(f"Error creating trimmers for opening {i+1}: {str(e)}")
-                    import traceback
-
-                    print(traceback.format_exc())
+                    logger.error(f"Error creating trimmers for opening {i+1}: {str(e)}")
+                    logger.error(traceback.format_exc())
                     continue
 
             # Store the generated elements
@@ -770,10 +840,8 @@ class FramingGenerator:
             self.generation_status["trimmers_generated"] = True
 
         except Exception as e:
-            print(f"Error generating trimmers: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error generating trimmers: {str(e)}")
+            logger.error(traceback.format_exc())
 
             # Mark as completed to prevent future attempts
             self.generation_status["trimmers_generated"] = True
@@ -804,11 +872,11 @@ class FramingGenerator:
                 self._generate_trimmers()
 
             openings = self.wall_data.get("openings", [])
-            print(f"\nGenerating header cripples for {len(openings)} openings")
+            logger.info(f"\nGenerating header cripples for {len(openings)} openings")
 
             # Skip if no openings
             if not openings:
-                print("No openings to process - skipping header cripples")
+                logger.info("No openings to process - skipping header cripples")
                 self.generation_status["header_cripples_generated"] = True
                 self.framing_elements["header_cripples"] = []
                 return
@@ -818,7 +886,7 @@ class FramingGenerator:
 
             # Get top plate data
             if not self.framing_elements.get("top_plates"):
-                print("No top plates available for header cripple generation")
+                logger.warning("No top plates available for header cripple generation")
                 self.generation_status["header_cripples_generated"] = True
                 self.framing_elements["header_cripples"] = []
                 return
@@ -827,9 +895,9 @@ class FramingGenerator:
             top_plate = self.framing_elements["top_plates"][-1]
             top_plate_data = top_plate.get_boundary_data()
 
-            print(f"Top plate data for header cripples:")
+            logger.info(f"Top plate data for header cripples:")
             for key, value in top_plate_data.items():
-                print(f"  {key}: {value}")
+                logger.info(f"  {key}: {value}")
 
             # Track generated elements
             header_cripples = []
@@ -837,32 +905,32 @@ class FramingGenerator:
             # Process each opening
             for i, opening in enumerate(openings):
                 try:
-                    print(f"\nProcessing opening {i+1} for header cripples")
+                    logger.info(f"\nProcessing opening {i+1} for header cripples")
 
                     # Check opening type - generally headers are only needed above windows and doors
                     opening_type = opening.get("opening_type", "").lower()
-                    print(f"Opening type: {opening_type}")
+                    logger.info(f"Opening type: {opening_type}")
 
                     # Get header data including top elevation
                     headers = self.framing_elements.get("headers", [])
-                    print(f"Available headers: {len(headers)}")
+                    logger.info(f"Available headers: {len(headers)}")
 
                     if i >= len(headers):
-                        print(f"No header found for opening {i+1}, skipping")
+                        logger.warning(f"No header found for opening {i+1}, skipping")
                         continue
 
                     # Get header top elevation for this opening
                     header = headers[i]
 
                     # Get bounding box of header
-                    bbox = header.GetBoundingBox(True)
+                    bbox = safe_get_bounding_box(header, True)
                     if not bbox.IsValid:
-                        print(f"Invalid bounding box for header {i+1}, skipping")
+                        logger.warning(f"Invalid bounding box for header {i+1}, skipping")
                         continue
 
                     # Get the top elevation of the header from the bounding box
                     header_top_elevation = bbox.Max.Z
-                    print(f"Header top elevation: {header_top_elevation}")
+                    logger.info(f"Header top elevation: {header_top_elevation}")
 
                     # Create header data dictionary with required elevation
                     header_data = {"top_elevation": header_top_elevation}
@@ -870,11 +938,11 @@ class FramingGenerator:
                     # Get trimmer positions for this opening
                     trimmer_positions = self._get_trimmer_positions(i)
                     if trimmer_positions:
-                        print(
+                        logger.info(
                             f"Trimmer positions for opening {i+1}: left={trimmer_positions[0]}, right={trimmer_positions[1]}"
                         )
                     else:
-                        print(
+                        logger.warning(
                             f"No trimmer positions found for opening {i+1}, will calculate from opening data"
                         )
 
@@ -887,17 +955,15 @@ class FramingGenerator:
 
                     if opening_cripples:
                         header_cripples.extend(opening_cripples)
-                        print(
+                        logger.info(
                             f"Successfully created {len(opening_cripples)} header cripples for opening {i+1}"
                         )
                     else:
-                        print(f"No header cripples created for opening {i+1}")
+                        logger.warning(f"No header cripples created for opening {i+1}")
 
                 except Exception as e:
-                    print(f"Error creating header cripples for opening {i+1}: {str(e)}")
-                    import traceback
-
-                    print(traceback.format_exc())
+                    logger.error(f"Error creating header cripples for opening {i+1}: {str(e)}")
+                    logger.error(traceback.format_exc())
                     continue
 
             # Store the generated elements
@@ -920,15 +986,13 @@ class FramingGenerator:
 
             # Update generation status
             self.generation_status["header_cripples_generated"] = True
-            print(
+            logger.info(
                 f"Header cripple generation complete: {len(header_cripples)} cripples created"
             )
 
         except Exception as e:
-            print(f"Error generating header cripples: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error generating header cripples: {str(e)}")
+            logger.error(traceback.format_exc())
 
             # Mark as completed to prevent future attempts
             self.generation_status["header_cripples_generated"] = True
@@ -951,30 +1015,28 @@ class FramingGenerator:
         """
         try:
             headers = self.framing_elements.get("headers", [])
-            print(f"Headers available: {len(headers)}")
+            logger.info(f"Headers available: {len(headers)}")
 
             if opening_index < len(headers):
                 header = headers[opening_index]
-                print(f"Retrieved header for opening {opening_index}")
+                logger.info(f"Retrieved header for opening {opening_index}")
 
                 # Get bounding box of header
-                bbox = header.GetBoundingBox(True)
-                print(f"Bounding box valid: {bbox.IsValid}")
+                bbox = safe_get_bounding_box(header, True)
+                logger.info(f"Bounding box valid: {bbox.IsValid}")
 
                 if bbox.IsValid:
-                    print(f"Header bounds: Min={bbox.Min.Z}, Max={bbox.Max.Z}")
+                    logger.info(f"Header bounds: Min={bbox.Min.Z}, Max={bbox.Max.Z}")
                     # Return the top elevation of the header
                     return bbox.Max.Z
                 else:
-                    print("Invalid bounding box for header")
+                    logger.warning("Invalid bounding box for header")
 
             return None
 
         except Exception as e:
-            print(f"Error getting header top elevation: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error getting header top elevation: {str(e)}")
+            logger.error(traceback.format_exc())
             return None
 
     def _get_header_bottom_elevation(self, opening_index: int) -> Optional[float]:
@@ -996,7 +1058,7 @@ class FramingGenerator:
                 header = headers[opening_index]
 
                 # Get bounding box of header
-                bbox = header.GetBoundingBox(True)
+                bbox = safe_get_bounding_box(header, True)
                 if bbox.IsValid:
                     # Return the bottom elevation of the header
                     return bbox.Min.Z
@@ -1004,7 +1066,7 @@ class FramingGenerator:
             return None
 
         except Exception as e:
-            print(f"Error getting header elevation: {str(e)}")
+            logger.error(f"Error getting header elevation: {str(e)}")
             return None
 
     def _generate_sill_cripples(self) -> None:
@@ -1031,11 +1093,11 @@ class FramingGenerator:
                 self._generate_trimmers()
 
             openings = self.wall_data.get("openings", [])
-            print(f"\nGenerating sill cripples for {len(openings)} openings")
+            logger.info(f"\nGenerating sill cripples for {len(openings)} openings")
 
             # Skip if no openings
             if not openings:
-                print("No openings to process - skipping sill cripples")
+                logger.info("No openings to process - skipping sill cripples")
                 self.generation_status["sill_cripples_generated"] = True
                 self.framing_elements["sill_cripples"] = []
                 return
@@ -1045,7 +1107,7 @@ class FramingGenerator:
 
             # Get bottom plate data
             if not self.framing_elements.get("bottom_plates"):
-                print("No bottom plates available for sill cripple generation")
+                logger.warning("No bottom plates available for sill cripple generation")
                 self.generation_status["sill_cripples_generated"] = True
                 self.framing_elements["sill_cripples"] = []
                 return
@@ -1054,9 +1116,9 @@ class FramingGenerator:
             bottom_plate = self.framing_elements["bottom_plates"][0]
             bottom_plate_data = bottom_plate.get_boundary_data()
 
-            print(f"Bottom plate data for sill cripples:")
+            logger.info(f"Bottom plate data for sill cripples:")
             for key, value in bottom_plate_data.items():
-                print(f"  {key}: {value}")
+                logger.info(f"  {key}: {value}")
 
             # Track generated elements
             sill_cripples = []
@@ -1066,14 +1128,14 @@ class FramingGenerator:
                 try:
                     # Only process window openings
                     if opening.get("opening_type", "").lower() != "window":
-                        print(f"Opening {i+1} is not a window, skipping sill cripples")
+                        logger.info(f"Opening {i+1} is not a window, skipping sill cripples")
                         continue
 
-                    print(f"\nProcessing opening {i+1} for sill cripples")
+                    logger.info(f"\nProcessing opening {i+1} for sill cripples")
 
                     # Get sill data including bottom elevation
                     sills = self.framing_elements.get("sills", [])
-                    print(f"Available sills: {len(sills)}")
+                    logger.info(f"Available sills: {len(sills)}")
 
                     # Find the sill for this opening
                     sill_index = None
@@ -1085,21 +1147,21 @@ class FramingGenerator:
                             break
 
                     if sill_index is None or sill_index >= len(sills):
-                        print(f"No sill found for window opening {i+1}, skipping")
+                        logger.warning(f"No sill found for window opening {i+1}, skipping")
                         continue
 
                     # Get sill bottom elevation for this opening
                     sill = sills[sill_index]
 
                     # Get bounding box of sill
-                    bbox = sill.GetBoundingBox(True)
+                    bbox = safe_get_bounding_box(sill, True)
                     if not bbox.IsValid:
-                        print(f"Invalid bounding box for sill {i+1}, skipping")
+                        logger.warning(f"Invalid bounding box for sill {i+1}, skipping")
                         continue
 
                     # Get the bottom elevation of the sill from the bounding box
                     sill_bottom_elevation = bbox.Min.Z
-                    print(f"Sill bottom elevation: {sill_bottom_elevation}")
+                    logger.info(f"Sill bottom elevation: {sill_bottom_elevation}")
 
                     # Create sill data dictionary with required elevation
                     sill_data = {"bottom_elevation": sill_bottom_elevation}
@@ -1107,11 +1169,11 @@ class FramingGenerator:
                     # Get trimmer positions for this opening
                     trimmer_positions = self._get_trimmer_positions(i)
                     if trimmer_positions:
-                        print(
+                        logger.info(
                             f"Trimmer positions for opening {i+1}: left={trimmer_positions[0]}, right={trimmer_positions[1]}"
                         )
                     else:
-                        print(
+                        logger.warning(
                             f"No trimmer positions found for opening {i+1}, will calculate from opening data"
                         )
 
@@ -1122,17 +1184,15 @@ class FramingGenerator:
 
                     if opening_cripples:
                         sill_cripples.extend(opening_cripples)
-                        print(
+                        logger.info(
                             f"Successfully created {len(opening_cripples)} sill cripples for opening {i+1}"
                         )
                     else:
-                        print(f"No sill cripples created for opening {i+1}")
+                        logger.warning(f"No sill cripples created for opening {i+1}")
 
                 except Exception as e:
-                    print(f"Error creating sill cripples for opening {i+1}: {str(e)}")
-                    import traceback
-
-                    print(traceback.format_exc())
+                    logger.error(f"Error creating sill cripples for opening {i+1}: {str(e)}")
+                    logger.error(traceback.format_exc())
                     continue
 
             # Store the generated elements
@@ -1155,15 +1215,13 @@ class FramingGenerator:
 
             # Update generation status
             self.generation_status["sill_cripples_generated"] = True
-            print(
+            logger.info(
                 f"Sill cripple generation complete: {len(sill_cripples)} cripples created"
             )
 
         except Exception as e:
-            print(f"Error generating sill cripples: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error generating sill cripples: {str(e)}")
+            logger.error(traceback.format_exc())
 
             # Mark as completed to prevent future attempts
             self.generation_status["sill_cripples_generated"] = True
@@ -1187,12 +1245,12 @@ class FramingGenerator:
             Tuple of (left, right) U-coordinates, or None if not available
         """
         try:
-            print(f"\nDEBUG: _get_trimmer_positions for opening {opening_index}")
+            logger.debug(f"\nDEBUG: _get_trimmer_positions for opening {opening_index}")
             trimmers = self.framing_elements.get("trimmers", [])
-            print(f"Total trimmers available: {len(trimmers)}")
+            logger.info(f"Total trimmers available: {len(trimmers)}")
 
             if len(trimmers) < (opening_index + 1) * 2:
-                print(
+                logger.warning(
                     f"Not enough trimmers: need {(opening_index + 1) * 2}, have {len(trimmers)}"
                 )
                 return None
@@ -1201,27 +1259,27 @@ class FramingGenerator:
             start_idx = opening_index * 2
             end_idx = (opening_index + 1) * 2
             opening_trimmers = trimmers[start_idx:end_idx]
-            print(
+            logger.info(
                 f"Extracted trimmers for opening {opening_index}: indices {start_idx} to {end_idx-1}"
             )
-            print(f"Number of trimmers extracted: {len(opening_trimmers)}")
+            logger.info(f"Number of trimmers extracted: {len(opening_trimmers)}")
 
             if len(opening_trimmers) != 2:
-                print(f"Expected 2 trimmers, got {len(opening_trimmers)}")
+                logger.warning(f"Expected 2 trimmers, got {len(opening_trimmers)}")
                 return None
 
             # Get the base plane for position calculations
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
-                print("No base plane available")
+                logger.warning("No base plane available")
                 return None
 
             # Get bounding boxes for each trimmer to determine their positions
             trimmer_positions = []
             for i, trimmer in enumerate(opening_trimmers):
-                bbox = trimmer.GetBoundingBox(True)
+                bbox = safe_get_bounding_box(trimmer, True)
                 if not bbox.IsValid:
-                    print(f"Invalid bounding box for trimmer {i}")
+                    logger.warning(f"Invalid bounding box for trimmer {i}")
                     continue
 
                 # Calculate center point of bounding box
@@ -1234,28 +1292,26 @@ class FramingGenerator:
                     center_point, base_plane
                 )
                 trimmer_positions.append(u_coordinate)
-                print(
+                logger.info(
                     f"Trimmer {i} center: ({center_x}, {center_y}), u-coordinate: {u_coordinate}"
                 )
 
             if len(trimmer_positions) != 2:
-                print(f"Failed to get positions for both trimmers")
+                logger.warning(f"Failed to get positions for both trimmers")
                 return None
 
             # Sort positions to ensure left < right
             trimmer_positions.sort()
             left_u, right_u = trimmer_positions
 
-            print(f"Final trimmer positions: left={left_u}, right={right_u}")
-            print(f"Distance between trimmers: {right_u - left_u}")
+            logger.info(f"Final trimmer positions: left={left_u}, right={right_u}")
+            logger.info(f"Distance between trimmers: {right_u - left_u}")
 
             return (left_u, right_u)
 
         except Exception as e:
-            print(f"Error getting trimmer positions: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error getting trimmer positions: {str(e)}")
+            logger.error(traceback.format_exc())
             return None
 
     def _generate_studs(self) -> None:
@@ -1277,7 +1333,7 @@ class FramingGenerator:
             if not self.generation_status.get("king_studs_generated", False):
                 self._generate_king_studs()
 
-            print("\nGenerating standard wall studs")
+            logger.info("\nGenerating standard wall studs")
 
             # Create stud generator with king stud information to avoid overlaps
             stud_generator = StudGenerator(
@@ -1310,13 +1366,11 @@ class FramingGenerator:
 
             # Update generation status
             self.generation_status["studs_generated"] = True
-            print(f"Stud generation complete: {len(studs)} studs created")
+            logger.info(f"Stud generation complete: {len(studs)} studs created")
 
         except Exception as e:
-            print(f"Error generating studs: {str(e)}")
-            import traceback
-
-            print(traceback.format_exc())
+            logger.error(f"Error generating studs: {str(e)}")
+            logger.error(traceback.format_exc())
 
             # Mark as completed to prevent future attempts
             self.generation_status["studs_generated"] = True
@@ -1337,11 +1391,11 @@ class FramingGenerator:
             List of block geometries (Breps)
         """
         if not self.framing_config.get("include_blocking", False):
-            print("Row blocking is disabled in config")
+            logger.info("Row blocking is disabled in config")
             return []
             
         if not studs and not hasattr(self, "studs"):
-            print("No studs provided for row blocking")
+            logger.info("No studs provided for row blocking")
             return []
             
         # Use provided studs or studs from the generator
@@ -1351,36 +1405,36 @@ class FramingGenerator:
         if not hasattr(self, "cells"):
             if "cells" in self.wall_data:
                 self.cells = self.wall_data["cells"]
-                print(f"Loaded {len(self.cells)} cells from wall_data")
+                logger.info(f"Loaded {len(self.cells)} cells from wall_data")
             else:
-                print("No cells available in wall_data")
+                logger.warning("No cells available in wall_data")
                 self.cells = []
                 return []
         
         # Group studs by cell to help with debugging
         stud_positions_by_cell = {}
         stud_count = len(all_studs) if all_studs else 0
-        print(f"\n===== ROW BLOCKING SETUP =====")
-        print(f"Total studs available: {stud_count}")
+        logger.info(f"\n===== ROW BLOCKING SETUP =====")
+        logger.info(f"Total studs available: {stud_count}")
         
         # Group king studs by cell
         king_stud_count = len(self.king_studs) if hasattr(self, "king_studs") else 0
-        print(f"King studs available: {king_stud_count}")
+        logger.info(f"King studs available: {king_stud_count}")
         
         # Count header cripples and sill cripples
         header_cripple_count = len(self.framing_elements.get("header_cripples", []))
         sill_cripple_count = len(self.framing_elements.get("sill_cripples", []))
-        print(f"Header cripples available: {header_cripple_count}")
-        print(f"Sill cripples available: {sill_cripple_count}")
+        logger.info(f"Header cripples available: {header_cripple_count}")
+        logger.info(f"Sill cripples available: {sill_cripple_count}")
         
         # Print detailed information about header cripples
         if header_cripple_count > 0:
-            print("\nHEADER CRIPPLE DETAILS:")
+            logger.info("\nHEADER CRIPPLE DETAILS:")
             for i, cripple in enumerate(self.framing_elements.get("header_cripples", [])):
                 # Get bounding box
                 if hasattr(cripple, "GetBoundingBox"):
                     try:
-                        bbox = cripple.GetBoundingBox(True)
+                        bbox = safe_get_bounding_box(cripple, True)
                         min_pt = bbox.Min
                         max_pt = bbox.Max
                         
@@ -1392,7 +1446,7 @@ class FramingGenerator:
                         z_max = max_pt.Z
                         height = z_max - z_min
                         
-                        print(f"  Header Cripple {i+1}: u={u_coord:.4f}, height={height:.4f}, z-range={z_min:.4f} to {z_max:.4f}")
+                        logger.info(f"  Header Cripple {i+1}: u={u_coord:.4f}, height={height:.4f}, z-range={z_min:.4f} to {z_max:.4f}")
                         
                         # Find cell for this cripple
                         cell_found = False
@@ -1404,7 +1458,7 @@ class FramingGenerator:
                             # Check if cripple is in this cell
                             if u_start <= u_coord <= u_end:
                                 cell_id = f"{cell_type}_{u_start}_{u_end}"
-                                print(f"    Belongs to cell: {cell_id}")
+                                logger.info(f"    Belongs to cell: {cell_id}")
                                 cell_found = True
                                 
                                 # Add to stud positions for this cell
@@ -1414,27 +1468,27 @@ class FramingGenerator:
                                 # Add the u-coordinate to the list if not already there
                                 if u_coord not in stud_positions_by_cell[cell_id]:
                                     stud_positions_by_cell[cell_id].append(u_coord)
-                                    print(f"    Added to cell {cell_id} for blocking")
+                                    logger.info(f"    Added to cell {cell_id} for blocking")
                                     
                                 # For header cripples, we especially care about HCC cells
                                 if cell_type == "HCC":
-                                    print(f"    This is a header cripple in an HCC cell - perfect match!")
+                                    logger.info(f"    This is a header cripple in an HCC cell - perfect match!")
                         
                         if not cell_found:
-                            print(f"    WARNING: Could not find a cell for header cripple at u={u_coord:.4f}")
+                            logger.warning(f"    WARNING: Could not find a cell for header cripple at u={u_coord:.4f}")
                     except Exception as e:
-                        print(f"Error getting header cripple {i+1} info: {str(e)}")
+                        logger.error(f"Error getting header cripple {i+1} info: {str(e)}")
                 else:
-                    print(f"  Header Cripple {i+1}: Could not get bounding box")
+                    logger.info(f"  Header Cripple {i+1}: Could not get bounding box")
         
         # Print detailed information about sill cripples
         if sill_cripple_count > 0:
-            print("\nSILL CRIPPLE DETAILS:")
+            logger.info("\nSILL CRIPPLE DETAILS:")
             for i, cripple in enumerate(self.framing_elements.get("sill_cripples", [])):
                 # Get bounding box
                 if hasattr(cripple, "GetBoundingBox"):
                     try:
-                        bbox = cripple.GetBoundingBox(True)
+                        bbox = safe_get_bounding_box(cripple, True)
                         min_pt = bbox.Min
                         max_pt = bbox.Max
                         
@@ -1446,7 +1500,7 @@ class FramingGenerator:
                         z_max = max_pt.Z
                         height = z_max - z_min
                         
-                        print(f"  Sill Cripple {i+1}: u={u_coord:.4f}, height={height:.4f}, z-range={z_min:.4f} to {z_max:.4f}")
+                        logger.info(f"  Sill Cripple {i+1}: u={u_coord:.4f}, height={height:.4f}, z-range={z_min:.4f} to {z_max:.4f}")
                         
                         # Find cell for this cripple
                         cell_found = False
@@ -1458,7 +1512,7 @@ class FramingGenerator:
                             # Check if cripple is in this cell
                             if u_start <= u_coord <= u_end:
                                 cell_id = f"{cell_type}_{u_start}_{u_end}"
-                                print(f"    Belongs to cell: {cell_id}")
+                                logger.info(f"    Belongs to cell: {cell_id}")
                                 cell_found = True
                                 
                                 # Add to stud positions for this cell
@@ -1468,24 +1522,24 @@ class FramingGenerator:
                                 # Add the u-coordinate to the list if not already there
                                 if u_coord not in stud_positions_by_cell[cell_id]:
                                     stud_positions_by_cell[cell_id].append(u_coord)
-                                    print(f"    Added to cell {cell_id} for blocking")
+                                    logger.info(f"    Added to cell {cell_id} for blocking")
                                     
                                 # For sill cripples, we especially care about SCC cells
                                 if cell_type == "SCC":
-                                    print(f"    This is a sill cripple in an SCC cell - perfect match!")
+                                    logger.info(f"    This is a sill cripple in an SCC cell - perfect match!")
                         
                         if not cell_found:
-                            print(f"    WARNING: Could not find a cell for sill cripple at u={u_coord:.4f}")
+                            logger.warning(f"    WARNING: Could not find a cell for sill cripple at u={u_coord:.4f}")
                     except Exception as e:
-                        print(f"Error getting sill cripple {i+1} info: {str(e)}")
+                        logger.error(f"Error getting sill cripple {i+1} info: {str(e)}")
                 else:
-                    print(f"  Sill Cripple {i+1}: Could not get bounding box")
+                    logger.info(f"  Sill Cripple {i+1}: Could not get bounding box")
         
         # Process regular studs
         for i, stud in enumerate(all_studs):
             try:
                 # Get the bounding box of the stud
-                bbox = stud.GetBoundingBox(True)
+                bbox = safe_get_bounding_box(stud, True)
                 min_pt = bbox.Min
                 max_pt = bbox.Max
                 
@@ -1510,14 +1564,14 @@ class FramingGenerator:
                         if u_coord not in stud_positions_by_cell[cell_id]:
                             stud_positions_by_cell[cell_id].append(u_coord)
             except Exception as e:
-                print(f"Error processing stud {i}: {str(e)}")
+                logger.error(f"Error processing stud {i}: {str(e)}")
         
         # Process king studs (if any)
         if hasattr(self, "king_studs") and self.king_studs:
             for i, stud in enumerate(self.king_studs):
                 try:
                     # Get the bounding box of the king stud
-                    bbox = stud.GetBoundingBox(True)
+                    bbox = safe_get_bounding_box(stud, True)
                     min_pt = bbox.Min
                     max_pt = bbox.Max
                     
@@ -1542,15 +1596,15 @@ class FramingGenerator:
                             if u_coord not in stud_positions_by_cell[cell_id]:
                                 stud_positions_by_cell[cell_id].append(u_coord)
                 except Exception as e:
-                    print(f"Error processing king stud {i}: {str(e)}")
+                    logger.error(f"Error processing king stud {i}: {str(e)}")
         
         # Print summary by cell
-        print("\nVERTICAL ELEMENTS BY CELL:")
+        logger.info("\nVERTICAL ELEMENTS BY CELL:")
         for cell_id, positions in stud_positions_by_cell.items():
-            print(f"  Cell {cell_id}: {len(positions)} vertical elements at positions {[f'{pos:.4f}' for pos in sorted(positions)]}")
+            logger.info(f"  Cell {cell_id}: {len(positions)} vertical elements at positions {[f'{pos:.4f}' for pos in sorted(positions)]}")
         
         if not stud_positions_by_cell:
-            print("No stud positions collected for blocking - check cell assignments")
+            logger.warning("No stud positions collected for blocking - check cell assignments")
             return []
             
         # Make sure the cells are included in wall_data for the blocking generator
@@ -1575,23 +1629,23 @@ class FramingGenerator:
             first_block_height=self.framing_config.get("first_block_height", 2.0)
         )
         
-        print(f"Created RowBlockingGenerator with {len(stud_positions_by_cell)} cells")
-        print(f"Passed {len(header_cripples)} header cripples")
-        print(f"Passed {len(sill_cripples)} sill cripples")
-        print("===== END ROW BLOCKING SETUP =====\n")
+        logger.info(f"Created RowBlockingGenerator with {len(stud_positions_by_cell)} cells")
+        logger.info(f"Passed {len(header_cripples)} header cripples")
+        logger.info(f"Passed {len(sill_cripples)} sill cripples")
+        logger.info("===== END ROW BLOCKING SETUP =====\n")
         
         # Generate the blocking elements
         return blocking_generator.generate_blocking()
         
-    def _print_wall_data_diagnostic(self):
-        """Print diagnostic information about wall data"""
-        print("\n===== WALL DATA DIAGNOSTIC =====")
+    def _log_wall_data_diagnostic(self):
+        """Log diagnostic information about wall data"""
+        logger.info("\n===== WALL DATA DIAGNOSTIC =====")
         if hasattr(self, 'wall_data'):
-            print(f"Wall ID: {self.wall_data.get('wall_id', 'Unknown')}")
-            print(f"Wall height: {self.wall_data.get('wall_height', 'Unknown')}")
-            print(f"Wall length: {self.wall_data.get('wall_length', 'Unknown')}")
-            print(f"Number of cells: {len(self.wall_data.get('cells', []))}")
-            print(f"Number of openings: {len(self.wall_data.get('openings', []))}")
+            logger.info(f"Wall ID: {self.wall_data.get('wall_id', 'Unknown')}")
+            logger.info(f"Wall height: {self.wall_data.get('wall_height', 'Unknown')}")
+            logger.info(f"Wall length: {self.wall_data.get('wall_length', 'Unknown')}")
+            logger.info(f"Number of cells: {len(self.wall_data.get('cells', []))}")
+            logger.info(f"Number of openings: {len(self.wall_data.get('openings', []))}")
         else:
-            print("No wall data available")
-        print("===== END WALL DATA DIAGNOSTIC =====\n")
+            logger.info("No wall data available")
+        logger.info("===== END WALL DATA DIAGNOSTIC =====\n")

@@ -3,23 +3,11 @@ import sys
 import pytest
 import os
 
-# Import our CI mocks to ensure they're loaded first
-try:
-    from src.timber_framing_generator.ci_mock import is_ci_environment
-
-    # The mocks are now already installed if we're in CI
-except ImportError:
-    # Define a fallback if the module can't be imported
-    def is_ci_environment():
-        return "CI" in os.environ or "GITHUB_ACTIONS" in os.environ
-
-
 @pytest.fixture
 def wall_data():
     """Provides wall data for testing."""
     # Import Rhino.Geometry for type annotations
     if is_ci_environment():
-        # In CI, use mocked classes
         import Rhino.Geometry as rg
 
         return {

@@ -3,7 +3,15 @@
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
 import math
+
+from src.timber_framing_generator.utils.safe_rhino import safe_create_extrusion
 from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+
+# Import our custom logging module
+from ..utils.logging_config import get_logger
+
+# Initialize logger for this module
+logger = get_logger(__name__)
 
 # Ensure FRAMING_PARAMS includes the min_cripple_length parameter:
 # "min_cripple_length": 6.0/12,  # Minimum length for header cripples (6 inches in feet)
@@ -29,11 +37,16 @@ class HeaderCrippleGenerator:
                 - wall_base_elevation: Base elevation of the wall
                 - wall_top_elevation: Top elevation of the wall
         """
+        logger.debug("Initializing HeaderCrippleGenerator")
+        logger.trace(f"Wall data: {wall_data}")
+        
         # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
 
         # Initialize storage for debug geometry
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
+        
+        logger.debug("HeaderCrippleGenerator initialized successfully")
 
     def generate_header_cripples(
         self,
@@ -64,18 +77,24 @@ class HeaderCrippleGenerator:
             List of header cripple Brep geometries
         """
         try:
+            logger.info("Generating header cripples")
+            logger.trace(f"Opening data: {opening_data}")
+            logger.trace(f"Header data: {header_data}")
+            logger.trace(f"Top plate data: {top_plate_data}")
+            logger.trace(f"Trimmer positions: {trimmer_positions}")
+            
             # Extract opening information
             opening_u_start = opening_data.get("start_u_coordinate")
             opening_width = opening_data.get("rough_width")
 
             if None in (opening_u_start, opening_width):
-                print("Missing required opening data")
+                logger.warning("Missing required opening data for header cripple generation")
                 return []
 
             # Get essential parameters
             base_plane = self.wall_data.get("base_plane")
             if base_plane is None:
-                print("No base plane available")
+                logger.warning("No base plane available for header cripple generation")
                 return []
 
             # Calculate header cripple dimensions from framing parameters
@@ -91,6 +110,12 @@ class HeaderCrippleGenerator:
             min_cripple_length = FRAMING_PARAMS.get(
                 "min_cripple_length", 6 / 12
             )  # Minimum 6 inches
+            
+            logger.debug("Header cripple dimensions:")
+            logger.debug(f"  Width: {cripple_width}")
+            logger.debug(f"  Depth: {cripple_depth}")
+            logger.debug(f"  Spacing: {cripple_spacing}")
+            logger.debug(f"  Minimum length: {min_cripple_length}")
 
             # Calculate vertical bounds
             header_top_elevation = header_data.get("top_elevation")
@@ -100,21 +125,22 @@ class HeaderCrippleGenerator:
                 "bottom_elevation"
             ) or top_plate_data.get("boundary_elevation")
 
-            print(f"Header top elevation: {header_top_elevation}")
-            print(f"Top plate bottom elevation: {top_plate_bottom_elevation}")
+            logger.debug(f"Header top elevation: {header_top_elevation}")
+            logger.debug(f"Top plate bottom elevation: {top_plate_bottom_elevation}")
 
             if None in (header_top_elevation, top_plate_bottom_elevation):
-                print("Missing elevation data for header or top plate")
-                print(f"Header data keys: {header_data.keys()}")
-                print(f"Top plate data keys: {top_plate_data.keys()}")
+                logger.warning("Missing elevation data for header or top plate")
+                logger.debug(f"Header data keys: {header_data.keys()}")
+                logger.debug(f"Top plate data keys: {top_plate_data.keys()}")
                 return []
 
             # Calculate cripple length
             cripple_length = top_plate_bottom_elevation - header_top_elevation
+            logger.debug(f"Calculated cripple length: {cripple_length}")
 
             # Check if cripple length meets minimum requirement
             if cripple_length < min_cripple_length:
-                print(
+                logger.warning(
                     f"Header cripple length {cripple_length} is less than minimum {min_cripple_length}"
                 )
                 return []
@@ -127,19 +153,20 @@ class HeaderCrippleGenerator:
 
                 u_left_inner = u_left  # + (trimmer_width / 2)
                 u_right_inner = u_right  # - (trimmer_width / 2)
+                logger.debug("Using provided trimmer positions for header cripples")
             else:
                 # Calculate positions based on opening with standard offsets
                 u_left_inner = opening_u_start - (cripple_width / 2)
                 u_right_inner = opening_u_start + opening_width + (cripple_width / 2)
+                logger.debug("Calculated trimmer positions based on opening data")
 
             # Calculate internal width between inner faces
             internal_width = u_right_inner - u_left_inner
 
-            print(f"\nHeader cripple calculation details:")
-            print(f"  Trimmer positions: left={u_left}, right={u_right}")
-            print(f"  Inner faces: left={u_left_inner}, right={u_right_inner}")
-            print(f"  Internal width: {internal_width}")
-            print(f"  Cripple spacing parameter: {cripple_spacing}")
+            logger.debug("Header cripple calculation details:")
+            logger.debug(f"  Trimmer positions: left={u_left_inner}, right={u_right_inner}")
+            logger.debug(f"  Internal width: {internal_width}")
+            logger.debug(f"  Cripple spacing parameter: {cripple_spacing}")
 
             # Calculate number of spaces based on standard spacing
             num_spaces = math.ceil(internal_width / cripple_spacing)
@@ -150,16 +177,16 @@ class HeaderCrippleGenerator:
             # Calculate actual spacing
             actual_spacing = internal_width / num_spaces
 
-            print(f"  Number of spaces: {num_spaces}")
-            print(f"  Number of cripples: {cripple_count}")
-            print(f"  Actual spacing: {actual_spacing}")
+            logger.debug(f"  Number of spaces: {num_spaces}")
+            logger.debug(f"  Number of cripples: {cripple_count}")
+            logger.debug(f"  Actual spacing: {actual_spacing}")
 
             # Generate cripple positions
             cripple_positions = []
             for i in range(cripple_count):
                 position = u_left_inner + i * actual_spacing
                 cripple_positions.append(position)
-                print(f"  Cripple {i+1} position: {position}")
+                logger.trace(f"  Cripple {i+1} position: {position}")
 
             # TODO: Implement alternative spacing mode where spacing is exact value from FRAMING_PARAMS["cripple_spacing"]
             # except for the last header cripple which adjusts to the remainder space
@@ -168,8 +195,10 @@ class HeaderCrippleGenerator:
             header_cripples = []
 
             # Generate cripples at calculated positions
-            for u_position in cripple_positions:
+            logger.debug(f"Creating {len(cripple_positions)} header cripples")
+            for i, u_position in enumerate(cripple_positions):
                 # Create the cripple stud
+                logger.trace(f"Creating cripple {i+1} at position {u_position}")
                 cripple = self._create_cripple_geometry(
                     base_plane,
                     u_position,
@@ -181,14 +210,17 @@ class HeaderCrippleGenerator:
 
                 if cripple is not None:
                     header_cripples.append(cripple)
+                    logger.trace(f"Cripple {i+1} created successfully")
+                else:
+                    logger.warning(f"Failed to create cripple at position {u_position}")
 
+            logger.info(f"Generated {len(header_cripples)} header cripples")
             return header_cripples
 
         except Exception as e:
-            print(f"Error generating header cripples: {str(e)}")
+            logger.error(f"Error generating header cripples: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return []
 
     def _create_cripple_geometry(
@@ -220,6 +252,8 @@ class HeaderCrippleGenerator:
             Brep geometry for the header cripple stud, or None if creation fails
         """
         try:
+            logger.trace(f"Creating cripple geometry at u={u_coordinate}, bottom_v={bottom_v}, top_v={top_v}")
+            
             # 1. Create the centerline endpoints in world coordinates
             start_point = rg.Point3d.Add(
                 base_plane.Origin,
@@ -265,18 +299,18 @@ class HeaderCrippleGenerator:
             path_vector = rg.Vector3d(end_point - start_point)
 
             # Create the extrusion
-            extrusion = rg.Extrusion.CreateExtrusion(profile_curve, path_vector)
+            extrusion = safe_create_extrusion(profile_curve, path_vector)
 
             # Convert to Brep and return
             if extrusion and extrusion.IsValid:
+                logger.debug("Cripple extrusion created successfully")
                 return extrusion.ToBrep().CapPlanarHoles(0.001)
             else:
-                print("Failed to create valid header cripple extrusion")
+                logger.warning("Failed to create valid header cripple extrusion")
                 return None
 
         except Exception as e:
-            print(f"Error creating header cripple geometry: {str(e)}")
+            logger.error(f"Error creating header cripple geometry: {str(e)}")
             import traceback
-
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
             return None

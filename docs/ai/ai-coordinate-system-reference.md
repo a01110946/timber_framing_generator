@@ -394,7 +394,7 @@ def create_extrusion(profile, path_vector):
     profile_curve = profile.ToNurbsCurve()
     
     # Create extrusion
-    extrusion = rg.Extrusion.CreateExtrusion(profile_curve, path_vector)
+    extrusion = safe_create_extrusion(profile_curve, path_vector)
     
     # Convert to Brep and cap the ends
     if extrusion and extrusion.IsValid:

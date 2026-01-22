@@ -102,18 +102,47 @@ def convert_wall_data_to_schema(wall_data: dict, wall_id: str) -> WallData:
         curve_end = Point3D(1, 0, 0)
 
     # Convert openings
+    # Note: The Revit extractor uses different key names than the JSON schema:
+    #   - 'opening_type' instead of 'type'
+    #   - 'start_u_coordinate' instead of 'u_start'
+    #   - 'rough_width' instead of 'width'
+    #   - 'rough_height' instead of 'height'
+    #   - 'base_elevation_relative_to_wall_base' instead of 'sill_height'
     openings = []
     for opening in wall_data.get('openings', []):
+        # Map extractor keys to schema keys
+        o_type = opening.get('opening_type', opening.get('type', 'window'))
+
+        # Get position along wall (u coordinate)
+        u_start = float(opening.get('start_u_coordinate', opening.get('u_start', 0)))
+
+        # Get dimensions
+        width = float(opening.get('rough_width', opening.get('width', 0)))
+        height = float(opening.get('rough_height', opening.get('height', 0)))
+
+        # Calculate u_end from u_start + width
+        u_end = float(opening.get('u_end', u_start + width))
+
+        # Get vertical position (sill height = v_start)
+        sill_height = opening.get('base_elevation_relative_to_wall_base',
+                                  opening.get('sill_height', 0))
+        if sill_height is None:
+            sill_height = 0
+        v_start = float(sill_height)
+
+        # Calculate v_end from v_start + height
+        v_end = float(opening.get('v_end', v_start + height))
+
         opening_data = OpeningData(
             id=str(opening.get('id', '')),
-            opening_type=opening.get('type', 'window'),
-            u_start=float(opening.get('u_start', 0)),
-            u_end=float(opening.get('u_end', 0)),
-            v_start=float(opening.get('v_start', 0)),
-            v_end=float(opening.get('v_end', 0)),
-            width=float(opening.get('width', 0)),
-            height=float(opening.get('height', 0)),
-            sill_height=opening.get('sill_height'),
+            opening_type=o_type,
+            u_start=u_start,
+            u_end=u_end,
+            v_start=v_start,
+            v_end=v_end,
+            width=width,
+            height=height,
+            sill_height=sill_height,
         )
         openings.append(opening_data)
 

@@ -169,6 +169,15 @@ if not material_type:
 
 if run and cell_json:
     try:
+        # Handle Grasshopper wrapping strings in lists
+        cell_json_input = cell_json[0] if isinstance(cell_json, (list, tuple)) else cell_json
+        wall_json_input = wall_json
+        if isinstance(wall_json, (list, tuple)):
+            wall_json_input = wall_json[0] if wall_json else None
+        config_json_input = config_json
+        if isinstance(config_json, (list, tuple)):
+            config_json_input = config_json[0] if config_json else None
+
         # Get material system and strategy
         material_system = get_material_system(material_type)
 
@@ -184,14 +193,14 @@ if run and cell_json:
             strategy = get_framing_strategy(material_system)
 
             # Parse inputs
-            cell_list = json.loads(cell_json)
-            wall_list = json.loads(wall_json) if wall_json else []
+            cell_list = json.loads(cell_json_input)
+            wall_list = json.loads(wall_json_input) if wall_json_input else []
 
             # Create wall lookup by ID
             wall_lookup = {w.get('wall_id'): w for w in wall_list}
 
             # Parse config
-            config = json.loads(config_json) if config_json else {}
+            config = json.loads(config_json_input) if config_json_input else {}
 
             log_lines = [
                 f"Framing Generator",

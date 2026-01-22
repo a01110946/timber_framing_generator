@@ -157,11 +157,16 @@ debug_info = ""
 
 if run and elements_json:
     try:
+        # Handle Grasshopper wrapping string in list
+        json_input = elements_json
+        if isinstance(elements_json, (list, tuple)):
+            json_input = elements_json[0] if elements_json else ""
+
         # Get geometry factory
         factory = get_factory()
 
         # Parse JSON
-        results = deserialize_framing_results(elements_json)
+        results = deserialize_framing_results(json_input)
 
         debug_lines = [
             f"Geometry Converter",

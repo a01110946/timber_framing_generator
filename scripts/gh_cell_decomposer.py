@@ -386,8 +386,13 @@ debug_info = ""
 
 if run and wall_json:
     try:
+        # Handle Grasshopper wrapping string in list
+        json_input = wall_json
+        if isinstance(wall_json, (list, tuple)):
+            json_input = wall_json[0] if wall_json else ""
+
         # Parse wall JSON
-        wall_list = json.loads(wall_json)
+        wall_list = json.loads(json_input)
 
         if not wall_list:
             debug_info = "No walls in JSON input"

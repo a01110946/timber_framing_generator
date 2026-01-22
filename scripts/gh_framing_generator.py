@@ -273,11 +273,3 @@ elif not run:
     generation_log = "Set 'run' to True to execute"
 elif not cell_json:
     generation_log = "No cell_json input provided"
-
-# =============================================================================
-# Assign Outputs
-# =============================================================================
-
-a = elements_json    # elements_json output
-b = element_count    # element_count output
-c = generation_log   # generation_log output

@@ -255,13 +255,3 @@ elif not run:
     debug_info = "Set 'run' to True to execute"
 elif not elements_json:
     debug_info = "No elements_json input provided"
-
-# =============================================================================
-# Assign Outputs
-# =============================================================================
-
-a = breps         # breps output
-b = by_type       # by_type output (DataTree)
-c = centerlines   # centerlines output
-d = element_ids   # element_ids output
-e = debug_info    # debug_info output

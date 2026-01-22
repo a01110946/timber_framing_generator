@@ -220,11 +220,3 @@ elif not run:
     debug_info = "Set 'run' to True to execute"
 elif not walls:
     debug_info = "No walls provided"
-
-# =============================================================================
-# Assign Outputs (GHPython component outputs)
-# =============================================================================
-
-a = wall_json      # wall_json output
-b = wall_curves    # wall_curves output
-c = debug_info     # debug_info output

@@ -442,11 +442,3 @@ elif not run:
 elif not wall_json:
     debug_info = "No wall_json input provided"
 
-# =============================================================================
-# Assign Outputs
-# =============================================================================
-
-a = cell_json      # cell_json output
-b = cell_srf       # cell_srf output
-c = cell_types     # cell_types output
-d = debug_info     # debug_info output

@@ -122,6 +122,8 @@ def generate_framing_for_wall(
 
     wall_id = cell_data_dict.get('wall_id', 'unknown')
     log_lines.append(f"Generating framing for wall {wall_id}")
+    log_lines.append(f"  wall_id from cell_data_dict: '{wall_id}'")
+    log_lines.append(f"  cell_data_dict keys: {list(cell_data_dict.keys())}")
     log_lines.append(f"  Material: {strategy.material_system.value}")
     log_lines.append(f"  Cells: {len(cell_data_dict.get('cells', []))}")
 
@@ -140,10 +142,14 @@ def generate_framing_for_wall(
         )
 
         # Convert FramingElement objects to FramingElementData for JSON
+        # DEBUG: Print wall_id being added to elements
+        print(f"DEBUG: Adding wall_id='{wall_id}' to {len(framing_elements)} elements")
+
         for elem in framing_elements:
             # Add wall_id to element metadata for filtering
             elem_metadata = dict(elem.metadata) if elem.metadata else {}
             elem_metadata['wall_id'] = wall_id
+            print(f"DEBUG: Element {elem.id} metadata now has wall_id: {elem_metadata.get('wall_id')}")
 
             elem_data = FramingElementData(
                 id=elem.id,

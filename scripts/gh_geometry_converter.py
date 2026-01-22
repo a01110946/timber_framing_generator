@@ -32,6 +32,15 @@ import sys
 import json
 
 # =============================================================================
+# Force Module Reload (CPython 3 in Rhino 8)
+# =============================================================================
+# Clear cached modules to ensure fresh imports when script changes
+_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+for mod in _modules_to_clear:
+    del sys.modules[mod]
+print(f"[RELOAD] Cleared {len(_modules_to_clear)} cached timber_framing_generator modules")
+
+# =============================================================================
 # RhinoCommon Setup
 # =============================================================================
 
@@ -205,6 +214,13 @@ if run and elements_json:
         wall_groups = {}  # Maps wall_id to list of breps
         unique_walls = set()
 
+        # DEBUG: Show first few elements' metadata
+        print(f"\nDEBUG: Checking element metadata for wall_id...")
+        for idx, elem in enumerate(results.elements[:3]):
+            print(f"  Element {idx}: metadata={elem.metadata}")
+        if len(results.elements) > 3:
+            print(f"  ... and {len(results.elements) - 3} more elements")
+
         for element in results.elements:
             elem_type = element.element_type.lower()
 
@@ -306,3 +322,6 @@ elif not run:
     debug_info = "Set 'run' to True to execute"
 elif not elements_json:
     debug_info = "No elements_json input provided"
+
+# Print debug_info so it appears in the 'out' output
+print(debug_info)

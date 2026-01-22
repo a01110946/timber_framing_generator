@@ -178,15 +178,18 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     start_u_coordinate = t - rough_width_half if success else 0.0
                     print(f"Opening {insert_id} has start u coordinate: {start_u_coordinate}")
 
+                    # Note: Revit's "Sill Height" parameter is the height above the floor level,
+                    # which is the same as relative to wall base (since wall is on that level).
+                    # No need to subtract wall_base_elevation - it's already relative.
                     opening_data = {
                         "opening_type": opening_type,
                         "opening_location_point": opening_location_point_rhino,
                         "start_u_coordinate": start_u_coordinate,
                         "rough_width": opening_width_value,
                         "rough_height": opening_height_value,
-                        "base_elevation_relative_to_wall_base": sill_height_value
-                        - wall_base_elevation,
+                        "base_elevation_relative_to_wall_base": sill_height_value,
                     }
+                    print(f"DEBUG: Sill height value from Revit: {sill_height_value}")
                     print(f"Opening {insert_id} has opening data: {opening_data}")
                     openings_data.append(opening_data)
 

@@ -149,6 +149,10 @@ debug_info = ""
 # Check if we should run
 if run and walls:
     try:
+        # Ensure walls is a list (handle single wall input)
+        if not isinstance(walls, (list, tuple)):
+            walls = [walls]
+
         # Get Revit document
         doc = Revit.ActiveDBDocument
         if doc is None:

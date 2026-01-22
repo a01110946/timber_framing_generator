@@ -214,18 +214,30 @@ if run and elements_json:
         wall_groups = {}  # Maps wall_id to list of breps
         unique_walls = set()
 
-        # DEBUG: Show first few elements' metadata
-        print(f"\nDEBUG: Checking element metadata for wall_id...")
-        for idx, elem in enumerate(results.elements[:3]):
-            print(f"  Element {idx}: metadata={elem.metadata}")
+        # DEBUG: Show first few elements' metadata and cell_id
+        print(f"\nDEBUG: Checking element metadata and cell_id for wall_id...")
+        for idx, elem in enumerate(results.elements[:5]):
+            print(f"  Element {idx}: id={elem.id}, cell_id={elem.cell_id}, metadata={elem.metadata}")
         if len(results.elements) > 3:
             print(f"  ... and {len(results.elements) - 3} more elements")
 
         for element in results.elements:
             elem_type = element.element_type.lower()
 
-            # Get wall_id from element metadata
-            elem_wall_id = element.metadata.get('wall_id', 'unknown') if element.metadata else 'unknown'
+            # Get wall_id from element metadata, or extract from cell_id/element id
+            elem_wall_id = 'unknown'
+            if element.metadata and element.metadata.get('wall_id'):
+                elem_wall_id = element.metadata['wall_id']
+            elif element.cell_id:
+                # cell_id format: "1361779_SC_0" - extract wall_id prefix
+                parts = element.cell_id.split('_')
+                if len(parts) >= 2:
+                    elem_wall_id = parts[0]
+            elif '_' in element.id:
+                # element id might also have wall_id prefix
+                parts = element.id.split('_')
+                if len(parts) >= 1 and parts[0].isdigit():
+                    elem_wall_id = parts[0]
             unique_walls.add(elem_wall_id)
 
             # Apply type filter if provided

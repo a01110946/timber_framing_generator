@@ -185,6 +185,9 @@ class TimberFramingStrategy(FramingStrategy):
         logger.info("Creating horizontal members (plates)")
         elements = []
 
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
+
         # Check if Rhino is available (only works inside Grasshopper)
         if not RHINO_AVAILABLE:
             logger.warning(
@@ -224,6 +227,7 @@ class TimberFramingStrategy(FramingStrategy):
                     element_type=ElementType.BOTTOM_PLATE,
                     profile=bottom_profile,
                     base_plane=base_plane,
+                    wall_id=wall_id,
                 )
                 elements.append(elem)
                 logger.debug(f"Created bottom_plate_{i}")
@@ -246,6 +250,7 @@ class TimberFramingStrategy(FramingStrategy):
                     element_type=ElementType.TOP_PLATE,
                     profile=top_profile,
                     base_plane=base_plane,
+                    wall_id=wall_id,
                 )
                 elements.append(elem)
                 logger.debug(f"Created top_plate_{i}")
@@ -289,6 +294,9 @@ class TimberFramingStrategy(FramingStrategy):
         """
         logger.info("Creating vertical members (studs)")
         elements = []
+
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
 
         # DEBUG: Print full cell_data structure on entry
         print(f"\n{'='*60}")
@@ -366,6 +374,7 @@ class TimberFramingStrategy(FramingStrategy):
                                 element_type=ElementType.KING_STUD,
                                 profile=king_profile,
                                 base_plane=base_plane,
+                                wall_id=wall_id,
                                 is_vertical=True,
                             )
                             if elem:
@@ -410,6 +419,7 @@ class TimberFramingStrategy(FramingStrategy):
                     element_type=ElementType.STUD,
                     profile=stud_profile,
                     base_plane=base_plane,
+                    wall_id=wall_id,
                     is_vertical=True,
                 )
                 if elem:
@@ -434,6 +444,7 @@ class TimberFramingStrategy(FramingStrategy):
                                 element_type=ElementType.TRIMMER,
                                 profile=trimmer_profile,
                                 base_plane=base_plane,
+                                wall_id=wall_id,
                                 is_vertical=True,
                             )
                             if elem:
@@ -526,6 +537,7 @@ class TimberFramingStrategy(FramingStrategy):
                             element_type=ElementType.HEADER,
                             profile=header_profile,
                             base_plane=base_plane,
+                            wall_id=wall_id,
                             is_vertical=False,
                         )
                         if elem:
@@ -551,6 +563,7 @@ class TimberFramingStrategy(FramingStrategy):
                                 element_type=ElementType.SILL,
                                 profile=sill_profile,
                                 base_plane=base_plane,
+                                wall_id=wall_id,
                                 is_vertical=False,
                             )
                             if elem:
@@ -581,6 +594,7 @@ class TimberFramingStrategy(FramingStrategy):
                                     element_type=ElementType.HEADER_CRIPPLE,
                                     profile=hc_profile,
                                     base_plane=base_plane,
+                                    wall_id=wall_id,
                                     is_vertical=True,
                                 )
                                 if elem:
@@ -613,6 +627,7 @@ class TimberFramingStrategy(FramingStrategy):
                                         element_type=ElementType.SILL_CRIPPLE,
                                         profile=sc_profile,
                                         base_plane=base_plane,
+                                        wall_id=wall_id,
                                         is_vertical=True,
                                     )
                                     if elem:
@@ -653,6 +668,9 @@ class TimberFramingStrategy(FramingStrategy):
         """
         logger.info("Creating bracing members (row blocking)")
         elements = []
+
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
 
         # Check if Rhino is available
         if not RHINO_AVAILABLE:
@@ -713,6 +731,7 @@ class TimberFramingStrategy(FramingStrategy):
                     profile=blocking_profile,
                     base_plane=base_plane,
                     is_vertical=False,
+                    wall_id=wall_id,
                 )
                 if elem:
                     elements.append(elem)

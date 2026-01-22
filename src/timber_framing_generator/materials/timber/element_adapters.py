@@ -219,7 +219,8 @@ def plate_geometry_to_framing_element(
     element_type: ElementType,
     profile: ElementProfile,
     base_plane: rg.Plane,
-    cell_id: str = None
+    cell_id: str = None,
+    wall_id: str = None
 ) -> FramingElement:
     """
     Convert a PlateGeometry object to a FramingElement.
@@ -266,6 +267,7 @@ def plate_geometry_to_framing_element(
             "plate_type": plate.parameters.plate_type,
             "boundary_elevation": boundary_data["boundary_elevation"],
             "reference_elevation": boundary_data["reference_elevation"],
+            "wall_id": wall_id,
         }
     )
 
@@ -277,7 +279,8 @@ def brep_to_framing_element(
     profile: ElementProfile,
     base_plane: rg.Plane,
     is_vertical: bool = True,
-    cell_id: str = None
+    cell_id: str = None,
+    wall_id: str = None
 ) -> Optional[FramingElement]:
     """
     Convert a Brep geometry to a FramingElement by extracting centerline.
@@ -353,7 +356,7 @@ def brep_to_framing_element(
         v_start=v_start,
         v_end=v_end,
         cell_id=cell_id,
-        metadata={}
+        metadata={"wall_id": wall_id}
     )
 
 

@@ -50,14 +50,15 @@ from src.timber_framing_generator.core.json_schemas import (
     CellData, CellInfo, CellCorners, Point3D,
     deserialize_wall_data, FramingJSONEncoder
 )
+from src.timber_framing_generator.utils.geometry_factory import get_factory
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
-def create_cell_surface(corners: CellCorners) -> rg.NurbsSurface:
+def create_cell_surface(corners: CellCorners):
     """
-    Create a visualization surface from cell corners.
+    Create a visualization surface from cell corners using RhinoCommonFactory.
 
     Args:
         corners: CellCorners with bottom_left, bottom_right, top_right, top_left
@@ -66,12 +67,13 @@ def create_cell_surface(corners: CellCorners) -> rg.NurbsSurface:
         NurbsSurface for visualization, or None if creation fails
     """
     try:
-        p1 = rg.Point3d(corners.bottom_left.x, corners.bottom_left.y, corners.bottom_left.z)
-        p2 = rg.Point3d(corners.bottom_right.x, corners.bottom_right.y, corners.bottom_right.z)
-        p3 = rg.Point3d(corners.top_right.x, corners.top_right.y, corners.top_right.z)
-        p4 = rg.Point3d(corners.top_left.x, corners.top_left.y, corners.top_left.z)
-
-        return rg.NurbsSurface.CreateFromCorners(p1, p2, p3, p4)
+        factory = get_factory()
+        return factory.create_surface_from_corners(
+            (corners.bottom_left.x, corners.bottom_left.y, corners.bottom_left.z),
+            (corners.bottom_right.x, corners.bottom_right.y, corners.bottom_right.z),
+            (corners.top_right.x, corners.top_right.y, corners.top_right.z),
+            (corners.top_left.x, corners.top_left.y, corners.top_left.z),
+        )
     except Exception as e:
         print(f"Error creating cell surface: {e}")
         return None

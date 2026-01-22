@@ -57,6 +57,7 @@ from src.timber_framing_generator.core.json_schemas import (
     WallData, Point3D, Vector3D, PlaneData, OpeningData,
     serialize_wall_data, FramingJSONEncoder
 )
+from src.timber_framing_generator.utils.geometry_factory import get_factory
 
 # =============================================================================
 # Helper Functions
@@ -174,10 +175,19 @@ if run and walls:
                         wall_data = convert_wall_data_to_schema(data, wall_id)
                         wall_data_list.append(wall_data)
 
-                        # Add base curve for visualization
+                        # Add base curve for visualization (use factory to avoid assembly mismatch)
                         base_curve = data.get('wall_base_curve')
                         if base_curve:
-                            wall_curves.Add(base_curve, GH_Path(i))
+                            # Extract coordinates and recreate via RhinoCommonFactory
+                            rc_factory = get_factory()
+                            start_pt = base_curve.PointAtStart
+                            end_pt = base_curve.PointAtEnd
+                            rc_curve = rc_factory.create_line_curve(
+                                (float(start_pt.X), float(start_pt.Y), float(start_pt.Z)),
+                                (float(end_pt.X), float(end_pt.Y), float(end_pt.Z))
+                            )
+                            if rc_curve:
+                                wall_curves.Add(rc_curve, GH_Path(i))
 
                         debug_lines.append(
                             f"Wall {i} (ID:{wall_id}): L={wall_data.wall_length:.2f}', "

@@ -141,6 +141,10 @@ def generate_framing_for_wall(
 
         # Convert FramingElement objects to FramingElementData for JSON
         for elem in framing_elements:
+            # Add wall_id to element metadata for filtering
+            elem_metadata = dict(elem.metadata) if elem.metadata else {}
+            elem_metadata['wall_id'] = wall_id
+
             elem_data = FramingElementData(
                 id=elem.id,
                 element_type=elem.element_type.value,
@@ -157,7 +161,7 @@ def generate_framing_for_wall(
                 v_start=elem.v_start,
                 v_end=elem.v_end,
                 cell_id=elem.cell_id,
-                metadata=elem.metadata,
+                metadata=elem_metadata,
             )
             elements.append(elem_data)
 

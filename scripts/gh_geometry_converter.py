@@ -9,19 +9,23 @@ mismatch issue by using the RhinoCommonFactory.
 Inputs:
     elements_json: JSON string from Framing Generator component
     filter_types: Optional list of element types to include (e.g., ["stud", "plate"])
+    filter_wall: Optional wall ID to filter (e.g., "1234567" for single wall)
     run: Boolean to trigger execution
 
 Outputs:
     breps: All framing elements as Breps
     by_type: DataTree of Breps organized by element type
+    by_wall: DataTree of Breps organized by wall ID
     centerlines: Centerline curves for each element
     element_ids: Element IDs for selection feedback
+    wall_ids: List of unique wall IDs found in data
 
 Usage:
     1. Connect 'elements_json' from Framing Generator
     2. Optionally set 'filter_types' to filter specific element types
-    3. Set 'run' to True to execute
-    4. Connect 'breps' to display or bake geometry
+    3. Optionally set 'filter_wall' to show only one wall's framing
+    4. Set 'run' to True to execute
+    5. Connect 'breps' to display or bake geometry
 """
 
 import sys
@@ -151,8 +155,10 @@ def element_type_to_branch_index(element_type: str) -> int:
 # Initialize outputs
 breps = []
 by_type = DataTree[object]()
+by_wall = DataTree[object]()
 centerlines = []
 element_ids = []
+wall_ids = []
 debug_info = ""
 
 if run and elements_json:
@@ -182,17 +188,36 @@ if run and elements_json:
                 active_filters = [f.strip().lower() for f in filter_types.split(',')]
             elif isinstance(filter_types, list):
                 active_filters = [f.lower() for f in filter_types]
-            debug_lines.append(f"Filter: {active_filters}")
+            debug_lines.append(f"Type Filter: {active_filters}")
 
-        # Group elements by type for DataTree organization
+        # Parse filter_wall if provided
+        wall_filter = None
+        if filter_wall:
+            if isinstance(filter_wall, (list, tuple)):
+                wall_filter = str(filter_wall[0]) if filter_wall else None
+            else:
+                wall_filter = str(filter_wall).strip()
+            debug_lines.append(f"Wall Filter: {wall_filter}")
+
+        # Group elements by type and wall for DataTree organization
         type_groups = {}
         type_names = {}  # Maps index to type name for debug
+        wall_groups = {}  # Maps wall_id to list of breps
+        unique_walls = set()
 
         for element in results.elements:
             elem_type = element.element_type.lower()
 
-            # Apply filter if provided
+            # Get wall_id from element metadata
+            elem_wall_id = element.metadata.get('wall_id', 'unknown') if element.metadata else 'unknown'
+            unique_walls.add(elem_wall_id)
+
+            # Apply type filter if provided
             if active_filters and elem_type not in active_filters:
+                continue
+
+            # Apply wall filter if provided
+            if wall_filter and elem_wall_id != wall_filter:
                 continue
 
             # Create Brep
@@ -208,6 +233,11 @@ if run and elements_json:
                     type_names[branch_idx] = elem_type
                 type_groups[branch_idx].append(brep)
 
+                # Group by wall
+                if elem_wall_id not in wall_groups:
+                    wall_groups[elem_wall_id] = []
+                wall_groups[elem_wall_id].append(brep)
+
                 # Create centerline
                 centerline = create_centerline_from_element(element, factory)
                 if centerline:
@@ -222,13 +252,34 @@ if run and elements_json:
             for brep in type_groups[branch_idx]:
                 by_type.Add(brep, path)
 
+        # Build by_wall DataTree
+        sorted_walls = sorted(wall_groups.keys())
+        wall_id_to_branch = {wid: idx for idx, wid in enumerate(sorted_walls)}
+        for wall_id_key in sorted_walls:
+            path = GH_Path(wall_id_to_branch[wall_id_key])
+            for brep in wall_groups[wall_id_key]:
+                by_wall.Add(brep, path)
+
+        # Set wall_ids output (all unique walls, even if filtered out)
+        wall_ids = sorted(unique_walls)
+
         # Summary
+        debug_lines.append("")
+        debug_lines.append(f"Unique Walls: {len(unique_walls)}")
+        debug_lines.append(f"Wall IDs: {sorted(unique_walls)}")
         debug_lines.append("")
         debug_lines.append("Elements by Type:")
         for branch_idx in sorted(type_groups.keys()):
             elem_type = type_names[branch_idx]
             count = len(type_groups[branch_idx])
             debug_lines.append(f"  [{branch_idx}] {elem_type}: {count}")
+
+        debug_lines.append("")
+        debug_lines.append("Elements by Wall:")
+        for wall_id_key in sorted_walls:
+            count = len(wall_groups[wall_id_key])
+            branch = wall_id_to_branch[wall_id_key]
+            debug_lines.append(f"  [{branch}] Wall {wall_id_key}: {count} elements")
 
         debug_lines.append("")
         debug_lines.append(f"Total Breps: {len(breps)}")

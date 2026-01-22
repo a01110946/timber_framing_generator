@@ -600,16 +600,13 @@ class StudGenerator:
             logger.debug("Created horizontal profile plane for stud cross-section")
 
             # 3. Create a rectangle for the profile
-            # Width = perpendicular to wall face (profile X direction mapped to wall ZAxis)
-            # Depth = along wall (profile Y direction mapped to wall XAxis)
+            # For timber framing studs:
+            # - Width (1.5") = visible on wall face, runs ALONG wall direction
+            # - Depth (3.5") = wall thickness, runs PERPENDICULAR to wall face (wall normal)
             half_width = width / 2
             half_depth = depth / 2
 
-            # The profile plane is WorldXY-like (horizontal), so we need to orient
-            # the rectangle so that after sweep, width aligns with wall normal
-            # and depth aligns with wall direction
-            #
-            # Project wall directions onto horizontal plane
+            # Project wall directions onto horizontal plane for profile orientation
             wall_normal_horiz = rg.Vector3d(base_plane.ZAxis.X, base_plane.ZAxis.Y, 0)
             wall_along_horiz = rg.Vector3d(base_plane.XAxis.X, base_plane.XAxis.Y, 0)
 
@@ -624,25 +621,25 @@ class StudGenerator:
                 wall_along_horiz = rg.Vector3d(1, 0, 0)  # Default X
 
             # Create corners in world XY, offset from start_point
-            # Width direction = wall normal, Depth direction = along wall
+            # Width (1.5") along wall, Depth (3.5") through wall thickness
             c1 = rg.Point3d(
-                start_point.X - wall_along_horiz.X * half_depth - wall_normal_horiz.X * half_width,
-                start_point.Y - wall_along_horiz.Y * half_depth - wall_normal_horiz.Y * half_width,
+                start_point.X - wall_along_horiz.X * half_width - wall_normal_horiz.X * half_depth,
+                start_point.Y - wall_along_horiz.Y * half_width - wall_normal_horiz.Y * half_depth,
                 start_point.Z
             )
             c2 = rg.Point3d(
-                start_point.X + wall_along_horiz.X * half_depth - wall_normal_horiz.X * half_width,
-                start_point.Y + wall_along_horiz.Y * half_depth - wall_normal_horiz.Y * half_width,
+                start_point.X + wall_along_horiz.X * half_width - wall_normal_horiz.X * half_depth,
+                start_point.Y + wall_along_horiz.Y * half_width - wall_normal_horiz.Y * half_depth,
                 start_point.Z
             )
             c3 = rg.Point3d(
-                start_point.X + wall_along_horiz.X * half_depth + wall_normal_horiz.X * half_width,
-                start_point.Y + wall_along_horiz.Y * half_depth + wall_normal_horiz.Y * half_width,
+                start_point.X + wall_along_horiz.X * half_width + wall_normal_horiz.X * half_depth,
+                start_point.Y + wall_along_horiz.Y * half_width + wall_normal_horiz.Y * half_depth,
                 start_point.Z
             )
             c4 = rg.Point3d(
-                start_point.X - wall_along_horiz.X * half_depth + wall_normal_horiz.X * half_width,
-                start_point.Y - wall_along_horiz.Y * half_depth + wall_normal_horiz.Y * half_width,
+                start_point.X - wall_along_horiz.X * half_width + wall_normal_horiz.X * half_depth,
+                start_point.Y - wall_along_horiz.Y * half_width + wall_normal_horiz.Y * half_depth,
                 start_point.Z
             )
 
@@ -658,9 +655,12 @@ class StudGenerator:
 
             # 4. Extrude the profile along the vertical direction
             # Using Extrusion.Create for simple vertical extrusion
-            extrusion_height = end_point.Z - start_point.Z
+            # Note: Extrusion.Create extrudes OPPOSITE to curve plane normal when height > 0
+            # Our profile plane normal is (0,0,1) pointing UP, so we need NEGATIVE height
+            # to extrude UPWARD (in direction of normal)
+            extrusion_height = -(end_point.Z - start_point.Z)
 
-            print(f"      Extrusion height: {extrusion_height:.2f}")
+            print(f"      Extrusion height: {extrusion_height:.2f} (negative = extrude UP)")
 
             # Create extrusion from planar profile curve
             # Extrusion.Create(planarCurve, height, cap) -> Extrusion

@@ -543,28 +543,28 @@ class PlateGeometry:
                 profile.Corner(2), profile.Corner(3)
             ]
             
-            # Create bbox from start profile
+            # Create bbox from profile corners
+            # Note: Profile corners are already in world coordinates (created at centerline start),
+            # so we DON'T add start_point to them - that would double the coordinates!
             bbox = rg.BoundingBox.Empty
             for corner in corners:
-                # Transform corner to start plane
-                start_point3d = rg.Point3d(start_point.X, start_point.Y, start_point.Z)
-                transformed_corner = rg.Point3d(
-                    start_point3d.X + corner.X,
-                    start_point3d.Y + corner.Y,
-                    start_point3d.Z + corner.Z
-                )
-                bbox.Union(transformed_corner)
-            
-            # Also add end profile to bbox
+                bbox.Union(corner)
+
+            # Calculate offset from start to end for the extruded profile
+            offset_vector = rg.Vector3d(
+                end_point.X - start_point.X,
+                end_point.Y - start_point.Y,
+                end_point.Z - start_point.Z
+            )
+
+            # Add end profile corners (start corners + offset along centerline)
             for corner in corners:
-                # Transform corner to end plane
-                end_point3d = rg.Point3d(end_point.X, end_point.Y, end_point.Z)
-                transformed_corner = rg.Point3d(
-                    end_point3d.X + corner.X,
-                    end_point3d.Y + corner.Y,
-                    end_point3d.Z + corner.Z
+                end_corner = rg.Point3d(
+                    corner.X + offset_vector.X,
+                    corner.Y + offset_vector.Y,
+                    corner.Z + offset_vector.Z
                 )
-                bbox.Union(transformed_corner)
+                bbox.Union(end_corner)
             
             return bbox
             

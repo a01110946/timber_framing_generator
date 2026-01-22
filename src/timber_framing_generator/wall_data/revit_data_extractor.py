@@ -137,11 +137,31 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                 rough_height_param = family_symbol.LookupParameter("Rough Height")
                 print(f"Opening {insert_id} has rough width: {rough_width_param}")
                 sill_height_param = insert_element.LookupParameter("Sill Height")
-                print(f"Opening {insert_id} has sill height: {sill_height_param}")
+                print(f"Opening {insert_id} has sill height param: {sill_height_param}")
+
+                # Also try getting the built-in parameter for comparison
+                sill_height_builtin = insert_element.get_Parameter(DB.BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM)
+                if sill_height_builtin:
+                    print(f"  Built-in INSTANCE_SILL_HEIGHT_PARAM value: {sill_height_builtin.AsDouble()}")
+                else:
+                    print(f"  Built-in INSTANCE_SILL_HEIGHT_PARAM not found")
                 if rough_width_param and rough_height_param and sill_height_param:
                     opening_width_value = rough_width_param.AsDouble()
                     opening_height_value = rough_height_param.AsDouble()
-                    sill_height_value = sill_height_param.AsDouble()
+                    sill_height_value_raw = sill_height_param.AsDouble()
+
+                    # DEBUG: Trace sill height values
+                    print(f"\n{'='*50}")
+                    print(f"DEBUG SILL HEIGHT TRACE - Opening {insert_id}")
+                    print(f"{'='*50}")
+                    print(f"  sill_height_param.AsDouble() RAW = {sill_height_value_raw}")
+                    print(f"  wall_base_elevation = {wall_base_elevation}")
+                    print(f"  wall_top_elevation = {wall_top_elevation}")
+                    print(f"  wall height (top-base) = {wall_top_elevation - wall_base_elevation}")
+                    print(f"  opening_type = {opening_type}")
+                    print(f"  rough_width = {opening_width_value}")
+                    print(f"  rough_height = {opening_height_value}")
+
                     opening_location_point = insert_element.Location.Point
                     opening_location_point_rhino = rg.Point3d(
                         opening_location_point.X,
@@ -149,6 +169,28 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                         opening_location_point.Z,
                     )
                     print(f"Opening {insert_id} has opening location point: {opening_location_point_rhino}")
+                    print(f"  Opening location Z = {opening_location_point.Z}")
+                    print(f"  Expected sill elevation (absolute) = opening.Z - rough_height/2 = {opening_location_point.Z - opening_height_value/2:.4f}")
+
+                    # Calculate sill height from opening location point (more reliable)
+                    # Opening location Z is center of opening, so subtract half height to get bottom (sill)
+                    # Then subtract wall_base_elevation to get relative coordinate
+                    sill_height_calculated = opening_location_point.Z - (opening_height_value / 2.0) - wall_base_elevation
+                    print(f"  Calculated sill (relative to wall base) = {sill_height_calculated:.4f}")
+
+                    # Compare calculated vs parameter values
+                    sill_diff = abs(sill_height_value_raw - sill_height_calculated)
+                    print(f"  Difference (param - calculated) = {sill_height_value_raw - sill_height_calculated:.4f}")
+
+                    # Use the calculated value if there's a significant difference (> 1 foot)
+                    # This handles cases where Revit's parameter might be incorrect
+                    if sill_diff > 1.0:
+                        print(f"  WARNING: Large difference! Using calculated sill height instead.")
+                        sill_height_value = sill_height_calculated
+                    else:
+                        sill_height_value = sill_height_value_raw
+                    print(f"  USING sill_height_value = {sill_height_value:.4f}")
+                    print(f"{'='*50}\n")
                     try:
                         print(f"Opening {insert_id} has wall base curve: {wall_base_curve_rhino} and opening location point: {opening_location_point_rhino}")
                         # Try to use ClosestPoint directly if available

@@ -28,6 +28,7 @@ Usage:
 import sys
 import json
 from dataclasses import asdict
+from io import StringIO
 
 # =============================================================================
 # RhinoCommon Setup
@@ -116,8 +117,13 @@ def generate_framing_for_wall(
     log_lines.append(f"  Cells: {len(cell_data_dict.get('cells', []))}")
 
     # Use strategy to generate elements
-    # NOTE: Phase 2 strategies return empty lists - this is expected
+    # Capture stdout to include debug output in logs
+    old_stdout = sys.stdout
+    captured_output = StringIO()
     try:
+        # Capture print statements from the strategy modules
+        sys.stdout = captured_output
+
         framing_elements = strategy.generate_framing(
             wall_data=wall_data_dict,
             cell_data=cell_data_dict,
@@ -150,6 +156,16 @@ def generate_framing_for_wall(
 
     except Exception as e:
         log_lines.append(f"  ERROR: {str(e)}")
+
+    finally:
+        # Always restore stdout and capture debug output
+        sys.stdout = old_stdout
+        debug_output = captured_output.getvalue()
+        if debug_output.strip():
+            log_lines.append("")
+            log_lines.append("--- DEBUG OUTPUT ---")
+            log_lines.append(debug_output.strip())
+            log_lines.append("--- END DEBUG ---")
 
     return elements, log_lines
 

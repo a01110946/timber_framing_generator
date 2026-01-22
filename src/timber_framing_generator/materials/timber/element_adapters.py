@@ -136,6 +136,61 @@ def reconstruct_wall_data(wall_data: Dict[str, Any]) -> Dict[str, Any]:
     result["wall_length"] = wall_data.get("wall_length", 10)
     result["wall_height"] = wall_data.get("wall_height", 8)
 
+    # Create WBC (Wall Boundary Cell) with corner_points - required by plate generator
+    # The WBC defines the full wall boundary as 4 corner points
+    base_plane = result.get("base_plane", rg.Plane.WorldXY)
+    wall_length = result["wall_length"]
+    wall_height = result["wall_height"]
+    base_elevation = result["wall_base_elevation"]
+
+    # Calculate corner points in world coordinates
+    # The wall lies along the base_plane's X axis
+    origin = base_plane.Origin
+
+    # Bottom-left: origin
+    bl = rg.Point3d(origin.X, origin.Y, base_elevation)
+    # Bottom-right: origin + wall_length along X axis
+    br = rg.Point3d.Add(
+        rg.Point3d(origin.X, origin.Y, base_elevation),
+        rg.Vector3d.Multiply(base_plane.XAxis, wall_length)
+    )
+    # Top-right: bottom-right + wall_height in Z
+    tr = rg.Point3d(br.X, br.Y, base_elevation + wall_height)
+    # Top-left: bottom-left + wall_height in Z
+    tl = rg.Point3d(bl.X, bl.Y, base_elevation + wall_height)
+
+    wbc_cell = {
+        "cell_type": "WBC",
+        "corner_points": [bl, br, tr, tl],
+        "u_start": 0,
+        "u_end": wall_length,
+        "v_start": 0,
+        "v_end": wall_height,
+    }
+
+    # Ensure cells list exists and contains WBC
+    existing_cells = result.get("cells", [])
+
+    # Normalize cell data format - existing generators expect "type" but JSON has "cell_type"
+    normalized_cells = []
+    for cell in existing_cells:
+        if isinstance(cell, dict):
+            normalized_cell = dict(cell)
+            # Map "cell_type" to "type" for backward compatibility with generators
+            if "cell_type" in normalized_cell and "type" not in normalized_cell:
+                normalized_cell["type"] = normalized_cell["cell_type"]
+            normalized_cells.append(normalized_cell)
+        else:
+            normalized_cells.append(cell)
+
+    # Check if WBC already exists
+    has_wbc = any(c.get("cell_type") == "WBC" or c.get("type") == "WBC"
+                  for c in normalized_cells if isinstance(c, dict))
+    if not has_wbc:
+        result["cells"] = [wbc_cell] + normalized_cells
+    else:
+        result["cells"] = normalized_cells
+
     # Convert openings to expected format if needed
     openings = wall_data.get("openings", [])
     converted_openings = []
@@ -300,6 +355,48 @@ def brep_to_framing_element(
         cell_id=cell_id,
         metadata={}
     )
+
+
+def normalize_cells(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Normalize cell data format for compatibility with existing generators.
+
+    The JSON cell data uses "cell_type" key but existing generators expect "type".
+    This function normalizes the cell data by adding the "type" key.
+
+    Args:
+        cells: List of cell dictionaries from JSON
+
+    Returns:
+        List of normalized cell dictionaries with both "type" and "cell_type" keys
+    """
+    print(f"\n=== normalize_cells DEBUG ===")
+    print(f"Input cells count: {len(cells)}")
+
+    normalized_cells = []
+    for i, cell in enumerate(cells):
+        print(f"  Cell {i}: type={type(cell).__name__}")
+        if isinstance(cell, dict):
+            normalized_cell = dict(cell)
+            original_cell_type = normalized_cell.get("cell_type", "N/A")
+            original_type = normalized_cell.get("type", "N/A")
+            print(f"    Before: cell_type='{original_cell_type}', type='{original_type}'")
+
+            # Map "cell_type" to "type" for backward compatibility with generators
+            if "cell_type" in normalized_cell and "type" not in normalized_cell:
+                normalized_cell["type"] = normalized_cell["cell_type"]
+                print(f"    After: Added type='{normalized_cell['type']}'")
+            else:
+                print(f"    After: No change needed (already has 'type' or no 'cell_type')")
+
+            normalized_cells.append(normalized_cell)
+        else:
+            print(f"    WARNING: Cell is not a dict, skipping normalization")
+            normalized_cells.append(cell)
+
+    print(f"Output cells count: {len(normalized_cells)}")
+    print(f"=== END normalize_cells DEBUG ===\n")
+    return normalized_cells
 
 
 def _project_to_u(point: rg.Point3d, base_plane: rg.Plane) -> float:

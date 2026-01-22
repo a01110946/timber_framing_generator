@@ -40,6 +40,7 @@ from .element_adapters import (
     reconstruct_wall_data,
     plate_geometry_to_framing_element,
     brep_to_framing_element,
+    normalize_cells,
     RHINO_AVAILABLE,
 )
 
@@ -357,8 +358,22 @@ class TimberFramingStrategy(FramingStrategy):
                         logger.error(f"Error generating king studs for opening {i}: {e}")
 
             # Add cells to wall data for stud generator
+            # Normalize cells - generators expect "type" but JSON uses "cell_type"
             cells = cell_data.get("cells", [])
-            rhino_wall_data["cells"] = cells
+            normalized = normalize_cells(cells)
+            rhino_wall_data["cells"] = normalized
+
+            # Debug: Print cell info to understand what's being passed
+            print(f"\n=== STUD GENERATOR DEBUG ===")
+            print(f"Original cells count: {len(cells)}")
+            print(f"Normalized cells count: {len(normalized)}")
+            for i, cell in enumerate(normalized):
+                cell_type = cell.get("type", "MISSING")
+                cell_id = cell.get("id", "unknown")
+                u_start = cell.get("u_start", "N/A")
+                u_end = cell.get("u_end", "N/A")
+                print(f"  Cell {i}: type={cell_type}, id={cell_id}, u_start={u_start}, u_end={u_end}")
+            print(f"=== END STUD GENERATOR DEBUG ===\n")
 
             # Generate standard studs
             logger.debug("Creating standard studs")
@@ -645,8 +660,9 @@ class TimberFramingStrategy(FramingStrategy):
             base_plane = rhino_wall_data.get("base_plane")
 
             # Add cells to wall data
+            # Normalize cells - generators expect "type" but JSON uses "cell_type"
             cells = cell_data.get("cells", [])
-            rhino_wall_data["cells"] = cells
+            rhino_wall_data["cells"] = normalize_cells(cells)
 
             # Get stud breps for blocking placement
             stud_breps = []

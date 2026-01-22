@@ -132,12 +132,37 @@ mypy src/
 
 ## Grasshopper Development
 
+**Rhino 8 uses CPython 3** (not IronPython). This affects module imports, reloading, and some .NET interop patterns.
+
 When modifying `scripts/gh-main.py`:
 
 1. **Test in Grasshopper** - Load the GH definition, select a test wall, toggle run/reload
 2. **Check diagnostic outputs** - `test_clr_box`, `test_info` verify assembly compatibility
 3. **Use DataTree for grafted outputs** - One wall can have multiple elements
 4. **Always convert geometry** - Use `rc_factory.convert_geometry_from_rhino3dm()` before output
+
+### Force Module Reload (Without Restarting Rhino)
+
+CPython caches imported modules. To force reload during development, add this near the top of your GHPython component:
+
+```python
+import sys
+
+# Clear all project modules from cache (forces fresh import)
+for mod_name in list(sys.modules.keys()):
+    if 'timber_framing_generator' in mod_name:
+        del sys.modules[mod_name]
+```
+
+Or reload a specific module:
+
+```python
+import importlib
+import src.timber_framing_generator.framing_elements.studs as studs_module
+importlib.reload(studs_module)
+```
+
+**Remove reload code after debugging** - it adds overhead to each run.
 
 See `docs/ai/ai-grasshopper-rhino-patterns.md` for detailed patterns.
 

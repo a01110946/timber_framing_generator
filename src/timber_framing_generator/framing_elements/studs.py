@@ -261,16 +261,28 @@ class StudGenerator:
             # Extract cell data from wall data
             cells = self.wall_data.get("cells", [])
             base_plane = self.wall_data.get("base_plane")
-            
+
+            # Debug print
+            print(f"\n=== STUD GENERATOR: generate_studs() ===")
+            print(f"Cells from wall_data: {len(cells)}")
+            for i, cell in enumerate(cells):
+                ct = cell.get("type", "NO_TYPE")
+                ct2 = cell.get("cell_type", "NO_CELL_TYPE")
+                print(f"  Cell {i}: type='{ct}', cell_type='{ct2}'")
+            print(f"Base plane: {base_plane is not None}")
+
             if not cells:
                 logger.warning("No cells available for stud generation")
+                print("WARNING: No cells available for stud generation")
                 return []
-                
+
             if base_plane is None:
                 logger.warning("No base plane available for stud generation")
+                print("WARNING: No base plane available for stud generation")
                 return []
-                
+
             logger.debug(f"Found {len(cells)} cells for stud processing")
+            print(f"Found {len(cells)} cells for stud processing")
 
             # Extract dimensions from framing parameters
             stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)  # Default to 1.5 inches
@@ -294,36 +306,50 @@ class StudGenerator:
             
             for cell in cells:
                 cell_type = cell.get("type")
-                
+
+                # Debug: show every cell being evaluated
+                print(f"  Evaluating cell: type='{cell_type}', id='{cell.get('id', 'unknown')}'")
+
                 # Skip cells that are not stud cells
                 if cell_type != "SC":
+                    print(f"    -> Skipping (not SC)")
                     continue
-                    
+
                 processed_cells += 1
+                print(f"    -> PROCESSING as SC cell #{processed_cells}")
                 logger.debug(f"Processing stud cell {processed_cells}")
                 
                 try:
                     # Get the horizontal region of the cell
                     u_start = cell.get("u_start")
                     u_end = cell.get("u_end")
-                    
+
                     if u_start is None or u_end is None:
                         logger.warning("Stud cell missing u-coordinate boundaries")
+                        print(f"    WARNING: Cell missing u_start or u_end")
                         continue
-                        
+
                     logger.debug(f"Stud cell boundaries - u_start: {u_start}, u_end: {u_end}")
+                    print(f"    Cell bounds: u_start={u_start}, u_end={u_end}, width={u_end - u_start}")
+                    print(f"    Stud spacing: {stud_spacing}")
+                    print(f"    Vertical range: bottom={bottom_elevation}, top={top_elevation}")
 
                     # Calculate stud positions within this cell
                     stud_positions = self._calculate_stud_positions(u_start, u_end, stud_spacing)
                     logger.debug(f"Calculated {len(stud_positions)} stud positions in cell")
+                    print(f"    Calculated stud positions: {len(stud_positions)} - {stud_positions[:5] if stud_positions else 'NONE'}")
 
                     # Filter out positions too close to king studs
+                    original_count = len(stud_positions)
                     stud_positions = self._filter_positions_by_king_studs(
                         stud_positions, stud_width * 1.5
                     )
                     logger.debug(f"{len(stud_positions)} positions remain after king stud filtering")
+                    print(f"    After king stud filter: {len(stud_positions)} (was {original_count})")
 
                     # Create studs at each position
+                    studs_created = 0
+                    studs_failed = 0
                     for pos in stud_positions:
                         stud = self._create_stud_geometry(
                             base_plane,
@@ -335,13 +361,22 @@ class StudGenerator:
                         )
                         if stud:
                             all_studs.append(stud)
+                            studs_created += 1
                             logger.debug(f"Created stud at u={pos}")
+                        else:
+                            studs_failed += 1
+                            print(f"    FAILED to create stud at u={pos}")
+                    print(f"    Studs created: {studs_created}, failed: {studs_failed}")
 
                 except Exception as e:
                     logger.error(f"Error processing stud cell: {str(e)}")
                     continue
 
             logger.info(f"Generated {len(all_studs)} standard wall studs")
+            print(f"=== STUD GENERATOR SUMMARY ===")
+            print(f"Processed {processed_cells} SC cells")
+            print(f"Generated {len(all_studs)} standard wall studs")
+            print(f"=== END STUD GENERATOR ===\n")
             return all_studs
 
         except Exception as e:
@@ -532,83 +567,126 @@ class StudGenerator:
         
         try:
             # 1. Create the centerline endpoints in world coordinates
-            start_point = rg.Point3d.Add(
+            # Position along wall using XAxis (U direction)
+            # Vertical position uses Z coordinate directly (V direction)
+            point_along_wall = rg.Point3d.Add(
                 base_plane.Origin,
-                rg.Vector3d.Add(
-                    rg.Vector3d.Multiply(base_plane.XAxis, u_coordinate),
-                    rg.Vector3d.Multiply(base_plane.YAxis, bottom_v),
-                ),
+                rg.Vector3d.Multiply(base_plane.XAxis, u_coordinate)
             )
 
-            end_point = rg.Point3d.Add(
-                base_plane.Origin,
-                rg.Vector3d.Add(
-                    rg.Vector3d.Multiply(base_plane.XAxis, u_coordinate),
-                    rg.Vector3d.Multiply(base_plane.YAxis, top_v),
-                ),
-            )
+            # Create start point at bottom elevation (Z = bottom_v)
+            start_point = rg.Point3d(point_along_wall.X, point_along_wall.Y, bottom_v)
+
+            # Create end point at top elevation (Z = top_v)
+            end_point = rg.Point3d(point_along_wall.X, point_along_wall.Y, top_v)
             
             logger.debug(f"Centerline start point: ({start_point.X}, {start_point.Y}, {start_point.Z})")
             logger.debug(f"Centerline end point: ({end_point.X}, {end_point.Y}, {end_point.Z})")
+            print(f"      Stud centerline: start=({start_point.X:.2f}, {start_point.Y:.2f}, {start_point.Z:.2f}) end=({end_point.X:.2f}, {end_point.Y:.2f}, {end_point.Z:.2f})")
 
             # Create the centerline as a curve
-            centerline = rg.LineCurve(start_point, end_point)
+            # Convert to NurbsCurve to ensure proper type for SweepOneRail.PerformSweep()
+            centerline = rg.LineCurve(start_point, end_point).ToNurbsCurve()
             self.debug_geometry["paths"].append(centerline)
             logger.debug(f"Centerline length: {safe_get_length(centerline)}")
 
-            # 2. Create a profile plane at the start point
-            # X axis goes across wall thickness (for width)
-            profile_x_axis = base_plane.ZAxis
-            # Y axis goes along wall length (for depth)
-            profile_y_axis = base_plane.XAxis
-
-            profile_plane = rg.Plane(start_point, profile_x_axis, profile_y_axis)
+            # 2. Create a HORIZONTAL profile plane at the start point
+            # For vertical studs, the profile must be perpendicular to the centerline
+            # Since centerline is vertical (Z direction), profile plane must be horizontal
+            # Use a simple horizontal plane with normal pointing UP
+            profile_plane = rg.Plane(start_point, rg.Vector3d.ZAxis)
+            print(f"      Profile plane normal: ({profile_plane.Normal.X:.2f}, {profile_plane.Normal.Y:.2f}, {profile_plane.Normal.Z:.2f})")
             self.debug_geometry["planes"].append(profile_plane)
-            logger.debug("Created profile plane for stud cross-section")
+            logger.debug("Created horizontal profile plane for stud cross-section")
 
             # 3. Create a rectangle for the profile
+            # Width = perpendicular to wall face (profile X direction mapped to wall ZAxis)
+            # Depth = along wall (profile Y direction mapped to wall XAxis)
             half_width = width / 2
             half_depth = depth / 2
-            rect_corners = [
-                rg.Point3d(-half_width, -half_depth, 0),  # lower left
-                rg.Point3d(half_width, -half_depth, 0),   # lower right
-                rg.Point3d(half_width, half_depth, 0),    # upper right
-                rg.Point3d(-half_width, half_depth, 0),   # upper left
-            ]
-            logger.debug("Created rectangle corners for stud cross-section")
 
-            # Transform corners to profile plane
-            transform = rg.Transform.PlaneToPlane(rg.Plane.WorldXY, profile_plane)
-            for i, corner in enumerate(rect_corners):
-                corner.Transform(transform)
+            # The profile plane is WorldXY-like (horizontal), so we need to orient
+            # the rectangle so that after sweep, width aligns with wall normal
+            # and depth aligns with wall direction
+            #
+            # Project wall directions onto horizontal plane
+            wall_normal_horiz = rg.Vector3d(base_plane.ZAxis.X, base_plane.ZAxis.Y, 0)
+            wall_along_horiz = rg.Vector3d(base_plane.XAxis.X, base_plane.XAxis.Y, 0)
+
+            # Normalize (handle zero-length vectors)
+            if wall_normal_horiz.Length > 0.001:
+                wall_normal_horiz.Unitize()
+            else:
+                wall_normal_horiz = rg.Vector3d(0, 1, 0)  # Default Y
+            if wall_along_horiz.Length > 0.001:
+                wall_along_horiz.Unitize()
+            else:
+                wall_along_horiz = rg.Vector3d(1, 0, 0)  # Default X
+
+            # Create corners in world XY, offset from start_point
+            # Width direction = wall normal, Depth direction = along wall
+            c1 = rg.Point3d(
+                start_point.X - wall_along_horiz.X * half_depth - wall_normal_horiz.X * half_width,
+                start_point.Y - wall_along_horiz.Y * half_depth - wall_normal_horiz.Y * half_width,
+                start_point.Z
+            )
+            c2 = rg.Point3d(
+                start_point.X + wall_along_horiz.X * half_depth - wall_normal_horiz.X * half_width,
+                start_point.Y + wall_along_horiz.Y * half_depth - wall_normal_horiz.Y * half_width,
+                start_point.Z
+            )
+            c3 = rg.Point3d(
+                start_point.X + wall_along_horiz.X * half_depth + wall_normal_horiz.X * half_width,
+                start_point.Y + wall_along_horiz.Y * half_depth + wall_normal_horiz.Y * half_width,
+                start_point.Z
+            )
+            c4 = rg.Point3d(
+                start_point.X - wall_along_horiz.X * half_depth + wall_normal_horiz.X * half_width,
+                start_point.Y - wall_along_horiz.Y * half_depth + wall_normal_horiz.Y * half_width,
+                start_point.Z
+            )
+
+            # Debug: store corners
+            for corner in [c1, c2, c3, c4]:
                 self.debug_geometry["points"].append(corner)
 
-            # Create polygon from corners
-            profile_poly = rg.Polyline([*rect_corners, rect_corners[0]])  # Close the loop
+            # Create closed polyline for profile
+            profile_poly = rg.Polyline([c1, c2, c3, c4, c1])  # Close the loop
             profile_curve = profile_poly.ToNurbsCurve()
             self.debug_geometry["profiles"].append(profile_curve)
-            logger.debug("Transformed rectangle to profile plane")
+            logger.debug("Created profile rectangle in horizontal plane")
 
-            # 4. Extrude the profile along the centerline
-            # Create shape by sweeping profile along centerline
-            sweep = rg.SweepOneRail()
-            sweep.AngleToleranceRadians = 0.1  # Optional adjustment
-            sweep.ClosedSweep = False
-            sweep.SweepTolerance = 0.01  # Optional adjustment
+            # 4. Extrude the profile along the vertical direction
+            # Using Extrusion.Create for simple vertical extrusion
+            extrusion_height = end_point.Z - start_point.Z
 
-            curves = [profile_curve]
-            rails = [centerline]
-            breps = sweep.PerformSweep(rails, curves)
-            
-            if breps is None or len(breps) == 0:
-                logger.warning("Failed to create stud Brep from sweep operation")
+            print(f"      Extrusion height: {extrusion_height:.2f}")
+
+            # Create extrusion from planar profile curve
+            # Extrusion.Create(planarCurve, height, cap) -> Extrusion
+            extrusion = rg.Extrusion.Create(profile_curve, extrusion_height, True)
+
+            if extrusion is None:
+                logger.warning("Failed to create extrusion")
+                print(f"      EXTRUSION FAILED: Extrusion.Create returned None")
                 return None
-                
-            logger.debug("Successfully created stud Brep")
-            return breps[0]
+
+            # Convert Extrusion to Brep for compatibility with rest of pipeline
+            brep = extrusion.ToBrep()
+            if brep is None:
+                logger.warning("Failed to convert extrusion to Brep")
+                print(f"      EXTRUSION FAILED: ToBrep returned None")
+                return None
+
+            logger.debug("Successfully created stud Brep via extrusion")
+            print(f"      EXTRUSION SUCCESS: Created stud Brep")
+            return brep
 
         except Exception as e:
             logger.error(f"Error creating stud geometry: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            tb = traceback.format_exc()
+            logger.error(tb)
+            print(f"      EXCEPTION: {str(e)}")
+            print(f"      TRACEBACK: {tb}")
             return None

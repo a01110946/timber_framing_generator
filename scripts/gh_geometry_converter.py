@@ -16,6 +16,8 @@ Outputs:
     breps: All framing elements as Breps
     by_type: DataTree of Breps organized by element type
     by_wall: DataTree of Breps organized by wall ID
+    by_type_list: Nested list of Breps by type (alternative to DataTree)
+    by_wall_list: Nested list of Breps by wall (alternative to DataTree)
     centerlines: Centerline curves for each element
     element_ids: Element IDs for selection feedback
     wall_ids: List of unique wall IDs found in data
@@ -165,6 +167,8 @@ def element_type_to_branch_index(element_type: str) -> int:
 breps = []
 by_type = DataTree[object]()
 by_wall = DataTree[object]()
+by_type_list = []  # Alternative: nested list by type
+by_wall_list = []  # Alternative: nested list by wall
 centerlines = []
 element_ids = []
 wall_ids = []
@@ -274,19 +278,24 @@ if run and elements_json:
                 # Track element ID
                 element_ids.append(element.id)
 
-        # Build by_type DataTree
-        for branch_idx in sorted(type_groups.keys()):
+        # Build by_type - both DataTree and nested list
+        sorted_type_indices = sorted(type_groups.keys())
+        for branch_idx in sorted_type_indices:
             path = GH_Path(branch_idx)
-            for brep in type_groups[branch_idx]:
+            branch_items = type_groups[branch_idx]
+            for brep in branch_items:
                 by_type.Add(brep, path)
+            by_type_list.append(branch_items)  # Add as nested list
 
-        # Build by_wall DataTree
+        # Build by_wall - both DataTree and nested list
         sorted_walls = sorted(wall_groups.keys())
         wall_id_to_branch = {wid: idx for idx, wid in enumerate(sorted_walls)}
         for wall_id_key in sorted_walls:
             path = GH_Path(wall_id_to_branch[wall_id_key])
-            for brep in wall_groups[wall_id_key]:
+            branch_items = wall_groups[wall_id_key]
+            for brep in branch_items:
                 by_wall.Add(brep, path)
+            by_wall_list.append(branch_items)  # Add as nested list
 
         # Set wall_ids output (all unique walls, even if filtered out)
         wall_ids = sorted(unique_walls)

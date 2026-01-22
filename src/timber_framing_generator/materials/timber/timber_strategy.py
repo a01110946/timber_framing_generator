@@ -290,6 +290,23 @@ class TimberFramingStrategy(FramingStrategy):
         logger.info("Creating vertical members (studs)")
         elements = []
 
+        # DEBUG: Print full cell_data structure on entry
+        print(f"\n{'='*60}")
+        print(f"TIMBER STRATEGY DEBUG - create_vertical_members entry")
+        print(f"{'='*60}")
+        print(f"cell_data type: {type(cell_data)}")
+        print(f"cell_data keys: {list(cell_data.keys()) if isinstance(cell_data, dict) else 'NOT A DICT'}")
+        cells_list = cell_data.get("cells", []) if isinstance(cell_data, dict) else []
+        print(f"cells_list length: {len(cells_list)}")
+        for i, c in enumerate(cells_list[:5]):  # Show first 5
+            if isinstance(c, dict):
+                print(f"  Cell {i}: type={c.get('type', 'N/A')}, cell_type={c.get('cell_type', 'N/A')}, id={c.get('id', 'N/A')}")
+            else:
+                print(f"  Cell {i}: NOT A DICT - {type(c)}")
+        if len(cells_list) > 5:
+            print(f"  ... and {len(cells_list) - 5} more")
+        print(f"{'='*60}\n")
+
         # Check if Rhino is available
         if not RHINO_AVAILABLE:
             logger.warning("Rhino not available - returning empty list.")

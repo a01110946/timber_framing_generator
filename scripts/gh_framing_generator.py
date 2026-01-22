@@ -185,8 +185,14 @@ if not material_type:
 
 if run and cell_json:
     try:
-        # Handle Grasshopper wrapping strings in lists
-        cell_json_input = cell_json[0] if isinstance(cell_json, (list, tuple)) else cell_json
+        # Handle Grasshopper wrapping strings in lists (can be nested)
+        cell_json_input = cell_json
+        unwrap_count = 0
+        while isinstance(cell_json_input, (list, tuple)) and len(cell_json_input) > 0:
+            cell_json_input = cell_json_input[0]
+            unwrap_count += 1
+        print(f"DEBUG: Unwrapped cell_json {unwrap_count} times")
+        print(f"DEBUG: cell_json_input type after unwrap: {type(cell_json_input)}")
         wall_json_input = wall_json
         if isinstance(wall_json, (list, tuple)):
             wall_json_input = wall_json[0] if wall_json else None
@@ -212,6 +218,18 @@ if run and cell_json:
             cell_list = json.loads(cell_json_input)
             wall_list = json.loads(wall_json_input) if wall_json_input else []
 
+            # DEBUG: Print raw JSON length and first few chars
+            print(f"\n{'='*60}")
+            print(f"FRAMING GENERATOR DEBUG - JSON PARSING")
+            print(f"{'='*60}")
+            print(f"cell_json_input type: {type(cell_json_input)}")
+            print(f"cell_json_input length: {len(cell_json_input) if cell_json_input else 0} chars")
+            if cell_json_input:
+                print(f"cell_json_input first 500 chars: {cell_json_input[:500]}...")
+            print(f"cell_list type: {type(cell_list)}")
+            print(f"cell_list length: {len(cell_list)} items")
+            print(f"{'='*60}\n")
+
             # Create wall lookup by ID
             wall_lookup = {w.get('wall_id'): w for w in wall_list}
 
@@ -226,6 +244,30 @@ if run and cell_json:
                 f"Generation sequence: {[e.value for e in strategy.get_generation_sequence()]}",
                 "",
             ]
+
+            # DEBUG: Print detailed cell structure
+            print(f"\n{'='*60}")
+            print(f"FRAMING GENERATOR DEBUG - CELL DATA ANALYSIS")
+            print(f"{'='*60}")
+            print(f"Total walls in cell_list: {len(cell_list)}")
+            for idx, cell_data_item in enumerate(cell_list):
+                wall_id = cell_data_item.get('wall_id', 'UNKNOWN')
+                cells_in_wall = cell_data_item.get('cells', [])
+                print(f"\n--- Wall {idx}: {wall_id} ---")
+                print(f"  Keys in cell_data_item: {list(cell_data_item.keys())}")
+                print(f"  Number of cells: {len(cells_in_wall)}")
+                for cidx, cell in enumerate(cells_in_wall[:5]):  # Show first 5 cells
+                    if isinstance(cell, dict):
+                        cell_type = cell.get('cell_type', cell.get('type', 'MISSING'))
+                        cell_id = cell.get('id', 'no-id')
+                        u_start = cell.get('u_start', 'N/A')
+                        u_end = cell.get('u_end', 'N/A')
+                        print(f"    Cell {cidx}: type={cell_type}, id={cell_id}, u=({u_start}-{u_end})")
+                    else:
+                        print(f"    Cell {cidx}: NOT A DICT - type={type(cell)}")
+                if len(cells_in_wall) > 5:
+                    print(f"    ... and {len(cells_in_wall) - 5} more cells")
+            print(f"{'='*60}\n")
 
             all_elements = []
             type_counts = {}

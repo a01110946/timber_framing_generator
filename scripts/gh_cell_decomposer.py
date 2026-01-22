@@ -114,8 +114,18 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
     # 1. Create stud cells for regions without openings
     # 2. Create opening cells, header cripple cells, sill cripple cells
 
+    # Debug: Print opening data
+    print(f"\n=== CELL DECOMPOSER DEBUG for {wall_id} ===")
+    print(f"  Wall length: {wall_length}, height: {wall_height}")
+    print(f"  Openings count: {len(openings)}")
+    for idx, op in enumerate(openings):
+        print(f"    Opening {idx}: type={op.get('opening_type', 'unknown')}, "
+              f"u_start={op.get('u_start', 'N/A')}, u_end={op.get('u_end', 'N/A')}, "
+              f"v_start={op.get('v_start', 'N/A')}, v_end={op.get('v_end', 'N/A')}")
+
     if not openings:
         # No openings - single stud cell spanning entire wall
+        print(f"  -> No openings, creating single SC cell")
         corners = CellCorners(
             bottom_left=Point3D(origin['x'], origin['y'], base_elevation),
             bottom_right=Point3D(
@@ -284,6 +294,8 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
             cell_idx += 1
 
             # Sill cripple cell (below opening) - windows only
+            print(f"  SCC Check: o_v_start={o_v_start}, o_type='{o_type}'")
+            print(f"    Condition: o_v_start > 0 = {o_v_start > 0}, o_type == 'window' = {o_type == 'window'}")
             if o_v_start > 0 and o_type == 'window':
                 corners = CellCorners(
                     bottom_left=Point3D(
@@ -428,6 +440,20 @@ if run and wall_json:
                 cell_dicts = [asdict(cd) for cd in all_cell_data]
                 cell_json = json.dumps(cell_dicts, cls=FramingJSONEncoder, indent=2)
                 debug_lines.append(f"\nSuccess: Serialized cells for {len(all_cell_data)} walls")
+
+                # DEBUG: Verify serialized structure
+                print(f"\n{'='*60}")
+                print(f"CELL DECOMPOSER DEBUG - SERIALIZATION CHECK")
+                print(f"{'='*60}")
+                for i, cd in enumerate(cell_dicts):
+                    wall_id = cd.get('wall_id', 'UNKNOWN')
+                    cells_list = cd.get('cells', [])
+                    print(f"Wall {i} ({wall_id}): {len(cells_list)} cells in serialized dict")
+                    for cidx, c in enumerate(cells_list[:3]):  # Show first 3
+                        print(f"  Cell {cidx}: type={c.get('cell_type', 'N/A')}, id={c.get('id', 'N/A')}")
+                    if len(cells_list) > 3:
+                        print(f"  ... and {len(cells_list) - 3} more")
+                print(f"{'='*60}\n")
 
             debug_info = "\n".join(debug_lines)
 

@@ -454,6 +454,11 @@ class StudGenerator:
         """
         Calculate stud positions within a cell based on spacing.
 
+        End studs at wall boundaries (u=0 or u=wall_length) are offset inward
+        by half the stud width so the stud edge aligns with the wall edge.
+
+        Studs at SC/OC boundaries are removed since those are king stud positions.
+
         Args:
             u_start: Starting u-coordinate of the cell
             u_end: Ending u-coordinate of the cell
@@ -464,6 +469,11 @@ class StudGenerator:
         """
         logger.debug(f"Calculating stud positions from {u_start} to {u_end} with spacing {stud_spacing}")
         try:
+            # Get wall length and stud dimensions for boundary detection
+            wall_length = self.wall_data.get("wall_length", 0)
+            stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)
+            half_stud_width = stud_width / 2
+
             # Calculate the width of the cell
             cell_width = u_end - u_start
             logger.debug(f"Cell width: {cell_width}")
@@ -474,7 +484,6 @@ class StudGenerator:
                 return []
 
             # Calculate number of studs that can fit in this cell
-            # Subtract 1 to account for the possibility of studs at the cell boundaries
             num_studs = max(0, int(cell_width / stud_spacing))
             logger.debug(f"Can fit {num_studs} studs in cell")
 
@@ -489,9 +498,44 @@ class StudGenerator:
                 # Distribute studs evenly, including at boundaries
                 pos = u_start + (i * cell_width / num_studs)
                 positions.append(pos)
-                
-            logger.debug(f"Calculated stud positions: {positions}")
-            return positions
+
+            # Check if cell is at wall boundary and offset end studs
+            tol = 0.01  # Tolerance for boundary detection
+
+            # First stud at wall start: offset inward
+            if abs(u_start) < tol and positions:
+                original = positions[0]
+                positions[0] = half_stud_width
+                logger.debug(f"Offset first stud from {original} to {positions[0]} (wall start)")
+                print(f"    End stud offset: u=0 -> u={half_stud_width}")
+
+            # Last stud at wall end: offset inward
+            if wall_length > 0 and abs(u_end - wall_length) < tol and positions:
+                original = positions[-1]
+                positions[-1] = wall_length - half_stud_width
+                logger.debug(f"Offset last stud from {original} to {positions[-1]} (wall end)")
+                print(f"    End stud offset: u={original:.3f} -> u={positions[-1]:.3f}")
+
+            # Remove studs at SC/OC boundaries (not wall boundaries)
+            # These positions are where king studs will be placed
+            filtered_positions = []
+            for pos in positions:
+                # Keep studs at wall boundaries (already offset)
+                is_at_wall_start = abs(pos - half_stud_width) < tol
+                is_at_wall_end = wall_length > 0 and abs(pos - (wall_length - half_stud_width)) < tol
+
+                # Check if at cell boundary (not wall boundary) - these are king stud positions
+                is_at_cell_start = abs(pos - u_start) < tol and not is_at_wall_start
+                is_at_cell_end = abs(pos - u_end) < tol and not is_at_wall_end
+
+                if is_at_cell_start or is_at_cell_end:
+                    logger.debug(f"Removing stud at {pos} (king stud position)")
+                    print(f"    Removing stud at u={pos:.3f} (OC boundary = king stud position)")
+                else:
+                    filtered_positions.append(pos)
+
+            logger.debug(f"Calculated stud positions: {filtered_positions}")
+            return filtered_positions
 
         except Exception as e:
             logger.error(f"Error calculating stud positions: {str(e)}")

@@ -318,26 +318,67 @@ def brep_to_framing_element(
         v_start = bbox.Min.Z
         v_end = bbox.Max.Z
     else:
-        # Horizontal members: centerline runs along length
-        # Determine which axis is the length direction
-        dx = bbox.Max.X - bbox.Min.X
-        dy = bbox.Max.Y - bbox.Min.Y
-        dz = bbox.Max.Z - bbox.Min.Z
-
+        # Horizontal members: centerline runs along the wall direction
+        # BUG FIX: Use wall's base_plane X-axis direction instead of comparing
+        # bounding box dimensions. This prevents incorrect vertical centerlines
+        # when profile depth (dz) exceeds member span (dx or dy).
         center_z = (bbox.Min.Z + bbox.Max.Z) / 2
+        center_y = (bbox.Min.Y + bbox.Max.Y) / 2
+        center_x = (bbox.Min.X + bbox.Max.X) / 2
 
-        if dx >= dy and dx >= dz:
-            # Length along X
-            start_pt = rg.Point3d(bbox.Min.X, (bbox.Min.Y + bbox.Max.Y) / 2, center_z)
-            end_pt = rg.Point3d(bbox.Max.X, (bbox.Min.Y + bbox.Max.Y) / 2, center_z)
-        elif dy >= dx and dy >= dz:
-            # Length along Y
-            start_pt = rg.Point3d((bbox.Min.X + bbox.Max.X) / 2, bbox.Min.Y, center_z)
-            end_pt = rg.Point3d((bbox.Min.X + bbox.Max.X) / 2, bbox.Max.Y, center_z)
+        if base_plane is not None:
+            # Use wall direction to determine centerline
+            wall_dir = base_plane.XAxis
+
+            # Get all 8 corners of the bounding box
+            corners = [
+                rg.Point3d(bbox.Min.X, bbox.Min.Y, bbox.Min.Z),
+                rg.Point3d(bbox.Max.X, bbox.Min.Y, bbox.Min.Z),
+                rg.Point3d(bbox.Min.X, bbox.Max.Y, bbox.Min.Z),
+                rg.Point3d(bbox.Max.X, bbox.Max.Y, bbox.Min.Z),
+                rg.Point3d(bbox.Min.X, bbox.Min.Y, bbox.Max.Z),
+                rg.Point3d(bbox.Max.X, bbox.Min.Y, bbox.Max.Z),
+                rg.Point3d(bbox.Min.X, bbox.Max.Y, bbox.Max.Z),
+                rg.Point3d(bbox.Max.X, bbox.Max.Y, bbox.Max.Z),
+            ]
+
+            # Project each corner onto wall direction to find min/max extent
+            projections = []
+            for corner in corners:
+                vec = corner - base_plane.Origin
+                proj_dist = vec * wall_dir  # Dot product gives distance along wall
+                projections.append((corner, proj_dist))
+
+            # Find corners with min and max projection
+            min_proj = min(projections, key=lambda x: x[1])
+            max_proj = max(projections, key=lambda x: x[1])
+
+            # Create horizontal centerline at center Z, using projected X,Y positions
+            # Calculate the points along wall direction at center height
+            start_pt = rg.Point3d.Add(
+                base_plane.Origin,
+                rg.Vector3d.Multiply(wall_dir, min_proj[1])
+            )
+            start_pt = rg.Point3d(start_pt.X, start_pt.Y, center_z)
+
+            end_pt = rg.Point3d.Add(
+                base_plane.Origin,
+                rg.Vector3d.Multiply(wall_dir, max_proj[1])
+            )
+            end_pt = rg.Point3d(end_pt.X, end_pt.Y, center_z)
         else:
-            # Length along Z (unusual for horizontal, but handle it)
-            start_pt = rg.Point3d((bbox.Min.X + bbox.Max.X) / 2, (bbox.Min.Y + bbox.Max.Y) / 2, bbox.Min.Z)
-            end_pt = rg.Point3d((bbox.Min.X + bbox.Max.X) / 2, (bbox.Min.Y + bbox.Max.Y) / 2, bbox.Max.Z)
+            # Fallback: use larger of dx, dy (original logic minus dz comparison)
+            dx = bbox.Max.X - bbox.Min.X
+            dy = bbox.Max.Y - bbox.Min.Y
+
+            if dx >= dy:
+                # Length along X
+                start_pt = rg.Point3d(bbox.Min.X, center_y, center_z)
+                end_pt = rg.Point3d(bbox.Max.X, center_y, center_z)
+            else:
+                # Length along Y
+                start_pt = rg.Point3d(center_x, bbox.Min.Y, center_z)
+                end_pt = rg.Point3d(center_x, bbox.Max.Y, center_z)
 
         # For horizontal members, u_coord is typically at center
         u_start = _project_to_u(start_pt, base_plane)

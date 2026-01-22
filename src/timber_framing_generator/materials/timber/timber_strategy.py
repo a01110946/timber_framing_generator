@@ -491,6 +491,9 @@ class TimberFramingStrategy(FramingStrategy):
         logger.info("Creating opening members")
         elements = []
 
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
+
         # Check if Rhino is available
         if not RHINO_AVAILABLE:
             logger.warning("Rhino not available - returning empty list.")
@@ -571,7 +574,8 @@ class TimberFramingStrategy(FramingStrategy):
                     except Exception as e:
                         logger.error(f"Error generating sill for opening {i}: {e}")
 
-            # Header cripples
+            # Header cripples - collect breps for row blocking
+            header_cripple_breps = []
             if top_plates:
                 logger.debug("Creating header cripples")
                 hc_profile = self.get_profile(ElementType.HEADER_CRIPPLE, config)
@@ -588,6 +592,7 @@ class TimberFramingStrategy(FramingStrategy):
                                 opening, header_data, top_plate_data
                             )
                             for j, brep in enumerate(cripples or []):
+                                header_cripple_breps.append(brep)  # Collect for row blocking
                                 elem = brep_to_framing_element(
                                     brep=brep,
                                     element_id=f"header_cripple_{i}_{j}",
@@ -602,7 +607,8 @@ class TimberFramingStrategy(FramingStrategy):
                         except Exception as e:
                             logger.error(f"Error generating header cripples for opening {i}: {e}")
 
-            # Sill cripples (windows only)
+            # Sill cripples (windows only) - collect breps for row blocking
+            sill_cripple_breps = []
             if bottom_plates:
                 logger.debug("Creating sill cripples")
                 sc_profile = self.get_profile(ElementType.SILL_CRIPPLE, config)
@@ -621,6 +627,7 @@ class TimberFramingStrategy(FramingStrategy):
                                     opening, sill_data, bottom_plate_data
                                 )
                                 for j, brep in enumerate(cripples or []):
+                                    sill_cripple_breps.append(brep)  # Collect for row blocking
                                     elem = brep_to_framing_element(
                                         brep=brep,
                                         element_id=f"sill_cripple_{i}_{j}",
@@ -635,6 +642,13 @@ class TimberFramingStrategy(FramingStrategy):
                             except Exception as e:
                                 logger.error(f"Error generating sill cripples for opening {i}: {e}")
                             sill_idx += 1
+
+            # Store opening geometry for use by bracing members (row blocking)
+            self._opening_geometry = {
+                "header_cripple_breps": header_cripple_breps,
+                "sill_cripple_breps": sill_cripple_breps,
+            }
+            logger.debug(f"Stored {len(header_cripple_breps)} header cripple breps and {len(sill_cripple_breps)} sill cripple breps")
 
             logger.info(f"Created {len(elements)} opening members")
 
@@ -706,14 +720,22 @@ class TimberFramingStrategy(FramingStrategy):
                 stud_breps = self._vertical_geometry.get("stud_breps", [])
                 king_stud_breps = self._vertical_geometry.get("king_stud_breps", [])
 
+            # Get cripple breps from opening geometry for blocking placement
+            header_cripple_breps = []
+            sill_cripple_breps = []
+            if hasattr(self, "_opening_geometry"):
+                header_cripple_breps = self._opening_geometry.get("header_cripple_breps", [])
+                sill_cripple_breps = self._opening_geometry.get("sill_cripple_breps", [])
+                logger.debug(f"Retrieved {len(header_cripple_breps)} header cripple breps and {len(sill_cripple_breps)} sill cripple breps for blocking")
+
             # Create blocking generator
             blocking_gen = RowBlockingGenerator(
                 wall_data=rhino_wall_data,
                 studs=stud_breps,
                 king_studs=king_stud_breps,
                 trimmers=[],  # TODO: Add trimmers
-                header_cripples=[],
-                sill_cripples=[],
+                header_cripples=header_cripple_breps,
+                sill_cripples=sill_cripple_breps,
                 blocking_pattern=config.get("blocking_pattern", "INLINE"),
                 include_blocking=include_blocking,
                 block_spacing=config.get("block_spacing", 4.0),

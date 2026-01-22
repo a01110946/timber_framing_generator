@@ -414,6 +414,11 @@ class RhinoCommonFactory:
 
         Returns:
             Brep geometry from RhinoCommon assembly
+
+        Note:
+            For horizontal elements (plates, headers, sills), width and depth
+            are swapped internally because profile dimensions are defined for
+            vertical orientation but horizontal members are "laid flat".
         """
         # Convert inputs to floats
         if isinstance(start_point, (tuple, list)):
@@ -437,11 +442,16 @@ class RhinoCommonFactory:
         ez = sz + dz * length
 
         # Calculate perpendicular vectors for width and depth
-        if abs(dz) > 0.9:  # Nearly vertical
-            perp1 = (1.0, 0.0, 0.0)  # Width in X
-            perp2 = (0.0, 1.0, 0.0)  # Depth in Y
+        # For vertical elements (studs): perp1=horizontal(into wall), perp2=horizontal(along wall)
+        # For horizontal elements (plates): perp1=horizontal(into wall), perp2=vertical
+        is_vertical = abs(dz) > 0.9
+
+        if is_vertical:
+            # Vertical members: use fixed horizontal perpendiculars
+            perp1 = (1.0, 0.0, 0.0)  # Width perpendicular in X
+            perp2 = (0.0, 1.0, 0.0)  # Depth perpendicular in Y
         else:
-            # Cross with Z to get perpendicular
+            # Horizontal members: perp1 = wall normal (in XY plane), perp2 = vertical
             p1x = -dy
             p1y = dx
             p1z = 0.0
@@ -450,15 +460,28 @@ class RhinoCommonFactory:
                 p1x, p1y = p1x/p1_mag, p1y/p1_mag
             perp1 = (p1x, p1y, p1z)
 
+            # For horizontal elements, perp2 should be vertical (Z direction)
             # Cross direction with perp1 to get perp2
             p2x = dy * p1z - dz * p1y
             p2y = dz * p1x - dx * p1z
             p2z = dx * p1y - dy * p1x
             perp2 = (p2x, p2y, p2z)
 
-        # Calculate bounding box corners
-        half_w = width / 2.0
-        half_d = depth / 2.0
+        # FIX: Swap width and depth for horizontal elements
+        # Profile dimensions are defined for vertical orientation (studs):
+        #   - width = through-wall thickness (1.5" for 2x4)
+        #   - depth = along wall face (3.5" for 2x4)
+        # But for horizontal elements (plates, headers, sills) laid flat:
+        #   - The "depth" dimension becomes the through-wall thickness
+        #   - The "width" dimension becomes the vertical height
+        if not is_vertical:
+            # Swap: perp1 gets depth (through-wall), perp2 gets width (vertical)
+            half_w = depth / 2.0  # depth (3.5") goes into wall
+            half_d = width / 2.0  # width (1.5") goes vertical
+        else:
+            # Vertical elements: use as-is
+            half_w = width / 2.0
+            half_d = depth / 2.0
 
         corners = []
         for start_end in [(sx, sy, sz), (ex, ey, ez)]:

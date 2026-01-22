@@ -167,8 +167,8 @@ def element_type_to_branch_index(element_type: str) -> int:
 breps = []
 by_type = DataTree[object]()
 by_wall = DataTree[object]()
-by_type_list = []  # Alternative: nested list by type
-by_wall_list = []  # Alternative: nested list by wall
+by_type_list = DataTree[object]()  # Alternative: nested list by type (now DataTree)
+by_wall_list = DataTree[object]()  # Alternative: nested list by wall (now DataTree)
 centerlines = []
 element_ids = []
 wall_ids = []
@@ -285,7 +285,6 @@ if run and elements_json:
             branch_items = type_groups[branch_idx]
             for brep in branch_items:
                 by_type.Add(brep, path)
-            by_type_list.append(branch_items)  # Add as nested list
 
         # Build by_wall - both DataTree and nested list
         sorted_walls = sorted(wall_groups.keys())
@@ -295,7 +294,19 @@ if run and elements_json:
             branch_items = wall_groups[wall_id_key]
             for brep in branch_items:
                 by_wall.Add(brep, path)
-            by_wall_list.append(branch_items)  # Add as nested list
+
+        # Build nested lists with Grasshopper-compatible structure
+        # Use DataTree for nested structure since Python nested lists don't convert well
+        by_type_list = DataTree[object]()
+        by_wall_list = DataTree[object]()
+        for branch_idx in sorted_type_indices:
+            path = GH_Path(branch_idx)
+            for brep in type_groups[branch_idx]:
+                by_type_list.Add(brep, path)
+        for wall_id_key in sorted_walls:
+            path = GH_Path(wall_id_to_branch[wall_id_key])
+            for brep in wall_groups[wall_id_key]:
+                by_wall_list.Add(brep, path)
 
         # Set wall_ids output (all unique walls, even if filtered out)
         wall_ids = sorted(unique_walls)

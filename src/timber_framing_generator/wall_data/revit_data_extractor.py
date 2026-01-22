@@ -170,26 +170,62 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     )
                     print(f"Opening {insert_id} has opening location point: {opening_location_point_rhino}")
                     print(f"  Opening location Z = {opening_location_point.Z}")
-                    print(f"  Expected sill elevation (absolute) = opening.Z - rough_height/2 = {opening_location_point.Z - opening_height_value/2:.4f}")
 
-                    # Calculate sill height from opening location point (more reliable)
-                    # Opening location Z is center of opening, so subtract half height to get bottom (sill)
-                    # Then subtract wall_base_elevation to get relative coordinate
-                    sill_height_calculated = opening_location_point.Z - (opening_height_value / 2.0) - wall_base_elevation
-                    print(f"  Calculated sill (relative to wall base) = {sill_height_calculated:.4f}")
+                    # FIX: Use built-in parameter as primary source, it's more reliable
+                    # The INSTANCE_SILL_HEIGHT_PARAM is specifically designed for this purpose
+                    sill_height_value = None
 
-                    # Compare calculated vs parameter values
-                    sill_diff = abs(sill_height_value_raw - sill_height_calculated)
-                    print(f"  Difference (param - calculated) = {sill_height_value_raw - sill_height_calculated:.4f}")
-
-                    # Use the calculated value if there's a significant difference (> 1 foot)
-                    # This handles cases where Revit's parameter might be incorrect
-                    if sill_diff > 1.0:
-                        print(f"  WARNING: Large difference! Using calculated sill height instead.")
-                        sill_height_value = sill_height_calculated
-                    else:
+                    if sill_height_builtin and sill_height_builtin.HasValue:
+                        sill_height_value = sill_height_builtin.AsDouble()
+                        print(f"  Using INSTANCE_SILL_HEIGHT_PARAM = {sill_height_value:.4f}")
+                    elif sill_height_param and sill_height_param.HasValue:
                         sill_height_value = sill_height_value_raw
-                    print(f"  USING sill_height_value = {sill_height_value:.4f}")
+                        print(f"  Using LookupParameter('Sill Height') = {sill_height_value:.4f}")
+
+                    # If parameter values are negative or None, calculate from geometry
+                    # Calculate sill as: opening_bottom_Z - wall_base_elevation
+                    # where opening_bottom_Z = opening_center_Z - half_height
+                    # BUT: Some families have location point at sill, some at center
+                    # We need to detect which case we're in
+
+                    # Calculate what sill would be if location point is at CENTER
+                    sill_from_center = opening_location_point.Z - (opening_height_value / 2.0) - wall_base_elevation
+                    # Calculate what sill would be if location point is at SILL
+                    sill_from_sill_point = opening_location_point.Z - wall_base_elevation
+
+                    print(f"  If location is CENTER: sill = {sill_from_center:.4f}")
+                    print(f"  If location is SILL: sill = {sill_from_sill_point:.4f}")
+
+                    # If we got a parameter value, use it but validate
+                    if sill_height_value is not None and sill_height_value >= 0:
+                        # Check if calculated values are close to parameter
+                        # This helps verify the parameter is correct
+                        diff_from_center = abs(sill_height_value - sill_from_center)
+                        diff_from_sill = abs(sill_height_value - sill_from_sill_point)
+                        print(f"  Param diff from CENTER calc: {diff_from_center:.4f}")
+                        print(f"  Param diff from SILL calc: {diff_from_sill:.4f}")
+
+                        # If parameter doesn't match either calculation within tolerance,
+                        # prefer the sill-point calculation (more common in Revit families)
+                        if diff_from_center > 1.0 and diff_from_sill > 1.0:
+                            print(f"  WARNING: Parameter doesn't match geometry! Using sill-point calculation.")
+                            sill_height_value = sill_from_sill_point
+                    else:
+                        # No valid parameter, use sill-point calculation
+                        # (assumes location point is at sill, which is common)
+                        print(f"  No valid parameter, using sill-point calculation")
+                        sill_height_value = sill_from_sill_point
+
+                    # Final sanity check: sill should be >= 0 and < wall_height
+                    wall_height = wall_top_elevation - wall_base_elevation
+                    if sill_height_value < 0:
+                        print(f"  WARNING: Negative sill height ({sill_height_value:.4f}), clamping to 0")
+                        sill_height_value = 0.0
+                    elif sill_height_value >= wall_height:
+                        print(f"  WARNING: Sill height ({sill_height_value:.4f}) >= wall height, clamping")
+                        sill_height_value = wall_height - opening_height_value
+
+                    print(f"  FINAL sill_height_value = {sill_height_value:.4f}")
                     print(f"{'='*50}\n")
                     try:
                         print(f"Opening {insert_id} has wall base curve: {wall_base_curve_rhino} and opening location point: {opening_location_point_rhino}")
@@ -200,13 +236,13 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                         if isinstance(wall_base_curve_rhino, rg.LineCurve):
                             # Get the underlying Line
                             line = wall_base_curve_rhino.Line
-                            
+
                             # Use the Line to find the closest point
                             t = line.ClosestParameter(opening_location_point_rhino)
-                            
+
                             # Calculate the relative parameter on the curve (0-1)
                             t_normalized = t / wall_base_curve_rhino.GetLength()
-                            
+
                             success = True
                             t = t_normalized
                         else:
@@ -214,10 +250,18 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                             nurbs_curve = wall_base_curve_rhino.ToNurbsCurve()
                             success, t = nurbs_curve.ClosestPoint(opening_location_point_rhino)
 
-                    print(f"Opening {insert_id} has t: {t}")
+                    print(f"Opening {insert_id} has t (normalized 0-1): {t}")
+
+                    # BUG FIX: t is a normalized parameter (0-1), not an absolute coordinate
+                    # We need to convert it to absolute distance along the wall
+                    # Use curve_length helper to handle LineCurve (no GetLength method)
+                    wall_curve_length = curve_length(wall_base_curve_rhino)
+                    opening_center_u = t * wall_curve_length  # Convert normalized to absolute
+                    print(f"Opening {insert_id} - wall_curve_length: {wall_curve_length}, opening_center_u: {opening_center_u}")
+
                     rough_width_half = opening_width_value / 2.0
                     print(f"Opening {insert_id} has rough width half: {rough_width_half}")
-                    start_u_coordinate = t - rough_width_half if success else 0.0
+                    start_u_coordinate = opening_center_u - rough_width_half if success else 0.0
                     print(f"Opening {insert_id} has start u coordinate: {start_u_coordinate}")
 
                     # Note: Revit's "Sill Height" parameter is the height above the floor level,

@@ -106,6 +106,9 @@ def get_wall_base_plane(
     """
     Computes the wall's base plane using the base curve and base elevation.
     Forces the vertical direction to be the world Z axis.
+
+    The origin is set at the wall's X,Y position and the absolute Z elevation
+    from base_elevation (which is level elevation + offset).
     """
     # Get the wall's location curve.
     if revit_wall.Flipped:
@@ -113,10 +116,15 @@ def get_wall_base_plane(
     else:
         location_curve = revit_wall.Location.Curve
 
-    # Use the first endpoint of the location curve.
+    # Use the first endpoint of the location curve for X, Y position.
     start_point = location_curve.GetEndPoint(0)
-    # Set the origin to the wall's base elevation.
-    origin = rg.Point3d(start_point.X, start_point.Y, start_point.Z + base_elevation)
+
+    # FIX: Use base_elevation directly for Z coordinate.
+    # The base_elevation is already the absolute Z (level elevation + offset).
+    # Previously we were adding start_point.Z + base_elevation, which could
+    # double-count the elevation if start_point.Z was already at the level Z.
+    origin = rg.Point3d(start_point.X, start_point.Y, base_elevation)
+    print(f"DEBUG get_wall_base_plane: start_point.Z={start_point.Z}, base_elevation={base_elevation}, origin.Z={origin.Z}")
 
     # X-axis: direction from start to end of the curve.
     end_point = location_curve.GetEndPoint(1)

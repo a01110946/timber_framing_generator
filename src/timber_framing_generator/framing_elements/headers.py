@@ -219,13 +219,13 @@ class HeaderGenerator:
             except Exception as e:
                 logger.warning(f"Failed to create valid header extrusion: {str(e)}")
                 
-            # Try alternative approach - direct box creation
+            # Try alternative approach - direct box creation using wall-aligned plane
             try:
                 logger.debug("Attempting box creation for header")
                 # Get header dimensions
-                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12) 
+                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)
                 header_height = FRAMING_PARAMS.get("header_height", 5.5 / 12)
-                
+
                 # Safely get header length and handle null/invalid values
                 header_length = safe_get_length(extrusion_vector)
                 if header_length is None or header_length <= 0:
@@ -236,29 +236,35 @@ class HeaderGenerator:
                     else:
                         # Last resort - use a default value
                         header_length = 6.0  # Default header length of 6 feet
-                        
+
                 logger.debug(f"Creating box with dimensions: depth={header_depth}, height={header_height}, length={header_length}")
-                
+
                 # Ensure we have valid dimensions before creating the box
                 if header_depth <= 0 or header_height <= 0 or header_length <= 0:
                     raise ValueError(f"Invalid box dimensions: {header_depth}x{header_height}x{header_length}")
-                
+
                 # Ensure start_point is valid
                 if start_point is None:
                     logger.warning("Invalid start point for box creation, using origin")
                     start_point = rg.Point3d.Origin
-                
-                # Create a plane at the start point
-                plane = rg.Plane(start_point, rg.Vector3d.ZAxis)
-                
-                # Create a box for the header
-                box = rg.Box(
-                    plane,
-                    rg.Interval(-header_depth/2, header_depth/2),
-                    rg.Interval(-header_height/2, header_height/2),
-                    rg.Interval(0, header_length)
+
+                # FIX: Create a wall-aligned plane instead of world-aligned
+                # Box axes: X = wall normal (depth), Y = vertical (height), Z = wall direction (length)
+                box_plane = rg.Plane(
+                    start_point,
+                    base_plane.ZAxis,  # X-axis = wall normal (for depth)
+                    base_plane.YAxis   # Y-axis = vertical (for height)
                 )
-                
+
+                # Create a box for the header with wall-aligned orientation
+                # Interval order: X (depth), Y (height), Z (length along wall)
+                box = rg.Box(
+                    box_plane,
+                    rg.Interval(-header_depth/2, header_depth/2),   # X = depth into wall
+                    rg.Interval(-header_height/2, header_height/2), # Y = vertical height
+                    rg.Interval(0, header_length)                   # Z = length along wall
+                )
+
                 if box and box.IsValid:
                     header_brep = box.ToBrep()
                     if header_brep and hasattr(header_brep, 'IsValid') and header_brep.IsValid:
@@ -267,24 +273,32 @@ class HeaderGenerator:
             except Exception as box_error:
                 logger.warning(f"Box creation failed: {str(box_error)}")
             
-            # Try another fallback - simple rectangle extrusion
+            # Try another fallback - simple rectangle extrusion with wall-aligned plane
             try:
                 logger.debug("Attempting direct rectangle extrusion for header")
                 # Get header dimensions
-                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12) 
+                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)
                 header_height = FRAMING_PARAMS.get("header_height", 5.5 / 12)
-                
-                # Create rectangle at start point
-                rect = rg.Rectangle3d(
-                    rg.Plane(start_point, rg.Vector3d.ZAxis),
-                    header_depth,
-                    header_height
+
+                # FIX: Create wall-aligned profile plane
+                # Profile should be in the wall-normal/vertical plane
+                rect_plane = rg.Plane(
+                    start_point,
+                    base_plane.ZAxis,  # X = wall normal (for depth)
+                    base_plane.YAxis   # Y = vertical (for height)
                 )
-                
-                # Convert to curve and extrude
+
+                # Create rectangle with centered intervals
+                rect = rg.Rectangle3d(
+                    rect_plane,
+                    rg.Interval(-header_depth/2, header_depth/2),
+                    rg.Interval(-header_height/2, header_height/2)
+                )
+
+                # Convert to curve and extrude along wall direction
                 rect_curve = rect.ToNurbsCurve()
                 fallback_extrusion = safe_create_extrusion(rect_curve, extrusion_vector)
-                
+
                 if fallback_extrusion and hasattr(fallback_extrusion, 'IsValid') and fallback_extrusion.IsValid:
                     logger.info("Successfully created header using rectangle extrusion fallback")
                     # Check if already a Brep
@@ -294,26 +308,24 @@ class HeaderGenerator:
                         return fallback_extrusion
             except Exception as rect_error:
                 logger.warning(f"Rectangle extrusion failed: {str(rect_error)}")
-                
-            # Final fallback - create simple box at origin and transform
+
+            # Final fallback - create wall-aligned box at start point
             try:
                 logger.debug("Attempting emergency header creation")
-                # Create a simple box at the origin
+                # FIX: Create wall-aligned box instead of world-aligned
+                emergency_plane = rg.Plane(
+                    start_point,
+                    base_plane.ZAxis,  # X = wall normal
+                    base_plane.YAxis   # Y = vertical
+                )
+
                 emergency_box = rg.Box(
-                    rg.Plane.WorldXY,
-                    rg.Interval(-header_depth/2, header_depth/2),
-                    rg.Interval(-header_height/2, header_height/2),
-                    rg.Interval(0, header_length)
+                    emergency_plane,
+                    rg.Interval(-header_depth/2, header_depth/2),   # X = depth
+                    rg.Interval(-header_height/2, header_height/2), # Y = height
+                    rg.Interval(0, header_length)                   # Z = length along wall
                 )
-                
-                # Move to correct position
-                transform = rg.Transform.Translation(
-                    start_point.X, 
-                    start_point.Y, 
-                    start_point.Z
-                )
-                emergency_box.Transform(transform)
-                
+
                 brep = emergency_box.ToBrep()
                 if brep and hasattr(brep, 'IsValid') and brep.IsValid:
                     logger.warning("Created emergency header as fallback")

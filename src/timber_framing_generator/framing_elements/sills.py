@@ -177,7 +177,7 @@ class SillGenerator:
             # Fallback method 1: Box creation
             try:
                 logger.debug("Attempting box creation for sill")
-                
+
                 # Get sill dimensions
                 sill_length = safe_get_length(extrusion_vector)
                 if sill_length is None or sill_length <= 0:
@@ -187,16 +187,21 @@ class SillGenerator:
                     else:
                         # Default value as last resort
                         sill_length = 3.0
-                
-                # Create plane for box
-                box_plane = rg.Plane(start_point, rg.Vector3d.ZAxis)
-                
-                # Create a box for the sill
+
+                # FIX: Create wall-aligned plane instead of world-aligned
+                # Box axes: X = wall normal (depth), Y = vertical (height), Z = wall direction (length)
+                box_plane = rg.Plane(
+                    start_point,
+                    base_plane.ZAxis,  # X-axis = wall normal (for depth)
+                    base_plane.YAxis   # Y-axis = vertical (for height)
+                )
+
+                # Create a box for the sill with wall-aligned orientation
                 box = rg.Box(
                     box_plane,
-                    rg.Interval(-sill_height/2, sill_height/2),
-                    rg.Interval(-sill_width/2, sill_width/2),
-                    rg.Interval(0, sill_length)
+                    rg.Interval(-sill_width/2, sill_width/2),   # X = depth into wall
+                    rg.Interval(-sill_height/2, sill_height/2), # Y = vertical height
+                    rg.Interval(0, sill_length)                 # Z = length along wall
                 )
                 
                 if box and box.IsValid:
@@ -210,17 +215,24 @@ class SillGenerator:
             # Fallback method 2: Direct rectangle extrusion
             try:
                 logger.debug("Attempting direct rectangle extrusion for sill")
-                
-                # Create simple rectangle at start point
-                rect = rg.Rectangle3d(
-                    rg.Plane(start_point, rg.Vector3d.ZAxis),
-                    sill_width,
-                    sill_height
+
+                # FIX: Create wall-aligned profile plane
+                rect_plane = rg.Plane(
+                    start_point,
+                    base_plane.ZAxis,  # X = wall normal (for depth)
+                    base_plane.YAxis   # Y = vertical (for height)
                 )
-                
-                # Convert to curve and extrude
+
+                # Create rectangle with centered intervals
+                rect = rg.Rectangle3d(
+                    rect_plane,
+                    rg.Interval(-sill_width/2, sill_width/2),
+                    rg.Interval(-sill_height/2, sill_height/2)
+                )
+
+                # Convert to curve and extrude along wall direction
                 rect_curve = rect.ToNurbsCurve()
-                direct_extrusion = safe_create_extrusion(rect_curve, rg.Vector3d(end_point - start_point))
+                direct_extrusion = safe_create_extrusion(rect_curve, extrusion_vector)
                 
                 if direct_extrusion and hasattr(direct_extrusion, 'IsValid') and direct_extrusion.IsValid:
                     logger.debug("Successfully created sill using direct rectangle extrusion")
@@ -231,34 +243,31 @@ class SillGenerator:
             except Exception as rect_error:
                 logger.warning(f"Rectangle extrusion for sill failed: {str(rect_error)}")
                 
-            # Final fallback: Emergency box at origin and transform
+            # Final fallback: Emergency wall-aligned box
             try:
                 logger.debug("Creating emergency fallback sill")
-                
+
                 # Get sill dimensions
                 sill_length = 0
                 if start_point is not None and end_point is not None:
                     sill_length = start_point.DistanceTo(end_point)
                 else:
                     sill_length = 3.0  # Default fallback
-                    
-                # Create a box at origin
-                emergency_box = rg.Box(
-                    rg.Plane.WorldXY,
-                    rg.Interval(-sill_height/2, sill_height/2),
-                    rg.Interval(-sill_width/2, sill_width/2),
-                    rg.Interval(0, sill_length)
+
+                # FIX: Create wall-aligned box instead of world-aligned
+                emergency_plane = rg.Plane(
+                    start_point,
+                    base_plane.ZAxis,  # X = wall normal
+                    base_plane.YAxis   # Y = vertical
                 )
-                
-                # Transform to correct position if we have a start point
-                if start_point is not None:
-                    transform = rg.Transform.Translation(
-                        start_point.X,
-                        start_point.Y,
-                        start_point.Z
-                    )
-                    emergency_box.Transform(transform)
-                
+
+                emergency_box = rg.Box(
+                    emergency_plane,
+                    rg.Interval(-sill_width/2, sill_width/2),   # X = depth
+                    rg.Interval(-sill_height/2, sill_height/2), # Y = height
+                    rg.Interval(0, sill_length)                 # Z = length along wall
+                )
+
                 emergency_brep = emergency_box.ToBrep()
                 if emergency_brep and hasattr(emergency_brep, 'IsValid') and emergency_brep.IsValid:
                     logger.warning("Using emergency fallback geometry for sill")

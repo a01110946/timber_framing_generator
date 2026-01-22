@@ -185,6 +185,16 @@ class PlateParameters:
         """
         Calculates vertical offset based on type and representation.
 
+        For bottom plates:
+        - The reference line is at wall base elevation
+        - Plate should be INSIDE the wall (above the reference line)
+        - Offset = +thickness/2 to place plate center above reference
+
+        For top plates:
+        - The reference line is at wall top elevation
+        - Plate should be INSIDE the wall (below the reference line)
+        - Offset = -thickness/2 to place plate center below reference
+
         Args:
             thickness: The plate thickness
             framing_type: Type of plate ('bottom_plate', 'top_plate', etc.)
@@ -194,16 +204,18 @@ class PlateParameters:
             float: The calculated vertical offset
         """
         if framing_type in ["bottom_plate", "sole_plate"]:
-            # Add debug print
+            # FIX: Bottom plate should always be INSIDE the wall (above wall base)
+            # Previously the offset was inverted for "schematic" mode
             print(f"Calculating offset for {framing_type} with {representation_type}")
-            # For bottom plates, reverse the offset based on representation
-            return (
-                thickness / 2.0
-                if representation_type == "structural"
-                else -thickness / 2.0
-            )
+            # Offset upward so plate is inside wall, with bottom face at wall base
+            return thickness / 2.0
         else:  # top_plate or cap_plate
-            base_offset = -thickness / 2.0
+            # Top plate: sits just below wall top with top face at wall top elevation
+            # Cap plate: sits ON TOP of the top plate (above wall top)
             if framing_type == "cap_plate":
-                base_offset -= thickness  # Additional offset for cap plate
-            return base_offset
+                # Cap plate center is half-thickness ABOVE wall top
+                # (stacked on top of top plate)
+                return thickness / 2.0 + thickness  # = 1.5 * thickness above reference
+            else:
+                # Top plate center is half-thickness BELOW wall top
+                return -thickness / 2.0

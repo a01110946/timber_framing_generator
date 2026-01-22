@@ -308,28 +308,29 @@ class PlateGeometry:
                     
             # If extrusion fails, create a simple box from profile and direction
             try:
-                bbox = self.profile.BoundingBox
-                if bbox.IsValid:
-                    # Create a simple box using extrusion parameters
-                    corner = bbox.Min
-                    dx = bbox.Max.X - bbox.Min.X
-                    dy = bbox.Max.Y - bbox.Min.Y
-                    dz = length  # Use centerline length
-                    
-                    # Create box from dimensions
-                    try:
-                        box = rg.Box(
-                            rg.Plane(corner, rg.Vector3d.ZAxis),
-                            rg.Interval(0, dx),
-                            rg.Interval(0, dy),
-                            rg.Interval(0, dz)
-                        )
-                        brep = box.ToBrep()
-                        if brep is not None and brep.IsValid:
-                            logger.debug("Created simple box Brep as final fallback")
-                            return brep
-                    except Exception as e:
-                        logger.warning(f"Failed to create simple box: {str(e)}")
+                # FIX: Use wall-aligned plane instead of world-aligned
+                base_plane = self.location_data.get("base_plane")
+                start_point = self.centerline.PointAtStart
+
+                if base_plane is not None:
+                    # Create wall-aligned box plane
+                    # Box axes: X = wall normal (thickness), Y = vertical (width), Z = wall direction (length)
+                    box_plane = rg.Plane(
+                        start_point,
+                        base_plane.ZAxis,  # X-axis = wall normal (for thickness)
+                        base_plane.YAxis   # Y-axis = vertical (for width)
+                    )
+
+                    box = rg.Box(
+                        box_plane,
+                        rg.Interval(-self.parameters.thickness/2, self.parameters.thickness/2),
+                        rg.Interval(-self.parameters.width/2, self.parameters.width/2),
+                        rg.Interval(0, length)
+                    )
+                    brep = box.ToBrep()
+                    if brep is not None and brep.IsValid:
+                        logger.debug("Created wall-aligned box Brep as fallback")
+                        return brep
             except Exception as e:
                 logger.warning(f"Failed to create box from profile: {str(e)}")
                     
@@ -396,16 +397,27 @@ class PlateGeometry:
                     
                 # Try creating a direct box from points
                 try:
-                    # Create a more direct approach with a simple box
+                    # FIX: Use wall-aligned plane for direct box
                     origin = self.centerline.PointAtStart
                     width = self.parameters.width
                     thickness = self.parameters.thickness
                     length = safe_get_length(self.centerline)
-                    
+                    base_plane = self.location_data.get("base_plane")
+
+                    if base_plane is not None:
+                        box_plane = rg.Plane(
+                            origin,
+                            base_plane.ZAxis,  # X = wall normal (thickness)
+                            base_plane.YAxis   # Y = vertical (width)
+                        )
+                    else:
+                        # If no base_plane, use world axes as last resort
+                        box_plane = rg.Plane(origin, rg.Vector3d.XAxis, rg.Vector3d.YAxis)
+
                     box = rg.Box(
-                        rg.Plane(origin, rg.Vector3d.XAxis, rg.Vector3d.YAxis),
-                        rg.Interval(-width/2, width/2),
+                        box_plane,
                         rg.Interval(-thickness/2, thickness/2),
+                        rg.Interval(-width/2, width/2),
                         rg.Interval(0, length)
                     )
                     brep = box.ToBrep()

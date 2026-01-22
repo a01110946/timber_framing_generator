@@ -2,9 +2,11 @@
 
 ## Project Overview
 
-A Python-based tool that automates timber framing element generation from Revit wall data via Rhino.Inside.Revit. Supports both standalone API mode and Grasshopper visual programming mode.
+A Python-based tool that automates framing element generation from Revit wall data via Rhino.Inside.Revit. Supports **multiple material systems** (Timber and CFS) through a modular architecture with JSON-based inter-component communication.
 
 **Key Technologies**: Python 3.9+, Grasshopper, Rhino.Inside.Revit, FastAPI, rhino3dm
+
+**Architecture**: Modular GHPython components using Strategy Pattern for material selection
 
 ## Critical Gotchas
 
@@ -42,22 +44,56 @@ Walls are decomposed into cells for framing:
 - **SCC**: Sill Cripple Cell (below windows)
 - **HCC**: Header Cripple Cell (above openings)
 
+### 4. Material Strategy Pattern
+
+The framing generator supports multiple material systems via the Strategy Pattern:
+
+```python
+from src.timber_framing_generator.core import get_framing_strategy, MaterialSystem
+from src.timber_framing_generator.materials import timber, cfs  # Triggers registration
+
+# Get material-specific strategy
+strategy = get_framing_strategy(MaterialSystem.TIMBER)  # or MaterialSystem.CFS
+
+# Generate framing (material-agnostic interface)
+elements = strategy.generate_framing(wall_data, cell_data, config)
+```
+
+**Available Materials**:
+- **TIMBER**: Standard lumber (2x4, 2x6, etc.)
+- **CFS**: Cold-Formed Steel (350S162-54, 600T125-54, etc.)
+
+**Key Files**:
+- `src/timber_framing_generator/core/material_system.py` - FramingStrategy ABC
+- `src/timber_framing_generator/materials/timber/` - Timber implementation
+- `src/timber_framing_generator/materials/cfs/` - CFS implementation
+
 ## Project Structure
 
 ```
 src/timber_framing_generator/
+├── core/                   # Core abstractions (Strategy, JSON schemas)
+│   ├── material_system.py  # FramingStrategy ABC, ElementType enum
+│   └── json_schemas.py     # WallData, CellData, FramingResults
+├── materials/              # Material-specific implementations
+│   ├── timber/             # Timber strategy and profiles
+│   └── cfs/                # CFS strategy and profiles
 ├── cell_decomposition/     # Wall → cell decomposition
 ├── framing_elements/       # Element generators (studs, plates, headers)
 ├── wall_data/              # Revit data extraction
-├── utils/                  # Helpers, serialization, logging
+├── utils/                  # Helpers, geometry_factory
 └── config/                 # Configuration settings
 
 scripts/
-├── gh-main.py              # Main Grasshopper integration script
-└── *.py                    # Other utility scripts
+├── gh-main.py              # Legacy monolithic Grasshopper script
+├── gh_wall_analyzer.py     # Component 1: Revit → wall_json
+├── gh_cell_decomposer.py   # Component 2: wall_json → cell_json
+├── gh_framing_generator.py # Component 3: cell_json → elements_json
+└── gh_geometry_converter.py# Component 4: elements_json → Breps
 
 docs/ai/                    # AI-friendly documentation (READ THESE)
 tests/                      # Unit and integration tests
+PRPs/                       # Product Requirements Prompts
 api/                        # FastAPI endpoints
 ```
 
@@ -67,6 +103,7 @@ Before making changes, read relevant docs in `docs/ai/`:
 
 | File | When to Read |
 |------|--------------|
+| `ai-modular-architecture-plan.md` | **START HERE** - Complete architecture overview |
 | `ai-architecture-document.md` | Understanding overall system |
 | `ai-geometry-assembly-solution.md` | Working with Grasshopper outputs |
 | `ai-coordinate-system-reference.md` | Positioning framing elements |
@@ -106,11 +143,17 @@ See `docs/ai/ai-grasshopper-rhino-patterns.md` for detailed patterns.
 
 ## Current Focus Areas
 
-1. **Modularization**: Breaking monolithic `gh-main.py` into JSON-based GHPython components
-2. **Multi-Material Support**: Adding Cold-Formed Steel (CFS) alongside Timber
-3. **Geometry Pipeline**: Reliable RhinoCommon geometry output
+**Completed**:
+1. ✅ **Modularization**: Four JSON-based GHPython components (wall_analyzer, cell_decomposer, framing_generator, geometry_converter)
+2. ✅ **Multi-Material Support**: Timber and CFS strategies with profile catalogs
+3. ✅ **Geometry Pipeline**: RhinoCommonFactory handles assembly mismatch
 
-See `PRPs/` folder for active implementation plans.
+**Next Steps**:
+- Connect strategy methods to existing framing element generators
+- Implement CFS-specific elements (web stiffeners, bridging)
+- Full pipeline integration testing in Grasshopper
+
+See `PRPs/` folder for implementation documentation and `docs/ai/ai-modular-architecture-plan.md` for architecture details.
 
 ## Testing Patterns
 

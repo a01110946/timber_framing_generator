@@ -468,6 +468,9 @@ class StudGenerator:
         """
         Calculate stud positions within a cell based on spacing.
 
+        CRITICAL: Every wall MUST have studs at both ends, regardless of wall length.
+        For short walls, we place end studs even if the wall is narrower than stud spacing.
+
         End studs at wall boundaries (u=0 or u=wall_length) are offset inward
         by half the stud width so the stud edge aligns with the wall edge.
 
@@ -492,67 +495,99 @@ class StudGenerator:
             cell_width = u_end - u_start
             logger.debug(f"Cell width: {cell_width}")
 
-            # If cell is too narrow, return empty list
-            if cell_width < stud_spacing / 2:
-                logger.debug("Cell too narrow for studs")
-                return []
+            # Tolerance for boundary detection
+            tol = 0.01
 
-            # Calculate number of studs that can fit in this cell
-            num_studs = max(0, int(cell_width / stud_spacing))
-            logger.debug(f"Can fit {num_studs} studs in cell")
+            # Determine if this cell is at wall boundaries
+            is_at_wall_start = abs(u_start) < tol
+            is_at_wall_end = wall_length > 0 and abs(u_end - wall_length) < tol
 
-            # If only 1 stud fits, place it in the center
-            if num_studs == 1:
-                logger.debug("Single stud fits - placing at center")
-                return [u_start + cell_width / 2]
-
-            # Calculate positions for multiple studs
+            # CRITICAL: Always start with end studs at wall boundaries
+            # Every wall MUST have studs at both ends
             positions = []
-            for i in range(num_studs + 1):
-                # Distribute studs evenly, including at boundaries
-                pos = u_start + (i * cell_width / num_studs)
-                positions.append(pos)
 
-            # Check if cell is at wall boundary and offset end studs
-            tol = 0.01  # Tolerance for boundary detection
+            # If cell starts at wall start, add end stud (offset inward)
+            if is_at_wall_start:
+                end_stud_pos = half_stud_width
+                positions.append(end_stud_pos)
+                logger.debug(f"Added wall start stud at u={end_stud_pos}")
+                print(f"    Added wall START stud at u={end_stud_pos:.4f}")
 
-            # First stud at wall start: offset inward
-            if abs(u_start) < tol and positions:
-                original = positions[0]
-                positions[0] = half_stud_width
-                logger.debug(f"Offset first stud from {original} to {positions[0]} (wall start)")
-                print(f"    End stud offset: u=0 -> u={half_stud_width}")
+            # If cell ends at wall end, add end stud (offset inward)
+            if is_at_wall_end:
+                end_stud_pos = wall_length - half_stud_width
+                # Only add if it's not too close to the start stud
+                if not positions or abs(end_stud_pos - positions[0]) > stud_width:
+                    positions.append(end_stud_pos)
+                    logger.debug(f"Added wall end stud at u={end_stud_pos}")
+                    print(f"    Added wall END stud at u={end_stud_pos:.4f}")
+                else:
+                    logger.debug(f"Wall too short for separate end stud (would overlap start stud)")
+                    print(f"    Wall too short - end stud would overlap start stud")
 
-            # Last stud at wall end: offset inward
-            if wall_length > 0 and abs(u_end - wall_length) < tol and positions:
-                original = positions[-1]
-                positions[-1] = wall_length - half_stud_width
-                logger.debug(f"Offset last stud from {original} to {positions[-1]} (wall end)")
-                print(f"    End stud offset: u={original:.3f} -> u={positions[-1]:.3f}")
+            # Now calculate intermediate studs based on spacing
+            # Only if there's enough room for at least one intermediate stud
+            internal_start = u_start if not is_at_wall_start else half_stud_width + stud_width
+            internal_end = u_end if not is_at_wall_end else wall_length - half_stud_width - stud_width
 
-            # Remove studs at SC/OC boundaries (not wall boundaries)
-            # These positions are where king studs will be placed
+            internal_width = internal_end - internal_start
+
+            if internal_width > stud_spacing * 0.5:
+                # Calculate number of intermediate studs
+                num_intermediate = max(0, int(internal_width / stud_spacing))
+                logger.debug(f"Can fit {num_intermediate} intermediate studs in internal width {internal_width}")
+                print(f"    Internal width={internal_width:.4f}, can fit {num_intermediate} intermediate studs")
+
+                if num_intermediate > 0:
+                    # Distribute intermediate studs evenly
+                    actual_spacing = internal_width / (num_intermediate + 1)
+                    for i in range(1, num_intermediate + 1):
+                        pos = internal_start + i * actual_spacing
+                        positions.append(pos)
+                        logger.debug(f"Added intermediate stud at u={pos}")
+                        print(f"    Added intermediate stud at u={pos:.4f}")
+
+            # Handle cells that are NOT at wall boundaries (bounded by openings)
+            # These cells have king studs at their edges, so we don't add studs at u_start/u_end
+            if not is_at_wall_start and not is_at_wall_end:
+                # This cell is between openings - only add intermediate studs
+                if cell_width > stud_spacing:
+                    num_studs = int(cell_width / stud_spacing)
+                    if num_studs > 0:
+                        actual_spacing = cell_width / (num_studs + 1)
+                        for i in range(1, num_studs + 1):
+                            pos = u_start + i * actual_spacing
+                            # Don't add if too close to cell boundaries (king stud positions)
+                            if pos - u_start > stud_width and u_end - pos > stud_width:
+                                positions.append(pos)
+                                logger.debug(f"Added interior cell stud at u={pos}")
+                                print(f"    Added interior cell stud at u={pos:.4f}")
+
+            # Sort positions and remove duplicates
+            positions = sorted(set(positions))
+
+            # Filter out positions at SC/OC boundaries (king stud positions)
+            # These are at u_start or u_end when NOT at wall boundaries
             filtered_positions = []
             for pos in positions:
-                # Keep studs at wall boundaries (already offset)
-                is_at_wall_start = abs(pos - half_stud_width) < tol
-                is_at_wall_end = wall_length > 0 and abs(pos - (wall_length - half_stud_width)) < tol
-
                 # Check if at cell boundary (not wall boundary) - these are king stud positions
-                is_at_cell_start = abs(pos - u_start) < tol and not is_at_wall_start
-                is_at_cell_end = abs(pos - u_end) < tol and not is_at_wall_end
+                is_near_cell_start = abs(pos - u_start) < tol and not is_at_wall_start
+                is_near_cell_end = abs(pos - u_end) < tol and not is_at_wall_end
 
-                if is_at_cell_start or is_at_cell_end:
+                if is_near_cell_start or is_near_cell_end:
                     logger.debug(f"Removing stud at {pos} (king stud position)")
                     print(f"    Removing stud at u={pos:.3f} (OC boundary = king stud position)")
                 else:
                     filtered_positions.append(pos)
 
             logger.debug(f"Calculated stud positions: {filtered_positions}")
+            print(f"    Final stud positions: {[f'{p:.4f}' for p in filtered_positions]}")
             return filtered_positions
 
         except Exception as e:
             logger.error(f"Error calculating stud positions: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     def _filter_positions_by_king_studs(

@@ -97,9 +97,14 @@ class PlateParameters:
         # Determine specific plate type based on position in stack
         self.plate_type = self.layer_config.plate_types[layer_idx]
 
-        # Calculate vertical offset based on layer position
+        # Calculate vertical offset based on layer position and stacking
         self.vertical_offset = self._calculate_vertical_offset(
-            self.thickness, self.plate_type, self.representation_type
+            self.thickness,
+            self.plate_type,
+            self.representation_type,
+            self.layer_idx,
+            self.layer_config.num_layers,
+            self.layer_config.position
         )
 
     @classmethod
@@ -180,42 +185,73 @@ class PlateParameters:
 
     @staticmethod
     def _calculate_vertical_offset(
-        thickness: float, framing_type: str, representation_type: str
+        thickness: float,
+        framing_type: str,
+        representation_type: str,
+        layer_idx: int = 0,
+        num_layers: int = 1,
+        position: PlatePosition = None
     ) -> float:
         """
-        Calculates vertical offset based on type and representation.
+        Calculates vertical offset based on type, representation, and stacking.
 
-        For bottom plates:
+        For bottom plates (single or double):
         - The reference line is at wall base elevation
-        - Plate should be INSIDE the wall (above the reference line)
-        - Offset = +thickness/2 to place plate center above reference
+        - All plates should be INSIDE the wall (above the reference line)
+        - Single plate: offset = +thickness/2 (bottom face at wall base)
+        - Double plates: stack upward from wall base
+          - sole_plate (idx=0): +thickness/2
+          - bottom_plate (idx=1): +1.5*thickness
 
-        For top plates:
+        For top plates (single or double):
         - The reference line is at wall top elevation
-        - Plate should be INSIDE the wall (below the reference line)
-        - Offset = -thickness/2 to place plate center below reference
+        - All plates should be INSIDE the wall (below the reference line)
+        - Single plate: offset = -thickness/2 (top face at wall top)
+        - Double plates: stack downward from wall top
+          - top_plate (idx=0): -1.5*thickness (lower plate)
+          - cap_plate (idx=1): -thickness/2 (upper plate, top face at wall top)
 
         Args:
             thickness: The plate thickness
             framing_type: Type of plate ('bottom_plate', 'top_plate', etc.)
             representation_type: How to represent the plate ('structural' or 'schematic')
+            layer_idx: Index of this plate in the layer stack (0-based)
+            num_layers: Total number of plate layers (1 or 2)
+            position: PlatePosition.BOTTOM or PlatePosition.TOP
 
         Returns:
             float: The calculated vertical offset
         """
-        if framing_type in ["bottom_plate", "sole_plate"]:
-            # FIX: Bottom plate should always be INSIDE the wall (above wall base)
-            # Previously the offset was inverted for "schematic" mode
-            print(f"Calculating offset for {framing_type} with {representation_type}")
-            # Offset upward so plate is inside wall, with bottom face at wall base
-            return thickness / 2.0
-        else:  # top_plate or cap_plate
-            # Top plate: sits just below wall top with top face at wall top elevation
-            # Cap plate: sits ON TOP of the top plate (above wall top)
-            if framing_type == "cap_plate":
-                # Cap plate center is half-thickness ABOVE wall top
-                # (stacked on top of top plate)
-                return thickness / 2.0 + thickness  # = 1.5 * thickness above reference
+        # Determine position from framing_type if not provided
+        if position is None:
+            if framing_type in ["bottom_plate", "sole_plate"]:
+                position = PlatePosition.BOTTOM
             else:
-                # Top plate center is half-thickness BELOW wall top
-                return -thickness / 2.0
+                position = PlatePosition.TOP
+
+        if position == PlatePosition.BOTTOM:
+            # Bottom plates: stack upward from wall base (all inside wall)
+            if num_layers == 1:
+                # Single plate: bottom face at wall base
+                offset = thickness / 2.0
+            else:
+                # Double plates: stack upward
+                # layer_idx=0: sole_plate, bottom face at wall base -> +thickness/2
+                # layer_idx=1: bottom_plate, bottom face at top of sole -> +1.5*thickness
+                offset = thickness / 2.0 + (layer_idx * thickness)
+            print(f"Bottom plate offset for {framing_type} (idx={layer_idx}, layers={num_layers}): +{offset}")
+            return offset
+        else:
+            # Top plates: stack downward from wall top (all inside wall)
+            if num_layers == 1:
+                # Single plate: top face at wall top
+                offset = -thickness / 2.0
+            else:
+                # Double plates: both inside wall, stacking downward from wall top
+                # layer_idx=0: top_plate (lower), below cap_plate -> -1.5*thickness
+                # layer_idx=1: cap_plate (upper), top face at wall top -> -thickness/2
+                # Calculate: the upper plate (idx=1) is at -thickness/2
+                # The lower plate (idx=0) is at -(1.5*thickness)
+                offset = -thickness / 2.0 - ((num_layers - 1 - layer_idx) * thickness)
+            print(f"Top plate offset for {framing_type} (idx={layer_idx}, layers={num_layers}): {offset}")
+            return offset

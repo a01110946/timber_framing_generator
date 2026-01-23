@@ -255,6 +255,11 @@ class FramingResults:
     elements: List[FramingElementData]
     element_counts: Dict[str, int] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Wall orientation for geometry reconstruction
+    # x_axis: direction along wall length (U direction)
+    # z_axis: wall normal, perpendicular to wall face (W direction)
+    wall_x_axis: Optional[Vector3D] = None
+    wall_z_axis: Optional[Vector3D] = None
 
 
 # =============================================================================

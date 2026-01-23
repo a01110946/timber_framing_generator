@@ -131,17 +131,20 @@ class SillCrippleGenerator:
                 return []
 
             # Calculate horizontal positions
+            # Offset by half cripple width so outer face aligns with trimmer/opening edge
+            half_cripple_width = cripple_width / 2
             if trimmer_positions:
-                # Use provided trimmer positions
+                # Use provided trimmer positions (these are trimmer inner faces)
                 u_left, u_right = trimmer_positions
 
-                u_left_inner = u_left + cripple_width
-                u_right_inner = u_right - cripple_width
+                u_left_inner = u_left + half_cripple_width
+                u_right_inner = u_right - half_cripple_width
                 logger.trace(f"Using provided trimmer positions: left={u_left}, right={u_right}")
             else:
                 # Calculate positions based on opening with standard offsets
-                u_left_inner = opening_u_start + cripple_width
-                u_right_inner = opening_u_start + opening_width - cripple_width
+                # Opening edges define where cripple outer faces should be
+                u_left_inner = opening_u_start + half_cripple_width
+                u_right_inner = opening_u_start + opening_width - half_cripple_width
                 logger.trace("Calculating positions based on opening dimensions")
 
             # Calculate internal width between inner faces
@@ -264,9 +267,15 @@ class SillCrippleGenerator:
         """
         logger.trace(f"Creating cripple geometry at u={u_coordinate}, v range={bottom_v}-{top_v}")
         logger.trace(f"Cripple dimensions - width: {width}, depth: {depth}")
-        
+
         try:
-            # 1. Create the centerline endpoints in world coordinates
+            # 1. Create the centerline endpoints in wall-local coordinates
+            # The wall's base_plane coordinate system is:
+            #   - XAxis = along wall (U direction)
+            #   - YAxis = vertical (V direction) - derived from World Z
+            #   - ZAxis = wall normal (W direction)
+            # Position using wall-local U,V coordinates via base_plane axes
+
             start_point = rg.Point3d.Add(
                 base_plane.Origin,
                 rg.Vector3d.Add(
@@ -282,7 +291,7 @@ class SillCrippleGenerator:
                     rg.Vector3d.Multiply(base_plane.YAxis, top_v),
                 ),
             )
-            
+
             logger.trace(f"Cripple centerline - start: {start_point}, end: {end_point}")
 
             # Create centerline (for debugging)

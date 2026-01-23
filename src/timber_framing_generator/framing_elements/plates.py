@@ -131,11 +131,15 @@ def create_plates(
         # Create parameters with optional profile override
         logger.debug(f"- Creating plate parameters")
         try:
+            # Determine position based on plate_type parameter, not loop index
+            # All bottom plates (sole_plate, bottom_plate) use BOTTOM position
+            # All top plates (top_plate, cap_plate) use TOP position
+            plate_position = PlatePosition.BOTTOM if plate_type == "bottom_plate" else PlatePosition.TOP
             parameters = PlateParameters.from_wall_type(
                 wall_data["wall_type"],
                 framing_type=current_plate_type,
                 layer_config=PlateLayerConfig(
-                    position=PlatePosition.BOTTOM if idx == 0 else PlatePosition.TOP,
+                    position=plate_position,
                     num_layers=len(plate_types),
                 ),
                 layer_idx=idx,

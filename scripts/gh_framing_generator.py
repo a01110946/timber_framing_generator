@@ -65,7 +65,7 @@ from src.timber_framing_generator.core.material_system import (
     MaterialSystem, get_framing_strategy, list_available_materials
 )
 from src.timber_framing_generator.core.json_schemas import (
-    FramingResults, FramingElementData, ProfileData, Point3D,
+    FramingResults, FramingElementData, ProfileData, Point3D, Vector3D,
     deserialize_cell_data, FramingJSONEncoder
 )
 
@@ -145,11 +145,35 @@ def generate_framing_for_wall(
         # DEBUG: Print wall_id being added to elements
         print(f"DEBUG: Adding wall_id='{wall_id}' to {len(framing_elements)} elements")
 
+        # Extract wall direction from wall_data_dict's base_plane for geometry reconstruction
+        wall_x_axis = None
+        wall_z_axis = None
+        # DEBUG: Show wall_data_dict content for troubleshooting
+        print(f"DEBUG: wall_data_dict keys: {list(wall_data_dict.keys()) if wall_data_dict else 'EMPTY'}")
+        if wall_data_dict and 'base_plane' in wall_data_dict:
+            print(f"DEBUG: base_plane keys: {list(wall_data_dict['base_plane'].keys())}")
+            base_plane = wall_data_dict['base_plane']
+            if 'x_axis' in base_plane:
+                x_axis = base_plane['x_axis']
+                wall_x_axis = (x_axis['x'], x_axis['y'], x_axis['z'])
+                print(f"DEBUG: wall_x_axis from base_plane: {wall_x_axis}")
+            if 'z_axis' in base_plane:
+                z_axis = base_plane['z_axis']
+                wall_z_axis = (z_axis['x'], z_axis['y'], z_axis['z'])
+                print(f"DEBUG: wall_z_axis from base_plane: {wall_z_axis}")
+
         for elem in framing_elements:
-            # Add wall_id to element metadata for filtering
+            # Add wall_id and wall direction to element metadata for filtering and geometry
             elem_metadata = dict(elem.metadata) if elem.metadata else {}
             elem_metadata['wall_id'] = wall_id
-            print(f"DEBUG: Element {elem.id} metadata now has wall_id: {elem_metadata.get('wall_id')}")
+            # Add wall direction for geometry reconstruction
+            if wall_x_axis:
+                elem_metadata['wall_x_axis'] = wall_x_axis
+            if wall_z_axis:
+                elem_metadata['wall_z_axis'] = wall_z_axis
+            # Only print full metadata for first element to avoid log spam
+            if len(elements) == 0:
+                print(f"DEBUG: First element {elem.id} metadata: wall_id={elem_metadata.get('wall_id')}, wall_x_axis={elem_metadata.get('wall_x_axis')}, wall_z_axis={elem_metadata.get('wall_z_axis')}")
 
             elem_data = FramingElementData(
                 id=elem.id,
@@ -259,10 +283,25 @@ if run and cell_json:
                 f"Framing Generator",
                 f"Material System: {material_type}",
                 f"Walls to process: {len(cell_list)}",
+                f"Walls in wall_lookup: {len(wall_lookup)}",
                 f"Strategy: {strategy.__class__.__name__}",
                 f"Generation sequence: {[e.value for e in strategy.get_generation_sequence()]}",
                 "",
             ]
+
+            # Add wall_lookup debug info to log
+            if wall_lookup:
+                log_lines.append("Wall lookup info:")
+                for wid in list(wall_lookup.keys())[:3]:  # Show first 3
+                    wd = wall_lookup[wid]
+                    has_bp = 'base_plane' in wd
+                    log_lines.append(f"  {wid}: has_base_plane={has_bp}")
+                if len(wall_lookup) > 3:
+                    log_lines.append(f"  ... and {len(wall_lookup) - 3} more")
+                log_lines.append("")
+            else:
+                log_lines.append("WARNING: wall_lookup is EMPTY - wall_json may not be connected!")
+                log_lines.append("")
 
             # DEBUG: Print detailed cell structure
             print(f"\n{'='*60}")
@@ -291,9 +330,24 @@ if run and cell_json:
             all_elements = []
             type_counts = {}
 
+            # DEBUG: Print wall_lookup info
+            print(f"\n{'='*60}")
+            print(f"DEBUG: wall_lookup has {len(wall_lookup)} walls")
+            for wid in list(wall_lookup.keys())[:5]:
+                wd = wall_lookup[wid]
+                has_base_plane = 'base_plane' in wd
+                bp_keys = list(wd.get('base_plane', {}).keys()) if has_base_plane else []
+                print(f"  Wall {wid}: has_base_plane={has_base_plane}, base_plane keys={bp_keys}")
+            print(f"{'='*60}\n")
+
             for i, cell_data_dict in enumerate(cell_list):
                 wall_id = cell_data_dict.get('wall_id', f'wall_{i}')
                 wall_data_dict = wall_lookup.get(wall_id, {})
+
+                # DEBUG: Check if wall_data_dict has base_plane
+                if i < 3:  # Only print for first 3 walls
+                    has_bp = 'base_plane' in wall_data_dict
+                    print(f"DEBUG: Wall {wall_id}: wall_data_dict has_base_plane={has_bp}")
 
                 elements, wall_log = generate_framing_for_wall(
                     cell_data_dict, wall_data_dict, strategy, config

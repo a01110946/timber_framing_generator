@@ -291,8 +291,11 @@ class FramingGenerator:
             logger.debug(f"Openings data: {openings}")
 
             # Debug logging for bottom plate and top plate being used
-            bottom_plate = self.framing_elements["bottom_plates"][0]
-            top_plate = self.framing_elements["top_plates"][-1]
+            # For double plates: use the innermost plates (the ones that studs connect to)
+            # bottom_plates: [sole_plate, bottom_plate] or [bottom_plate] -> use [0] for single, [-1] for uppermost
+            # top_plates: [top_plate, cap_plate] or [top_plate] -> use [0] for the lowest one
+            bottom_plate = self.framing_elements["bottom_plates"][-1]  # Uppermost bottom plate
+            top_plate = self.framing_elements["top_plates"][0]  # Lowest top plate
             logger.debug(f"Using bottom plate: {id(bottom_plate)}")
             logger.debug(f"Using top plate: {id(top_plate)}")
 
@@ -797,7 +800,8 @@ class FramingGenerator:
                     header_bottom = self._get_header_bottom_elevation(i)
 
                     # Get bottom plate boundary data as a dictionary
-                    bottom_plate = self.framing_elements["bottom_plates"][0]
+                    # For double bottom plates [sole_plate, bottom_plate], use [-1] for the uppermost one
+                    bottom_plate = self.framing_elements["bottom_plates"][-1]
                     plate_boundary_data = bottom_plate.get_boundary_data()
 
                     logger.info(f"Bottom plate boundary data: {plate_boundary_data}")
@@ -891,8 +895,10 @@ class FramingGenerator:
                 self.framing_elements["header_cripples"] = []
                 return
 
-            # Get the lowest top plate (should be the last one in the list - for double top plates)
-            top_plate = self.framing_elements["top_plates"][-1]
+            # Get the lowest top plate (the first one in the list for double top plates)
+            # For double top plates: [top_plate, cap_plate] - we need top_plate[0]
+            # The "lowest" top plate is the one at index 0, whose bottom face is where studs connect
+            top_plate = self.framing_elements["top_plates"][0]
             top_plate_data = top_plate.get_boundary_data()
 
             logger.info(f"Top plate data for header cripples:")
@@ -1112,8 +1118,9 @@ class FramingGenerator:
                 self.framing_elements["sill_cripples"] = []
                 return
 
-            # Get the top bottom plate (should be the first one in the list for single bottom plate)
-            bottom_plate = self.framing_elements["bottom_plates"][0]
+            # Get the uppermost bottom plate (where sill cripples connect to)
+            # For double bottom plates [sole_plate, bottom_plate], use [-1] for the uppermost one
+            bottom_plate = self.framing_elements["bottom_plates"][-1]
             bottom_plate_data = bottom_plate.get_boundary_data()
 
             logger.info(f"Bottom plate data for sill cripples:")
@@ -1336,10 +1343,13 @@ class FramingGenerator:
             logger.info("\nGenerating standard wall studs")
 
             # Create stud generator with king stud information to avoid overlaps
+            # For double plates: studs connect to innermost plates
+            # bottom_plates: [sole_plate, bottom_plate] or [bottom_plate] -> use [-1] for uppermost
+            # top_plates: [top_plate, cap_plate] or [top_plate] -> use [0] for lowest
             stud_generator = StudGenerator(
                 self.wall_data,
-                self.framing_elements["bottom_plates"][0],  # Bottom plate (first one)
-                self.framing_elements["top_plates"][-1],  # Top plate (last one)
+                self.framing_elements["bottom_plates"][-1],  # Uppermost bottom plate
+                self.framing_elements["top_plates"][0],  # Lowest top plate
                 self.framing_elements.get(
                     "king_studs", []
                 ),  # Pass king studs to avoid overlap

@@ -192,13 +192,14 @@ FRAMING_PARAMS: Dict[str, Any] = {
     "trimmer_width": 1.5 / 12,  # 1.5 inches in feet
     "trimmer_depth": 3.5 / 12,  # 3.5 inches in feet (depth along wall)
     # Header parameters
-    "header_height": 7 / 12,  # 1.5 inches in feet
-    "header_depth": 3.5 / 12,  # 3.5 inches in feet (depth along wall)
+    "header_height": 7 / 12,  # 7 inches in feet (vertical dimension of header)
+    "header_depth": 3.5 / 12,  # 3.5 inches in feet (depth into wall)
     "header_height_above_opening": 0.0,  # 0 inches in feet
     # Cripple parameters
     "cripple_width": 1.5 / 12,  # 1.5 inches in feet
     "cripple_depth": 3.5 / 12,  # 3.5 inches in feet (depth along wall)
     "cripple_spacing": 16.0 / 12,  # 16 inches in feet
+    "min_cripple_length": 6.0 / 12,  # 6 inches in feet - minimum length for header/sill cripples
     # Sill parameters
     "sill_height": 1.5 / 12,  # 1.5 inches in feet
     "sill_depth": 3.5 / 12,  # 3.5 inches in feet (depth along wall)

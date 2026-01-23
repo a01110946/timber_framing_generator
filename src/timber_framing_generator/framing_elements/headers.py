@@ -105,11 +105,11 @@ class HeaderGenerator:
                 "header_height_above_opening", 0.0
             )  # Distance above opening
 
-            logger.debug("Header dimensions:")
-            logger.debug(f"  width: {header_width}")
-            logger.debug(f"  height: {header_height}")
-            logger.debug(f"  height_above_opening: {header_height_above_opening}")
-            logger.debug(f"  king_stud_offset: {king_stud_offset}")
+            logger.info("Header dimensions from FRAMING_PARAMS:")
+            logger.info(f"  header_width (depth into wall): {header_width} ft = {header_width * 12} in")
+            logger.info(f"  header_height (vertical): {header_height} ft = {header_height * 12} in")
+            logger.info(f"  height_above_opening: {header_height_above_opening}")
+            logger.info(f"  king_stud_offset: {king_stud_offset}")
 
             # Calculate header position (top of opening + half header height)
             opening_v_end = opening_v_start + opening_height
@@ -151,7 +151,13 @@ class HeaderGenerator:
                 f"Final header span: u_left={u_left}, u_right={u_right}, width={u_right-u_left}"
             )
 
-            # 1. Create the centerline endpoints in world coordinates
+            # 1. Create the centerline endpoints in wall-local coordinates
+            # The wall's base_plane coordinate system is:
+            #   - XAxis = along wall (U direction)
+            #   - YAxis = vertical (V direction) - derived from World Z
+            #   - ZAxis = wall normal (W direction)
+            # Position using wall-local U,V coordinates via base_plane axes
+
             start_point = rg.Point3d.Add(
                 base_plane.Origin,
                 rg.Vector3d.Add(
@@ -222,9 +228,8 @@ class HeaderGenerator:
             # Try alternative approach - direct box creation using wall-aligned plane
             try:
                 logger.debug("Attempting box creation for header")
-                # Get header dimensions
-                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)
-                header_height = FRAMING_PARAMS.get("header_height", 5.5 / 12)
+                # Use header_width (depth into wall) and header_height already calculated above
+                # Don't redefine them here - use the values from lines 98-102
 
                 # Safely get header length and handle null/invalid values
                 header_length = safe_get_length(extrusion_vector)
@@ -237,37 +242,57 @@ class HeaderGenerator:
                         # Last resort - use a default value
                         header_length = 6.0  # Default header length of 6 feet
 
-                logger.debug(f"Creating box with dimensions: depth={header_depth}, height={header_height}, length={header_length}")
+                logger.info(f"Creating header box with dimensions:")
+                logger.info(f"  length (along wall): {header_length} ft = {header_length * 12} in")
+                logger.info(f"  height (vertical): {header_height} ft = {header_height * 12} in")
+                logger.info(f"  depth (into wall): {header_width} ft = {header_width * 12} in")
 
                 # Ensure we have valid dimensions before creating the box
-                if header_depth <= 0 or header_height <= 0 or header_length <= 0:
-                    raise ValueError(f"Invalid box dimensions: {header_depth}x{header_height}x{header_length}")
+                if header_width <= 0 or header_height <= 0 or header_length <= 0:
+                    raise ValueError(f"Invalid box dimensions: {header_width}x{header_height}x{header_length}")
 
                 # Ensure start_point is valid
                 if start_point is None:
                     logger.warning("Invalid start point for box creation, using origin")
                     start_point = rg.Point3d.Origin
 
-                # FIX: Create a wall-aligned plane instead of world-aligned
-                # Box axes: X = wall normal (depth), Y = vertical (height), Z = wall direction (length)
+                # FIX: Create a wall-aligned plane for the box
+                # The box will extend along its X-axis, so we set:
+                # - X-axis = wall direction (for length along wall)
+                # - Y-axis = vertical (for height)
+                # - Z-axis (implicit) = wall normal (for depth)
                 box_plane = rg.Plane(
                     start_point,
-                    base_plane.ZAxis,  # X-axis = wall normal (for depth)
+                    base_plane.XAxis,  # X-axis = wall direction (for length)
                     base_plane.YAxis   # Y-axis = vertical (for height)
                 )
 
                 # Create a box for the header with wall-aligned orientation
-                # Interval order: X (depth), Y (height), Z (length along wall)
+                # Interval order: X (length along wall), Y (height), Z (depth into wall)
+                # Use header_width (depth into wall) and header_height from main calculation
+                logger.info(f"Box intervals being created:")
+                logger.info(f"  X (length): 0 to {header_length}")
+                logger.info(f"  Y (height): {-header_height/2} to {header_height/2}")
+                logger.info(f"  Z (depth): {-header_width/2} to {header_width/2}")
                 box = rg.Box(
                     box_plane,
-                    rg.Interval(-header_depth/2, header_depth/2),   # X = depth into wall
+                    rg.Interval(0, header_length),                   # X = length along wall
                     rg.Interval(-header_height/2, header_height/2), # Y = vertical height
-                    rg.Interval(0, header_length)                   # Z = length along wall
+                    rg.Interval(-header_width/2, header_width/2)    # Z = depth into wall (header_width)
                 )
 
                 if box and box.IsValid:
                     header_brep = box.ToBrep()
                     if header_brep and hasattr(header_brep, 'IsValid') and header_brep.IsValid:
+                        # Verify actual dimensions of created Brep
+                        bbox = header_brep.GetBoundingBox(True)
+                        actual_x = bbox.Max.X - bbox.Min.X
+                        actual_y = bbox.Max.Y - bbox.Min.Y
+                        actual_z = bbox.Max.Z - bbox.Min.Z
+                        logger.info(f"Created header Brep bounding box dimensions:")
+                        logger.info(f"  World X extent: {actual_x} ft = {actual_x * 12} in")
+                        logger.info(f"  World Y extent: {actual_y} ft = {actual_y * 12} in (depth into wall)")
+                        logger.info(f"  World Z extent: {actual_z} ft = {actual_z * 12} in (VERTICAL HEIGHT)")
                         logger.info("Successfully created header using box creation method")
                         return header_brep
             except Exception as box_error:
@@ -276,9 +301,7 @@ class HeaderGenerator:
             # Try another fallback - simple rectangle extrusion with wall-aligned plane
             try:
                 logger.debug("Attempting direct rectangle extrusion for header")
-                # Get header dimensions
-                header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)
-                header_height = FRAMING_PARAMS.get("header_height", 5.5 / 12)
+                # Use header_width (depth into wall) and header_height from main calculation
 
                 # FIX: Create wall-aligned profile plane
                 # Profile should be in the wall-normal/vertical plane
@@ -289,9 +312,10 @@ class HeaderGenerator:
                 )
 
                 # Create rectangle with centered intervals
+                # Use header_width for depth into wall, header_height for vertical
                 rect = rg.Rectangle3d(
                     rect_plane,
-                    rg.Interval(-header_depth/2, header_depth/2),
+                    rg.Interval(-header_width/2, header_width/2),
                     rg.Interval(-header_height/2, header_height/2)
                 )
 
@@ -312,18 +336,19 @@ class HeaderGenerator:
             # Final fallback - create wall-aligned box at start point
             try:
                 logger.debug("Attempting emergency header creation")
-                # FIX: Create wall-aligned box instead of world-aligned
+                # FIX: Create wall-aligned box with correct orientation
+                # X = wall direction (length), Y = vertical (height), Z = wall normal (depth)
                 emergency_plane = rg.Plane(
                     start_point,
-                    base_plane.ZAxis,  # X = wall normal
+                    base_plane.XAxis,  # X = wall direction
                     base_plane.YAxis   # Y = vertical
                 )
 
                 emergency_box = rg.Box(
                     emergency_plane,
-                    rg.Interval(-header_depth/2, header_depth/2),   # X = depth
+                    rg.Interval(0, header_length),                   # X = length along wall
                     rg.Interval(-header_height/2, header_height/2), # Y = height
-                    rg.Interval(0, header_length)                   # Z = length along wall
+                    rg.Interval(-header_width/2, header_width/2)    # Z = depth into wall (header_width)
                 )
 
                 brep = emergency_box.ToBrep()
@@ -357,8 +382,8 @@ class HeaderGenerator:
 
             # Calculate header v-coordinate (top of opening)
             opening_v_end = opening_v_start + opening_height
-            header_height = FRAMING_PARAMS.get("header_height", 1.5 / 12)
-            header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)
+            header_height = FRAMING_PARAMS.get("header_height", 7.0 / 12)  # 7 inches default
+            header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)   # 3.5 inches default
             header_v = opening_v_end + header_height / 2
             header_height_above_opening = FRAMING_PARAMS.get(
                 "header_height_above_opening", 0.0

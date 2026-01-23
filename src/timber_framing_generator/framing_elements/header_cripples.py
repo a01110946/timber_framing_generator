@@ -253,8 +253,14 @@ class HeaderCrippleGenerator:
         """
         try:
             logger.trace(f"Creating cripple geometry at u={u_coordinate}, bottom_v={bottom_v}, top_v={top_v}")
-            
-            # 1. Create the centerline endpoints in world coordinates
+
+            # 1. Create the centerline endpoints in wall-local coordinates
+            # The wall's base_plane coordinate system is:
+            #   - XAxis = along wall (U direction)
+            #   - YAxis = vertical (V direction) - derived from World Z
+            #   - ZAxis = wall normal (W direction)
+            # Position using wall-local U,V coordinates via base_plane axes
+
             start_point = rg.Point3d.Add(
                 base_plane.Origin,
                 rg.Vector3d.Add(
@@ -306,8 +312,50 @@ class HeaderCrippleGenerator:
                 logger.debug("Cripple extrusion created successfully")
                 return extrusion.ToBrep().CapPlanarHoles(0.001)
             else:
-                logger.warning("Failed to create valid header cripple extrusion")
-                return None
+                logger.warning("Failed to create valid header cripple extrusion, trying box fallback")
+
+            # Fallback: Box creation method
+            try:
+                logger.debug("Attempting box creation for header cripple")
+
+                # Calculate height based on start and end points
+                height = 0
+                if start_point is not None and end_point is not None:
+                    height = start_point.DistanceTo(end_point)
+                    if height <= 0:
+                        logger.warning(f"Invalid cripple height: {height}")
+                        return None
+                else:
+                    logger.warning("Invalid start/end points for header cripple")
+                    return None
+
+                # Create a wall-aligned box plane at start point
+                # For vertical members: X = wall direction, Y = wall normal, Z = vertical
+                box_plane = rg.Plane(
+                    start_point,
+                    base_plane.XAxis,  # X = wall direction (for depth along wall)
+                    base_plane.ZAxis   # Y = wall normal (for width into wall)
+                )
+
+                # Create box - vertical cripple stud
+                # X interval = depth (along wall), Y interval = width (into wall), Z interval = height (vertical)
+                box = rg.Box(
+                    box_plane,
+                    rg.Interval(-depth / 2, depth / 2),   # X = depth along wall
+                    rg.Interval(-width / 2, width / 2),   # Y = width into wall
+                    rg.Interval(0, height)                 # Z = height (vertical)
+                )
+
+                if box and box.IsValid:
+                    box_brep = box.ToBrep()
+                    if box_brep and hasattr(box_brep, 'IsValid') and box_brep.IsValid:
+                        logger.debug("Successfully created header cripple using box method")
+                        return box_brep
+            except Exception as box_error:
+                logger.warning(f"Box creation for header cripple failed: {str(box_error)}")
+
+            logger.error("All header cripple creation methods failed")
+            return None
 
         except Exception as e:
             logger.error(f"Error creating header cripple geometry: {str(e)}")

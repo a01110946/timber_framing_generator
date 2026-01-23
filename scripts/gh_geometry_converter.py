@@ -97,12 +97,33 @@ def create_brep_from_element(element: FramingElementData, factory):
 
     direction = (dx/length, dy/length, dz/length)
 
+    # Extract wall direction from element metadata for correct orientation
+    wall_x_axis = None
+    wall_z_axis = None
+    if element.metadata:
+        wall_x_axis = element.metadata.get('wall_x_axis')
+        wall_z_axis = element.metadata.get('wall_z_axis')
+
+    # Debug: print wall direction and profile for first few vertical elements
+    is_vertical = abs(dz) > 0.9
+    if is_vertical and hasattr(create_brep_from_element, '_debug_count'):
+        create_brep_from_element._debug_count += 1
+        if create_brep_from_element._debug_count <= 3:
+            print(f"DEBUG GeoConv: {element.id} profile.width={element.profile.width:.4f}, profile.depth={element.profile.depth:.4f}")
+            print(f"  wall_x_axis={wall_x_axis}, wall_z_axis={wall_z_axis}")
+    elif is_vertical:
+        create_brep_from_element._debug_count = 1
+        print(f"DEBUG GeoConv: {element.id} profile.width={element.profile.width:.4f}, profile.depth={element.profile.depth:.4f}")
+        print(f"  wall_x_axis={wall_x_axis}, wall_z_axis={wall_z_axis}")
+
     return factory.create_box_brep_from_centerline(
         start_point=(start.x, start.y, start.z),
         direction=direction,
         length=length,
         width=element.profile.width,
         depth=element.profile.depth,
+        wall_x_axis=wall_x_axis,
+        wall_z_axis=wall_z_axis,
     )
 
 

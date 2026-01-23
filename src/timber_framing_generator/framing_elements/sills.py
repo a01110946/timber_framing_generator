@@ -102,10 +102,16 @@ class SillGenerator:
             # Calculate sill span based on opening with offsets
             u_left = opening_u_start
             u_right = opening_u_start + opening_width
-            
+
             logger.debug(f"Sill position - v: {sill_v}, u range: {u_left}-{u_right}")
 
-            # 1. Create the centerline endpoints in world coordinates
+            # 1. Create the centerline endpoints in wall-local coordinates
+            # The wall's base_plane coordinate system is:
+            #   - XAxis = along wall (U direction)
+            #   - YAxis = vertical (V direction) - derived from World Z
+            #   - ZAxis = wall normal (W direction)
+            # Position using wall-local U,V coordinates via base_plane axes
+
             start_point = rg.Point3d.Add(
                 base_plane.Origin,
                 rg.Vector3d.Add(
@@ -121,7 +127,7 @@ class SillGenerator:
                     rg.Vector3d.Multiply(base_plane.YAxis, sill_v),
                 ),
             )
-            
+
             logger.debug(f"Centerline start point: ({start_point.X}, {start_point.Y}, {start_point.Z})")
             logger.debug(f"Centerline end point: ({end_point.X}, {end_point.Y}, {end_point.Z})")
 
@@ -188,20 +194,20 @@ class SillGenerator:
                         # Default value as last resort
                         sill_length = 3.0
 
-                # FIX: Create wall-aligned plane instead of world-aligned
-                # Box axes: X = wall normal (depth), Y = vertical (height), Z = wall direction (length)
+                # FIX: Create wall-aligned plane with correct orientation
+                # X = wall direction (length), Y = vertical (height), Z = wall normal (depth)
                 box_plane = rg.Plane(
                     start_point,
-                    base_plane.ZAxis,  # X-axis = wall normal (for depth)
+                    base_plane.XAxis,  # X-axis = wall direction (for length)
                     base_plane.YAxis   # Y-axis = vertical (for height)
                 )
 
                 # Create a box for the sill with wall-aligned orientation
                 box = rg.Box(
                     box_plane,
-                    rg.Interval(-sill_width/2, sill_width/2),   # X = depth into wall
+                    rg.Interval(0, sill_length),                 # X = length along wall
                     rg.Interval(-sill_height/2, sill_height/2), # Y = vertical height
-                    rg.Interval(0, sill_length)                 # Z = length along wall
+                    rg.Interval(-sill_width/2, sill_width/2)    # Z = depth into wall
                 )
                 
                 if box and box.IsValid:
@@ -254,18 +260,19 @@ class SillGenerator:
                 else:
                     sill_length = 3.0  # Default fallback
 
-                # FIX: Create wall-aligned box instead of world-aligned
+                # FIX: Create wall-aligned box with correct orientation
+                # X = wall direction (length), Y = vertical (height), Z = wall normal (depth)
                 emergency_plane = rg.Plane(
                     start_point,
-                    base_plane.ZAxis,  # X = wall normal
+                    base_plane.XAxis,  # X = wall direction
                     base_plane.YAxis   # Y = vertical
                 )
 
                 emergency_box = rg.Box(
                     emergency_plane,
-                    rg.Interval(-sill_width/2, sill_width/2),   # X = depth
+                    rg.Interval(0, sill_length),                 # X = length along wall
                     rg.Interval(-sill_height/2, sill_height/2), # Y = height
-                    rg.Interval(0, sill_length)                 # Z = length along wall
+                    rg.Interval(-sill_width/2, sill_width/2)    # Z = depth into wall
                 )
 
                 emergency_brep = emergency_box.ToBrep()

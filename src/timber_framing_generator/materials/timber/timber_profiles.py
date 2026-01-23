@@ -10,9 +10,9 @@ Lumber Naming Convention:
     - Actual size is smaller after drying and planing
     - 2x4 actual: 1.5" x 3.5" = 0.125' x 0.292'
 
-Profile Orientation:
-    - width: Through wall thickness (W direction in UVW)
-    - depth: Along wall face (U direction for studs, V for plates)
+Profile Orientation (for vertical elements like studs):
+    - width: Visible edge along wall face (U direction) - the narrow 1.5" edge you see from outside
+    - depth: Through wall thickness (W direction) - the 3.5" wall depth/thickness
 
 Usage:
     from src.timber_framing_generator.materials.timber.timber_profiles import (
@@ -48,8 +48,8 @@ from src.timber_framing_generator.core.material_system import (
 TIMBER_PROFILES: Dict[str, ElementProfile] = {
     "2x4": ElementProfile(
         name="2x4",
-        width=1.5 / 12,      # 1.5 inches = 0.125 feet (through wall)
-        depth=3.5 / 12,      # 3.5 inches = 0.2917 feet (along wall face)
+        width=1.5 / 12,      # 1.5 inches = 0.125 feet (visible edge along wall)
+        depth=3.5 / 12,      # 3.5 inches = 0.2917 feet (wall thickness)
         material_system=MaterialSystem.TIMBER,
         properties={
             "nominal": "2x4",

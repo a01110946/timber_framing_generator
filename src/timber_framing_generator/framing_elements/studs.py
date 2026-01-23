@@ -416,29 +416,43 @@ class StudGenerator:
 
     def _get_top_elevation(self) -> Optional[float]:
         """
-        Get the elevation of the bottom of the top plate.
+        Get the elevation of the bottom of the FIRST top plate (not cap plate).
+
+        Studs should end at the bottom face of the first top plate, which is
+        at wall_top - plate_thickness (the top plate top face is at wall_top).
 
         Returns:
             The elevation value, or None if it cannot be determined
         """
         logger.debug("Getting top elevation for studs")
         try:
+            # Get plate thickness for calculations
+            plate_thickness = FRAMING_PARAMS.get("plate_thickness", 1.5 / 12)
+
             # If we have a top plate reference, extract its bottom elevation
+            # NOTE: self.top_plate should be the FIRST top plate (not cap plate)
+            # Its top face should be at wall_top, bottom face at wall_top - thickness
             if self.top_plate is not None:
                 # Get bounding box of top plate
                 bbox = safe_get_bounding_box(self.top_plate, True)
                 if bbox.IsValid:
+                    # Use bbox.Min.Z for the bottom of the plate
                     elevation = bbox.Min.Z
                     logger.debug(f"Top elevation from plate bounding box: {elevation}")
+                    print(f"    DEBUG _get_top_elevation: bbox.Min.Z = {elevation}, bbox.Max.Z = {bbox.Max.Z}")
                     return elevation
 
             # Fallback to wall data if available
+            # Studs end at bottom of top plate = wall_top - plate_thickness
             wall_height = self.wall_data.get("wall_height")
             wall_base_elevation = self.wall_data.get("wall_base_elevation", 0.0)
-            
+
             if wall_height is not None:
-                elevation = wall_base_elevation + wall_height
-                logger.debug(f"Top elevation from wall data: {elevation}")
+                # Wall top elevation minus plate thickness gives bottom of top plate
+                wall_top = wall_base_elevation + wall_height
+                elevation = wall_top - plate_thickness
+                logger.debug(f"Top elevation from wall data (wall_top - thickness): {elevation}")
+                print(f"    DEBUG _get_top_elevation fallback: wall_top={wall_top}, thickness={plate_thickness}, result={elevation}")
                 return elevation
 
             logger.warning("Could not determine top elevation")

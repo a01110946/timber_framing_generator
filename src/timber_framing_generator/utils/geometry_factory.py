@@ -397,7 +397,9 @@ class RhinoCommonFactory:
         direction: Vector3DLike,
         length: float,
         width: float,
-        depth: float
+        depth: float,
+        wall_x_axis: Optional[Tuple[float, float, float]] = None,
+        wall_z_axis: Optional[Tuple[float, float, float]] = None,
     ):
         """
         Create a box Brep from centerline parameters.
@@ -411,6 +413,8 @@ class RhinoCommonFactory:
             length: Length along direction
             width: Width perpendicular to direction (W direction in UVW)
             depth: Depth perpendicular to direction and width (U direction)
+            wall_x_axis: Optional wall X-axis direction (along wall length)
+            wall_z_axis: Optional wall Z-axis direction (wall normal, into wall)
 
         Returns:
             Brep geometry from RhinoCommon assembly
@@ -442,14 +446,25 @@ class RhinoCommonFactory:
         ez = sz + dz * length
 
         # Calculate perpendicular vectors for width and depth
-        # For vertical elements (studs): perp1=horizontal(into wall), perp2=horizontal(along wall)
-        # For horizontal elements (plates): perp1=horizontal(into wall), perp2=vertical
+        # For vertical elements (studs): perp1=along wall (X-axis), perp2=into wall (Z-axis/normal)
+        # For horizontal elements (plates): perp1=into wall (normal), perp2=vertical
         is_vertical = abs(dz) > 0.9
 
         if is_vertical:
-            # Vertical members: use fixed horizontal perpendiculars
-            perp1 = (1.0, 0.0, 0.0)  # Width perpendicular in X
-            perp2 = (0.0, 1.0, 0.0)  # Depth perpendicular in Y
+            # Vertical members: use wall direction if available, else fall back to World axes
+            if wall_x_axis and wall_z_axis:
+                # Use wall-relative axes:
+                # Profile width (1.5") = along wall face = wall X-axis
+                # Profile depth (3.5") = through-wall thickness = wall Z-axis (normal)
+                perp1 = wall_x_axis  # width direction = along wall (U)
+                perp2 = wall_z_axis  # depth direction = wall normal (W)
+                # Debug: print that we're using wall direction
+                print(f"DEBUG geometry_factory: Using wall direction - perp1(width)=x_axis={wall_x_axis}, perp2(depth)=z_axis={wall_z_axis}")
+            else:
+                # Fall back to hardcoded World axes (legacy behavior)
+                perp1 = (1.0, 0.0, 0.0)  # Width perpendicular in X
+                perp2 = (0.0, 1.0, 0.0)  # Depth perpendicular in Y
+                print(f"DEBUG geometry_factory: No wall direction - using World axes (wall_x_axis={wall_x_axis}, wall_z_axis={wall_z_axis})")
         else:
             # Horizontal members: perp1 = wall normal (in XY plane), perp2 = vertical
             p1x = -dy
@@ -467,21 +482,19 @@ class RhinoCommonFactory:
             p2z = dx * p1y - dy * p1x
             perp2 = (p2x, p2y, p2z)
 
-        # FIX: Swap width and depth for horizontal elements
-        # Profile dimensions are defined for vertical orientation (studs):
-        #   - width = through-wall thickness (1.5" for 2x4)
-        #   - depth = along wall face (3.5" for 2x4)
-        # But for horizontal elements (plates, headers, sills) laid flat:
-        #   - The "depth" dimension becomes the through-wall thickness
-        #   - The "width" dimension becomes the vertical height
-        if not is_vertical:
-            # Swap: perp1 gets depth (through-wall), perp2 gets width (vertical)
+        # Profile dimensions for vertical elements (studs, king studs, trimmers, cripples):
+        #   - width = 1.5" = visible edge along wall face (what you see from exterior)
+        #   - depth = 3.5" = through wall thickness (wall depth)
+        #
+        # This matches standard framing: stud narrow edge faces out, wide face = wall thickness
+        # perp1 = wall_x_axis (along wall face), perp2 = wall_z_axis (wall normal/through wall)
+        if is_vertical:
+            half_w = width / 2.0  # 1.5"/2 along wall face (visible edge)
+            half_d = depth / 2.0  # 3.5"/2 through wall (wall thickness)
+        else:
+            # Horizontal elements: depth into wall, width vertical
             half_w = depth / 2.0  # depth (3.5") goes into wall
             half_d = width / 2.0  # width (1.5") goes vertical
-        else:
-            # Vertical elements: use as-is
-            half_w = width / 2.0
-            half_d = depth / 2.0
 
         corners = []
         for start_end in [(sx, sy, sz), (ex, ey, ez)]:
@@ -624,9 +637,11 @@ def create_box_brep(
     direction: Vector3DLike,
     length: float,
     width: float,
-    depth: float
+    depth: float,
+    wall_x_axis: Optional[Tuple[float, float, float]] = None,
+    wall_z_axis: Optional[Tuple[float, float, float]] = None,
 ):
     """Convenience function to create a box Brep from centerline."""
     return get_factory().create_box_brep_from_centerline(
-        start_point, direction, length, width, depth
+        start_point, direction, length, width, depth, wall_x_axis, wall_z_axis
     )

@@ -347,9 +347,11 @@ class TimberFramingStrategy(FramingStrategy):
             base_plane = rhino_wall_data.get("base_plane")
             openings = rhino_wall_data.get("openings", [])
 
-            # Use first bottom plate and last top plate
+            # Use first bottom plate and FIRST top plate (not cap plate)
+            # Vertical members (studs, king studs) should end at the bottom of the
+            # first top plate, not at the cap plate.
             bottom_plate = bottom_plates[0] if bottom_plates else None
-            top_plate = top_plates[-1] if top_plates else None
+            top_plate = top_plates[0] if top_plates else None
 
             if not bottom_plate or not top_plate:
                 logger.warning("No plates available for vertical member generation")
@@ -525,7 +527,21 @@ class TimberFramingStrategy(FramingStrategy):
 
             # Headers
             logger.debug(f"Creating headers for {len(openings)} openings")
-            header_profile = self.get_profile(ElementType.HEADER, config)
+            # Create custom header profile using actual FRAMING_PARAMS dimensions
+            # The geometry factory swaps width/depth for horizontal members:
+            #   - profile.width -> becomes vertical dimension
+            #   - profile.depth -> becomes wall-thickness dimension
+            from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+            header_height = FRAMING_PARAMS.get("header_height", 7.0 / 12)  # 7" vertical
+            header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)   # 3.5" into wall
+            header_profile = ElementProfile(
+                name="header",
+                width=header_height,   # vertical dimension (will be swapped to vertical)
+                depth=header_depth,    # wall-thickness (will be swapped to through-wall)
+                material_system=MaterialSystem.TIMBER,
+                properties={"description": "Custom header profile from FRAMING_PARAMS"}
+            )
+            logger.info(f"Header profile: width={header_profile.width*12}in (vertical), depth={header_profile.depth*12}in (into wall)")
             header_gen = HeaderGenerator(rhino_wall_data)
 
             header_breps = []
@@ -580,7 +596,9 @@ class TimberFramingStrategy(FramingStrategy):
                 logger.debug("Creating header cripples")
                 hc_profile = self.get_profile(ElementType.HEADER_CRIPPLE, config)
                 hc_gen = HeaderCrippleGenerator(rhino_wall_data)
-                top_plate_data = top_plates[-1].get_boundary_data() if top_plates else {}
+                # Use FIRST top plate (not cap plate) - header cripples go from header
+                # top to the bottom of the first top plate
+                top_plate_data = top_plates[0].get_boundary_data() if top_plates else {}
 
                 for i, opening in enumerate(openings):
                     if i < len(header_breps):

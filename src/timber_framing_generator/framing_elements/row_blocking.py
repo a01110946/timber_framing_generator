@@ -212,16 +212,187 @@ class RowBlockingGenerator:
                     block_thickness = 3.5 / 12.0  # 3.5 inches in feet
                     
         print(f"Block profile: {self.block_profile_name}, width: {block_width}, thickness: {block_thickness}")
-        
+
         # Get stud width for adjusting block lengths
         stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)  # Default to 1.5 inches in feet
-            
+
         # Store all generated blocks
         all_blocks = []
-        
-        # First, try to use standard cells for blocking
-        standard_cells_successful = False
-        
+
+        # First, process regular studs and assign them to SC cells
+        # This is the PRIMARY source of blocking positions
+        print("\nProcessing regular studs:")
+        regular_stud_count = len(self.studs)
+        print(f"Total regular studs found: {regular_stud_count}")
+
+        for i, stud in enumerate(self.studs):
+            try:
+                # Get the bounding box of the stud
+                bbox = safe_get_bounding_box(stud, True)
+                if not bbox:
+                    print(f"  Stud {i+1}: Could not get bounding box")
+                    continue
+
+                # Use CENTER of bounding box for accurate stud position
+                # Using Min would give left edge, shifting blocking left by half stud width
+                center_pt = bbox.Center
+
+                # Get the u-coordinate (position along wall length)
+                u_coord = self._project_point_to_u_coordinate(center_pt, base_plane)
+
+                # Find the SC cell this stud belongs to
+                assigned = False
+                for cell in cells:
+                    # Try both "id" and "cell_id" keys (JSON uses "id", internal uses "cell_id")
+                    cell_id = cell.get("id", cell.get("cell_id", ""))
+                    cell_type = cell.get("cell_type", cell.get("type", ""))
+
+                    # Only process Stud Cells (SC)
+                    if cell_type != "SC":
+                        continue
+
+                    # Get cell bounds directly from cell data
+                    u_start = cell.get("u_start", 0)
+                    u_end = cell.get("u_end", 0)
+
+                    # Check if stud position is within cell bounds with a small tolerance
+                    if u_start - 0.1 <= u_coord <= u_end + 0.1:
+                        # Initialize the dict for this cell if not already done
+                        # Store both positions AND vertical bounds for filtering block heights
+                        if cell_id not in self.stud_positions:
+                            v_start = cell.get("v_start", 0)
+                            v_end = cell.get("v_end", self.wall_top_elevation - self.wall_base_elevation)
+                            self.stud_positions[cell_id] = {
+                                'positions': [],
+                                'v_start': v_start,
+                                'v_end': v_end,
+                                'cell_type': cell_type
+                            }
+
+                        # Add the stud position to this cell
+                        self.stud_positions[cell_id]['positions'].append(u_coord)
+                        assigned = True
+                        break  # Each stud belongs to one cell
+
+                if not assigned:
+                    # Stud might be a king stud or trimmer at cell boundary - skip silently
+                    pass
+            except Exception as e:
+                print(f"  Error processing stud {i+1}: {str(e)}")
+
+        # Also process king studs (they define cell boundaries)
+        print("\nProcessing king studs:")
+        king_stud_count = len(self.king_studs)
+        print(f"Total king studs found: {king_stud_count}")
+
+        for i, stud in enumerate(self.king_studs):
+            try:
+                bbox = safe_get_bounding_box(stud, True)
+                if not bbox:
+                    print(f"  King stud {i+1}: Could not get bounding box")
+                    continue
+
+                # Use center of bounding box for more accurate position
+                center_pt = bbox.Center
+                u_coord = self._project_point_to_u_coordinate(center_pt, base_plane)
+                print(f"  King stud {i+1}: u_coord={u_coord:.4f}")
+
+                # King studs are at SC cell boundaries - add to adjacent SC cells
+                for cell in cells:
+                    # Try both "id" and "cell_id" keys
+                    cell_id = cell.get("id", cell.get("cell_id", ""))
+                    cell_type = cell.get("cell_type", cell.get("type", ""))
+
+                    if cell_type != "SC":
+                        continue
+
+                    u_start = cell.get("u_start", 0)
+                    u_end = cell.get("u_end", 0)
+
+                    # King studs are at boundaries - use larger tolerance for edge matching
+                    # Account for stud width (0.125 ft = 1.5 inches)
+                    tolerance = 0.3  # ~3.6 inches tolerance
+                    at_start = abs(u_coord - u_start) < tolerance
+                    at_end = abs(u_coord - u_end) < tolerance
+
+                    if at_start or at_end:
+                        if cell_id not in self.stud_positions:
+                            v_start = cell.get("v_start", 0)
+                            v_end = cell.get("v_end", self.wall_top_elevation - self.wall_base_elevation)
+                            self.stud_positions[cell_id] = {
+                                'positions': [],
+                                'v_start': v_start,
+                                'v_end': v_end,
+                                'cell_type': cell_type
+                            }
+                        # Check if position is not already in list (with tolerance)
+                        already_exists = any(abs(u_coord - pos) < 0.1 for pos in self.stud_positions[cell_id]['positions'])
+                        if not already_exists:
+                            self.stud_positions[cell_id]['positions'].append(u_coord)
+                            edge = "start" if at_start else "end"
+                            print(f"    Added king stud to {cell_id} at {edge} edge")
+            except Exception as e:
+                print(f"  Error processing king stud {i+1}: {str(e)}")
+
+        # Process trimmers (they define SCC cell boundaries)
+        print("\nProcessing trimmers:")
+        trimmer_count = len(self.trimmers)
+        print(f"Total trimmers found: {trimmer_count}")
+
+        for i, trimmer in enumerate(self.trimmers):
+            try:
+                bbox = safe_get_bounding_box(trimmer, True)
+                if not bbox:
+                    print(f"  Trimmer {i+1}: Could not get bounding box")
+                    continue
+
+                # Use center of bounding box for position
+                center_pt = bbox.Center
+                u_coord = self._project_point_to_u_coordinate(center_pt, base_plane)
+                print(f"  Trimmer {i+1}: u_coord={u_coord:.4f}")
+
+                # Trimmers are at SCC cell boundaries - add to SCC cells
+                for cell in cells:
+                    cell_id = cell.get("id", cell.get("cell_id", ""))
+                    cell_type = cell.get("cell_type", cell.get("type", ""))
+
+                    if cell_type != "SCC":
+                        continue
+
+                    u_start = cell.get("u_start", 0)
+                    u_end = cell.get("u_end", 0)
+
+                    # Check if trimmer is at this cell's edges
+                    tolerance = 0.3
+                    at_start = abs(u_coord - u_start) < tolerance
+                    at_end = abs(u_coord - u_end) < tolerance
+
+                    if at_start or at_end:
+                        if cell_id not in self.stud_positions:
+                            v_start = cell.get("v_start", 0)
+                            v_end = cell.get("v_end", self.wall_top_elevation - self.wall_base_elevation)
+                            self.stud_positions[cell_id] = {
+                                'positions': [],
+                                'v_start': v_start,
+                                'v_end': v_end,
+                                'cell_type': cell_type
+                            }
+                        # Check if position is not already in list (with tolerance)
+                        already_exists = any(abs(u_coord - pos) < 0.1 for pos in self.stud_positions[cell_id]['positions'])
+                        if not already_exists:
+                            self.stud_positions[cell_id]['positions'].append(u_coord)
+                            edge = "start" if at_start else "end"
+                            print(f"    Added trimmer to {cell_id} at {edge} edge")
+            except Exception as e:
+                print(f"  Error processing trimmer {i+1}: {str(e)}")
+
+        print(f"\nAfter processing regular and king studs: {len(self.stud_positions)} cells with stud positions")
+        for cell_id, cell_data in self.stud_positions.items():
+            positions = cell_data['positions']
+            v_start = cell_data['v_start']
+            v_end = cell_data['v_end']
+            print(f"  Cell {cell_id}: {len(positions)} studs, v_range=[{v_start:.2f}, {v_end:.2f}]")
+
         # Process header cripples and assign them to cells
         print("\nProcessing header cripples:")
         header_cripple_count = len(self.header_cripples)
@@ -234,19 +405,20 @@ class RowBlockingGenerator:
                 if not bbox:
                     print(f"  Header Cripple {i+1}: Could not get bounding box")
                     continue
-                    
-                min_pt = bbox.Min
-                max_pt = bbox.Max
-                
+
+                # Use CENTER for accurate position (not Min which gives left edge)
+                center_pt = bbox.Center
+
                 # Get the u-coordinate (position along wall length)
-                u_coord = self._project_point_to_u_coordinate(min_pt, base_plane)
-                print(f"  Header Cripple {i+1}: u-coordinate = {u_coord:.4f}, height range: {min_pt.Z:.4f} to {max_pt.Z:.4f}")
+                u_coord = self._project_point_to_u_coordinate(center_pt, base_plane)
+                print(f"  Header Cripple {i+1}: u-coordinate = {u_coord:.4f}, height: {center_pt.Z:.4f}")
                 
                 # Find the HCC cell this cripple belongs to
                 assigned = False
                 for cell in cells:
-                    cell_id = cell.get("cell_id", "")
-                    cell_type = cell.get("cell_type", "")
+                    # Try both "id" and "cell_id" keys
+                    cell_id = cell.get("id", cell.get("cell_id", ""))
+                    cell_type = cell.get("cell_type", cell.get("type", ""))
                     
                     # Only process HeaderCrippleCells
                     if cell_type != "HCC":
@@ -258,12 +430,19 @@ class RowBlockingGenerator:
                     
                     # Check if cripple position is within cell bounds with a small tolerance
                     if u_start - 0.1 <= u_coord <= u_end + 0.1:
-                        # Initialize the list for this cell if not already done
+                        # Initialize the dict for this cell if not already done
                         if cell_id not in self.stud_positions:
-                            self.stud_positions[cell_id] = []
-                            
+                            v_start = cell.get("v_start", 0)
+                            v_end = cell.get("v_end", self.wall_top_elevation - self.wall_base_elevation)
+                            self.stud_positions[cell_id] = {
+                                'positions': [],
+                                'v_start': v_start,
+                                'v_end': v_end,
+                                'cell_type': cell_type
+                            }
+
                         # Add the cripple position to this cell
-                        self.stud_positions[cell_id].append(u_coord)
+                        self.stud_positions[cell_id]['positions'].append(u_coord)
                         print(f"    Assigned header cripple at position {u_coord:.4f} to cell {cell_id} (u_start={u_start}, u_end={u_end})")
                         assigned = True
                 
@@ -284,19 +463,20 @@ class RowBlockingGenerator:
                 if not bbox:
                     print(f"  Sill Cripple {i+1}: Could not get bounding box")
                     continue
-                    
-                min_pt = bbox.Min
-                max_pt = bbox.Max
-                
+
+                # Use CENTER for accurate position (not Min which gives left edge)
+                center_pt = bbox.Center
+
                 # Get the u-coordinate (position along wall length)
-                u_coord = self._project_point_to_u_coordinate(min_pt, base_plane)
-                print(f"  Sill Cripple {i+1}: u-coordinate = {u_coord:.4f}, height range: {min_pt.Z:.4f} to {max_pt.Z:.4f}")
+                u_coord = self._project_point_to_u_coordinate(center_pt, base_plane)
+                print(f"  Sill Cripple {i+1}: u-coordinate = {u_coord:.4f}, height: {center_pt.Z:.4f}")
                 
                 # Find the SCC cell this cripple belongs to
                 assigned = False
                 for cell in cells:
-                    cell_id = cell.get("cell_id", "")
-                    cell_type = cell.get("cell_type", "")
+                    # Try both "id" and "cell_id" keys
+                    cell_id = cell.get("id", cell.get("cell_id", ""))
+                    cell_type = cell.get("cell_type", cell.get("type", ""))
                     
                     # Only process SillCrippleCells
                     if cell_type != "SCC":
@@ -308,15 +488,22 @@ class RowBlockingGenerator:
                     
                     # Check if cripple position is within cell bounds with a small tolerance
                     if u_start - 0.1 <= u_coord <= u_end + 0.1:
-                        # Initialize the list for this cell if not already done
+                        # Initialize the dict for this cell if not already done
                         if cell_id not in self.stud_positions:
-                            self.stud_positions[cell_id] = []
-                            
+                            v_start = cell.get("v_start", 0)
+                            v_end = cell.get("v_end", self.wall_top_elevation - self.wall_base_elevation)
+                            self.stud_positions[cell_id] = {
+                                'positions': [],
+                                'v_start': v_start,
+                                'v_end': v_end,
+                                'cell_type': cell_type
+                            }
+
                         # Add the cripple position to this cell
-                        self.stud_positions[cell_id].append(u_coord)
+                        self.stud_positions[cell_id]['positions'].append(u_coord)
                         print(f"    Assigned sill cripple at position {u_coord:.4f} to cell {cell_id} (u_start={u_start}, u_end={u_end})")
                         assigned = True
-                
+
                 if not assigned:
                     print(f"    WARNING: Could not assign sill cripple at position {u_coord:.4f} to any SCC cell")
             except Exception as e:
@@ -583,24 +770,51 @@ class RowBlockingGenerator:
         
         # For each cell type, create blocks between studs
         cells_with_studs = 0
-        for cell_key, stud_positions in cells.items():
+        for cell_key, cell_data in cells.items():
+            # Handle both old format (list) and new format (dict with 'positions')
+            if isinstance(cell_data, dict):
+                stud_positions = cell_data.get('positions', [])
+                cell_v_start = cell_data.get('v_start', 0)
+                cell_v_end = cell_data.get('v_end', wall_height)
+                cell_type = cell_data.get('cell_type', 'SC')
+            else:
+                # Old format: just a list of positions
+                stud_positions = cell_data
+                cell_v_start = 0
+                cell_v_end = wall_height
+                cell_type = 'SC'
+
             # Skip cells without stud positions
             if not stud_positions:
                 continue
-            
-            print(f"Processing cell {cell_key} with {len(stud_positions)} vertical elements")
+
+            print(f"Processing cell {cell_key} ({cell_type}) with {len(stud_positions)} vertical elements, v_range=[{cell_v_start:.2f}, {cell_v_end:.2f}]")
             cells_with_studs += 1
-            
+
+            # Filter block heights to only those within the cell's vertical bounds
+            # Add a small margin (half block width) to avoid blocks at exact boundaries
+            margin = block_width / 2
+            valid_block_heights = [
+                h for h in block_heights
+                if (cell_v_start + margin) < h < (cell_v_end - margin)
+            ]
+
+            if not valid_block_heights:
+                print(f"  No valid block heights within cell vertical bounds [{cell_v_start:.2f}, {cell_v_end:.2f}]")
+                continue
+
+            print(f"  Valid block heights for this cell: {valid_block_heights}")
+
             # Create a cell dictionary with the required structure
             cell_dict = {
                 'vertical_elements': stud_positions,
                 'cell_id': cell_key
             }
-            
+
             blocks_in_cell = self._create_blocking_for_cell(
-                cell_dict, 
-                block_heights, 
-                block_thickness, 
+                cell_dict,
+                valid_block_heights,  # Use filtered heights
+                block_thickness,
                 block_width,
                 base_plane
             )
@@ -663,13 +877,13 @@ class RowBlockingGenerator:
             
             # Create a block at each height
             for block_height in block_heights:
-                # Convert from feet to actual height
-                block_center_z = self.wall_base_elevation + block_height
-                
+                # block_height is relative to wall base, pass directly as v_coordinate
+                # (the method handles transformation to world coordinates via base_plane)
+
                 # Create center point for the block
                 center_u = (left_stud_pos + right_stud_pos) / 2
                 center_point = self._create_point_at_u_coordinate(
-                    center_u, block_center_z, base_plane
+                    center_u, block_height, base_plane
                 )
                 
                 # Calculate length (span between studs minus stud width)
@@ -690,41 +904,43 @@ class RowBlockingGenerator:
         
         return blocks
         
-    def _create_point_at_u_coordinate(self, u_coordinate, z_coordinate, base_plane):
+    def _create_point_at_u_coordinate(self, u_coordinate, v_coordinate, base_plane):
         """
-        Create a 3D point at the given U and Z coordinates.
-        
+        Create a 3D point at the given U and V coordinates in wall space.
+
         Args:
-            u_coordinate: U coordinate along the wall
-            z_coordinate: Z coordinate (height)
+            u_coordinate: U coordinate along the wall (horizontal)
+            v_coordinate: V coordinate relative to wall base (vertical height above base)
             base_plane: Base plane of the wall
-            
+
         Returns:
-            3D point
+            3D point in world coordinates
         """
         try:
             # Start at the origin of the base plane
             point = rg.Point3d(base_plane.Origin)
-            
+
             # Move along the X axis of the base plane by u_coordinate
             x_vector = rg.Vector3d(base_plane.XAxis)
             x_vector *= u_coordinate
             point += x_vector
-            
-            # Move along the Z axis by z_coordinate
-            z_vector = rg.Vector3d(0, 0, 1)  # World Z axis
-            z_vector *= z_coordinate
-            point += z_vector
-            
+
+            # Move along the Y axis (wall vertical) by v_coordinate
+            # Note: v_coordinate is height above wall base, NOT world Z
+            y_vector = rg.Vector3d(base_plane.YAxis)
+            y_vector *= v_coordinate
+            point += y_vector
+
             return point
         except Exception as e:
             print(f"Error creating point at u-coordinate: {str(e)}")
-            
+
             # Use direct coordinate extraction as fallback
             try:
                 # Just extract X coordinate (assumes wall is aligned with world X axis)
                 print(f"Using fallback coordinate extraction, point X: {u_coordinate}")
-                return rg.Point3d(u_coordinate, 0, z_coordinate)
+                # Use world Z for vertical in fallback
+                return rg.Point3d(u_coordinate, 0, self.wall_base_elevation + v_coordinate)
             except Exception as e2:
                 print(f"Fallback also failed: {str(e2)}")
                 return None

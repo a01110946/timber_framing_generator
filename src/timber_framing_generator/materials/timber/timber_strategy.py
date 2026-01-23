@@ -209,13 +209,15 @@ class TimberFramingStrategy(FramingStrategy):
             top_plate_layers = config.get("top_plate_layers", 2)
             representation_type = config.get("representation_type", "schematic")
 
-            # Generate bottom plates
-            logger.debug(f"Creating bottom plates (layers={bottom_plate_layers})")
+            # Generate bottom plates (pass openings to skip door locations)
+            openings = rhino_wall_data.get("openings", [])
+            logger.debug(f"Creating bottom plates (layers={bottom_plate_layers}, openings={len(openings)})")
             bottom_plates = create_plates(
                 rhino_wall_data,
                 plate_type="bottom_plate",
                 representation_type=representation_type,
                 layers=bottom_plate_layers,
+                openings=openings,
             )
 
             # Convert to FramingElement
@@ -333,11 +335,13 @@ class TimberFramingStrategy(FramingStrategy):
                 rhino_wall_data = self._plate_geometry["rhino_wall_data"]
             else:
                 rhino_wall_data = reconstruct_wall_data(wall_data)
-                # Need to regenerate plates
+                openings_for_plates = rhino_wall_data.get("openings", [])
+                # Need to regenerate plates (pass openings to skip door locations)
                 from src.timber_framing_generator.framing_elements.plates import create_plates
                 bottom_plates = create_plates(
                     rhino_wall_data, plate_type="bottom_plate",
-                    representation_type="schematic", layers=1
+                    representation_type="schematic", layers=1,
+                    openings=openings_for_plates
                 )
                 top_plates = create_plates(
                     rhino_wall_data, plate_type="top_plate",

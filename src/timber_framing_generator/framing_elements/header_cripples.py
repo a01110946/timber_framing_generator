@@ -330,20 +330,27 @@ class HeaderCrippleGenerator:
                     return None
 
                 # Create a wall-aligned box plane at start point
-                # For vertical members: X = wall direction, Y = wall normal, Z = vertical
+                # For vertical members going UP: X = wall direction, Y = wall normal, Z = UP (World Z)
+                # Note: Using base_plane.YAxis for the plane's Y ensures Z points UP
                 box_plane = rg.Plane(
                     start_point,
                     base_plane.XAxis,  # X = wall direction (for depth along wall)
-                    base_plane.ZAxis   # Y = wall normal (for width into wall)
+                    base_plane.YAxis   # Y = vertical (so Z = X cross Y points into wall, but we'll use height for vertical)
+                )
+                # Override to ensure Z is pointing UP (World Z direction)
+                box_plane = rg.Plane(
+                    start_point,
+                    base_plane.XAxis,       # X = along wall (for depth)
+                    rg.Vector3d(0, 0, 1)    # Y = World Z (vertical), so plane Z = wall normal
                 )
 
                 # Create box - vertical cripple stud
-                # X interval = depth (along wall), Y interval = width (into wall), Z interval = height (vertical)
+                # X interval = depth (along wall), Y interval = height (vertical UP), Z interval = width (into wall)
                 box = rg.Box(
                     box_plane,
                     rg.Interval(-depth / 2, depth / 2),   # X = depth along wall
-                    rg.Interval(-width / 2, width / 2),   # Y = width into wall
-                    rg.Interval(0, height)                 # Z = height (vertical)
+                    rg.Interval(0, height),               # Y = height (vertical UP)
+                    rg.Interval(-width / 2, width / 2)    # Z = width into wall
                 )
 
                 if box and box.IsValid:

@@ -1,6 +1,6 @@
 # File: timber_framing_generator/framing_elements/plates.py
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from src.timber_framing_generator.config.framing import (
     FRAMING_PARAMS,
     PlatePosition,
@@ -22,12 +22,107 @@ from ..utils.logging_config import get_logger
 logger = get_logger(__name__)
 
 
+def _get_door_openings(openings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Filter openings to get only door openings.
+
+    Args:
+        openings: List of opening dictionaries
+
+    Returns:
+        List of door opening dictionaries
+    """
+    doors = []
+    for opening in openings:
+        opening_type = opening.get("opening_type", "").lower()
+        if opening_type == "door":
+            doors.append(opening)
+    return doors
+
+
+def _split_reference_line_at_doors(
+    reference_line,
+    doors: List[Dict[str, Any]],
+    base_plane
+) -> List:
+    """
+    Split a reference line into segments that skip door openings.
+
+    Args:
+        reference_line: The original plate centerline (rg.Curve)
+        doors: List of door opening dictionaries with 'start_u_coordinate' and 'rough_width'
+        base_plane: Wall's base plane for coordinate transformation
+
+    Returns:
+        List of LineCurve segments that skip door areas
+    """
+    import Rhino.Geometry as rg
+
+    if not doors:
+        return [reference_line]
+
+    # Get line start and end in U coordinates
+    line_start = reference_line.PointAtStart
+    line_end = reference_line.PointAtEnd
+
+    # Calculate wall direction vector
+    wall_direction = rg.Vector3d(line_end - line_start)
+    wall_length = wall_direction.Length
+    wall_direction.Unitize()
+
+    # Collect door intervals in U coordinates
+    # Sort doors by their start position
+    door_intervals = []
+    for door in doors:
+        u_start = door.get("start_u_coordinate", 0)
+        rough_width = door.get("rough_width", 0)
+        u_end = u_start + rough_width
+        door_intervals.append((u_start, u_end))
+
+    # Sort by start position
+    door_intervals.sort(key=lambda x: x[0])
+
+    # Merge overlapping intervals
+    merged = []
+    for start, end in door_intervals:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    # Create line segments between door intervals
+    segments = []
+    current_u = 0.0
+
+    for door_start, door_end in merged:
+        # Create segment from current position to door start
+        if door_start > current_u + 0.01:  # Small tolerance
+            seg_start = rg.Point3d.Add(line_start, rg.Vector3d.Multiply(wall_direction, current_u))
+            seg_end = rg.Point3d.Add(line_start, rg.Vector3d.Multiply(wall_direction, door_start))
+            segments.append(rg.LineCurve(seg_start, seg_end))
+            logger.debug(f"Created plate segment from U={current_u:.3f} to U={door_start:.3f}")
+
+        # Move current position past the door
+        current_u = door_end
+
+    # Create final segment from last door to wall end
+    if current_u < wall_length - 0.01:  # Small tolerance
+        seg_start = rg.Point3d.Add(line_start, rg.Vector3d.Multiply(wall_direction, current_u))
+        seg_end = line_end
+        segments.append(rg.LineCurve(seg_start, seg_end))
+        logger.debug(f"Created plate segment from U={current_u:.3f} to wall end")
+
+    logger.info(f"Split bottom plate into {len(segments)} segments (skipping {len(merged)} door openings)")
+    return segments
+
+
 def create_plates(
     wall_data: Dict,
     plate_type: str = "bottom_plate",
     representation_type: str = "structural",
     profile_override: Optional[str] = None,
     layers: Optional[int] = None,
+    openings: Optional[List[Dict[str, Any]]] = None,
 ) -> List[PlateGeometry]:
     """
     Creates plate geometry objects for a wall with full configuration options.
@@ -58,6 +153,8 @@ def create_plates(
                         If None, uses wall type's default profile
         layers: Number of plate layers (1 or 2)
                If None, uses default from FRAMING_PARAMS
+        openings: Optional list of wall openings. For bottom plates, door openings
+                 will cause the plate to be split into segments.
 
     Returns:
         List[PlateGeometry]: A list of PlateGeometry objects representing the plates
@@ -156,12 +253,36 @@ def create_plates(
             logger.error(traceback.format_exc())
             raise
 
-        # Create and append the plate geometry object
+        # Create and append the plate geometry object(s)
         logger.debug(f"- Creating plate geometry")
         try:
-            plate = PlateGeometry(location_data, parameters)
-            plates.append(plate)
-            logger.info(f"  Successfully created {current_plate_type} geometry")
+            # Check if this is a bottom plate and if there are door openings
+            # If so, split the plate into segments that skip door areas
+            if plate_type == "bottom_plate" and openings:
+                doors = _get_door_openings(openings)
+                if doors:
+                    logger.info(f"Found {len(doors)} door openings - splitting bottom plate")
+                    reference_line = location_data["reference_line"]
+                    base_plane = location_data["base_plane"]
+                    segments = _split_reference_line_at_doors(reference_line, doors, base_plane)
+
+                    for seg_idx, segment in enumerate(segments):
+                        # Create modified location data with the segment as reference line
+                        segment_location_data = dict(location_data)
+                        segment_location_data["reference_line"] = segment
+                        plate = PlateGeometry(segment_location_data, parameters)
+                        plates.append(plate)
+                        logger.debug(f"  Created {current_plate_type} segment {seg_idx + 1}/{len(segments)}")
+                else:
+                    # No doors, create single plate
+                    plate = PlateGeometry(location_data, parameters)
+                    plates.append(plate)
+                    logger.info(f"  Successfully created {current_plate_type} geometry")
+            else:
+                # Top plates or bottom plates without openings - create single plate
+                plate = PlateGeometry(location_data, parameters)
+                plates.append(plate)
+                logger.info(f"  Successfully created {current_plate_type} geometry")
         except Exception as e:
             logger.error(f"Failed to create geometry for {current_plate_type}: {str(e)}")
             import traceback

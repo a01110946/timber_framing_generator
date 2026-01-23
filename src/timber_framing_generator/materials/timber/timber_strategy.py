@@ -162,6 +162,58 @@ class TimberFramingStrategy(FramingStrategy):
 
         return get_timber_profile(element_type)
 
+    def _set_framing_config(
+        self,
+        wall_data: Dict[str, Any],
+        config: Dict[str, Any] = None
+    ) -> None:
+        """
+        Set timber-specific framing dimensions in wall_data.
+
+        This method populates wall_data["framing_config"] with timber profile
+        dimensions. The framing element generators use get_framing_param()
+        which checks this dict first, allowing material-specific dimensions.
+
+        Args:
+            wall_data: Wall data dict to modify (in-place)
+            config: Optional configuration with profile overrides
+        """
+        # Get the stud profile for dimension reference
+        stud_profile = self.get_profile(ElementType.STUD, config)
+        plate_profile = self.get_profile(ElementType.BOTTOM_PLATE, config)
+
+        # Timber dimensions from profiles
+        # For 2x4: width = 1.5", depth = 3.5"
+        # For 2x6: width = 1.5", depth = 5.5"
+        stud_width = stud_profile.width
+        stud_depth = stud_profile.depth
+        plate_width = plate_profile.width
+        plate_depth = plate_profile.depth
+
+        # Build framing config with timber dimensions
+        framing_config = {
+            # Stud dimensions (same for king studs, trimmers, cripples)
+            "stud_width": stud_width,
+            "stud_depth": stud_depth,
+            "king_stud_width": stud_width,
+            "king_stud_depth": stud_depth,
+            "trimmer_width": stud_width,
+            "trimmer_depth": stud_depth,
+            "cripple_width": stud_width,
+            "cripple_depth": stud_depth,
+            # Plate dimensions
+            "plate_thickness": plate_width,  # Plate thickness = lumber width (1.5")
+            "plate_width": plate_depth,       # Plate width = lumber depth (3.5" or 5.5")
+            # Header dimensions
+            "header_depth": stud_depth,
+            # Sill dimensions
+            "sill_height": plate_width,
+            "sill_depth": stud_depth,
+        }
+
+        wall_data["framing_config"] = framing_config
+        logger.debug(f"Set timber framing config: stud_width={stud_width*12:.2f}in, stud_depth={stud_depth*12:.2f}in")
+
     def create_horizontal_members(
         self,
         wall_data: Dict[str, Any],
@@ -203,6 +255,9 @@ class TimberFramingStrategy(FramingStrategy):
             # Reconstruct wall data with Rhino geometry
             rhino_wall_data = reconstruct_wall_data(wall_data)
             base_plane = rhino_wall_data.get("base_plane")
+
+            # Set timber-specific dimensions in wall_data for generators
+            self._set_framing_config(rhino_wall_data, config)
 
             # Get configuration
             bottom_plate_layers = config.get("bottom_plate_layers", 1)
@@ -335,6 +390,8 @@ class TimberFramingStrategy(FramingStrategy):
                 rhino_wall_data = self._plate_geometry["rhino_wall_data"]
             else:
                 rhino_wall_data = reconstruct_wall_data(wall_data)
+                # Set timber-specific dimensions (in case horizontal_members wasn't called)
+                self._set_framing_config(rhino_wall_data, config)
                 openings_for_plates = rhino_wall_data.get("openings", [])
                 # Need to regenerate plates (pass openings to skip door locations)
                 from src.timber_framing_generator.framing_elements.plates import create_plates
@@ -519,6 +576,8 @@ class TimberFramingStrategy(FramingStrategy):
                 bottom_plates = self._plate_geometry["bottom_plates"]
             else:
                 rhino_wall_data = reconstruct_wall_data(wall_data)
+                # Set timber-specific dimensions (in case previous methods weren't called)
+                self._set_framing_config(rhino_wall_data, config)
                 top_plates = []
                 bottom_plates = []
 
@@ -727,6 +786,8 @@ class TimberFramingStrategy(FramingStrategy):
                 rhino_wall_data = self._plate_geometry["rhino_wall_data"]
             else:
                 rhino_wall_data = reconstruct_wall_data(wall_data)
+                # Set timber-specific dimensions (in case previous methods weren't called)
+                self._set_framing_config(rhino_wall_data, config)
 
             base_plane = rhino_wall_data.get("base_plane")
 

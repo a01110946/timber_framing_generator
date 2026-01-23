@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
 from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_create_extrusion
-from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, get_framing_param
 
 # Import our custom logging module
 from ..utils.logging_config import get_logger
@@ -103,12 +103,13 @@ class TrimmerGenerator:
                 return []
 
             # Calculate trimmer dimensions from framing parameters
-            trimmer_width = FRAMING_PARAMS.get(
-                "trimmer_width", 1.5 / 12
-            )  # Typically 1.5 inches
-            trimmer_depth = FRAMING_PARAMS.get(
-                "trimmer_depth", 3.5 / 12
-            )  # Typically 3.5 inches
+            # Uses wall_data config if available (for material-specific dimensions)
+            trimmer_width = get_framing_param(
+                "trimmer_width", self.wall_data, 1.5 / 12
+            )  # Typically 1.5 inches for timber
+            trimmer_depth = get_framing_param(
+                "trimmer_depth", self.wall_data, 3.5 / 12
+            )  # Typically 3.5 inches for timber
             
             logger.debug(f"Trimmer dimensions - width: {trimmer_width}, depth: {trimmer_depth}")
 

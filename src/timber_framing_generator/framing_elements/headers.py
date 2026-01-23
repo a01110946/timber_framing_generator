@@ -3,7 +3,7 @@
 from typing import Dict, Any, Tuple, Optional
 import Rhino.Geometry as rg
 from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_create_extrusion
-from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, get_framing_param
 from ..utils.logging_config import get_logger
 
 # Initialize logger for this module
@@ -94,18 +94,19 @@ class HeaderGenerator:
                 return None
 
             # Calculate header dimensions from framing parameters
-            king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 1.5 / 12 / 2)
-            header_width = FRAMING_PARAMS.get(
-                "header_depth", 5.5 / 12
+            # Uses wall_data config if available (for material-specific dimensions)
+            king_stud_offset = get_framing_param("king_stud_offset", self.wall_data, 1.5 / 12 / 2)
+            header_width = get_framing_param(
+                "header_depth", self.wall_data, 5.5 / 12
             )  # Through wall thickness
-            header_height = FRAMING_PARAMS.get(
-                "header_height", 7.0 / 12
+            header_height = get_framing_param(
+                "header_height", self.wall_data, 7.0 / 12
             )  # Vertical dimension
-            header_height_above_opening = FRAMING_PARAMS.get(
-                "header_height_above_opening", 0.0
+            header_height_above_opening = get_framing_param(
+                "header_height_above_opening", self.wall_data, 0.0
             )  # Distance above opening
 
-            logger.info("Header dimensions from FRAMING_PARAMS:")
+            logger.info("Header dimensions (wall_data config or FRAMING_PARAMS):")
             logger.info(f"  header_width (depth into wall): {header_width} ft = {header_width * 12} in")
             logger.info(f"  header_height (vertical): {header_height} ft = {header_height * 12} in")
             logger.info(f"  height_above_opening: {header_height_above_opening}")
@@ -142,7 +143,7 @@ class HeaderGenerator:
             else:
                 # Calculate positions based on opening with offsets
                 logger.debug("No king stud positions provided, calculating based on opening")
-                trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5 / 12)
+                trimmer_width = get_framing_param("trimmer_width", self.wall_data, 1.5 / 12)
                 u_left = opening_u_start - trimmer_width
                 u_right = opening_u_start + opening_width + trimmer_width
                 logger.debug(f"Calculated positions: u_left={u_left}, u_right={u_right}")
@@ -382,17 +383,17 @@ class HeaderGenerator:
 
             # Calculate header v-coordinate (top of opening)
             opening_v_end = opening_v_start + opening_height
-            header_height = FRAMING_PARAMS.get("header_height", 7.0 / 12)  # 7 inches default
-            header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)   # 3.5 inches default
+            header_height = get_framing_param("header_height", self.wall_data, 7.0 / 12)  # 7 inches default
+            header_depth = get_framing_param("header_depth", self.wall_data, 3.5 / 12)   # 3.5 inches default
             header_v = opening_v_end + header_height / 2
-            header_height_above_opening = FRAMING_PARAMS.get(
-                "header_height_above_opening", 0.0
+            header_height_above_opening = get_framing_param(
+                "header_height_above_opening", self.wall_data, 0.0
             )
             header_v = header_v + header_height_above_opening
 
             # Calculate positions based on opening with offsets
-            trimmer_width = FRAMING_PARAMS.get("trimmer_width", 1.5 / 12)
-            king_stud_offset = FRAMING_PARAMS.get("king_stud_offset", 1.5 / 12 / 2)
+            trimmer_width = get_framing_param("trimmer_width", self.wall_data, 1.5 / 12)
+            king_stud_offset = get_framing_param("king_stud_offset", self.wall_data, 1.5 / 12 / 2)
 
             # Get the base plane from wall data
             base_plane = self.wall_data.get("base_plane")

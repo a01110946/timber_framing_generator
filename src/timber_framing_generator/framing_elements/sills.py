@@ -7,7 +7,7 @@ from src.timber_framing_generator.utils.coordinate_systems import (
     FramingElementCoordinates,
 )
 from src.timber_framing_generator.framing_elements.sill_parameters import SillParameters
-from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, get_framing_param
 from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_create_extrusion
 
 # Import our custom logging module
@@ -87,11 +87,12 @@ class SillGenerator:
                 return None
 
             # Calculate sill dimensions from framing parameters
-            sill_width = FRAMING_PARAMS.get(
-                "sill_depth", 3.5 / 12
+            # Uses wall_data config if available (for material-specific dimensions)
+            sill_width = get_framing_param(
+                "sill_depth", self.wall_data, 3.5 / 12
             )  # Through wall thickness
-            sill_height = FRAMING_PARAMS.get(
-                "sill_height", 1.5 / 12
+            sill_height = get_framing_param(
+                "sill_height", self.wall_data, 1.5 / 12
             )  # Vertical dimension
             
             logger.debug(f"Sill dimensions - width: {sill_width}, height: {sill_height}")
@@ -318,8 +319,9 @@ class SillGenerator:
             logger.debug(f"Opening parameters - u_start: {opening_u_start}, width: {opening_width}, v_start: {opening_v_start}")
 
             # Calculate sill box dimensions
-            sill_width = FRAMING_PARAMS.get("sill_width", 1.5 / 12)
-            sill_depth = FRAMING_PARAMS.get("sill_depth", 3.5 / 12)
+            # Uses wall_data config if available (for material-specific dimensions)
+            sill_width = get_framing_param("sill_width", self.wall_data, 1.5 / 12)
+            sill_depth = get_framing_param("sill_depth", self.wall_data, 3.5 / 12)
             sill_length = opening_width
             
             logger.debug(f"Sill dimensions - width: {sill_width}, depth: {sill_depth}, length: {sill_length}")

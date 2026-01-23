@@ -235,6 +235,35 @@ WALL_TYPE_PROFILES: Dict[str, str] = {
 }
 
 
+def get_framing_param(param_name: str, wall_data: Dict[str, Any] = None, default=None):
+    """
+    Get a framing parameter, checking wall_data first, then FRAMING_PARAMS.
+
+    This allows material-specific strategies to override default parameters
+    by setting them in wall_data["framing_config"].
+
+    Args:
+        param_name: Name of the parameter (e.g., "stud_width")
+        wall_data: Optional wall data dict that may contain framing_config
+        default: Default value if not found anywhere
+
+    Returns:
+        Parameter value from wall_data["framing_config"], FRAMING_PARAMS, or default
+    """
+    # Check wall_data first (allows material-specific overrides)
+    if wall_data and "framing_config" in wall_data:
+        config = wall_data["framing_config"]
+        if param_name in config:
+            return config[param_name]
+
+    # Fall back to FRAMING_PARAMS
+    if param_name in FRAMING_PARAMS:
+        return FRAMING_PARAMS[param_name]
+
+    # Use provided default or FRAMING_PARAMS default
+    return default if default is not None else FRAMING_PARAMS.get(param_name)
+
+
 def get_profile_for_wall_type(wall_type: str) -> ProfileDimensions:
     """
     Gets the appropriate profile dimensions for a wall type.

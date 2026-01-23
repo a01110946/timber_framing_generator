@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Tuple, Optional
 import Rhino.Geometry as rg
 import math
-from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, get_framing_param
 from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_create_extrusion
 
 # Import our custom logging module
@@ -101,14 +101,15 @@ class SillCrippleGenerator:
                 return []
 
             # Calculate sill cripple dimensions from framing parameters
-            cripple_width = FRAMING_PARAMS.get(
-                "cripple_width", 1.5 / 12
+            # Uses wall_data config if available (for material-specific dimensions)
+            cripple_width = get_framing_param(
+                "cripple_width", self.wall_data, 1.5 / 12
             )  # Typically 1.5 inches
-            cripple_depth = FRAMING_PARAMS.get(
-                "cripple_depth", 3.5 / 12
+            cripple_depth = get_framing_param(
+                "cripple_depth", self.wall_data, 3.5 / 12
             )  # Typically 3.5 inches
-            cripple_spacing = FRAMING_PARAMS.get(
-                "cripple_spacing", 16 / 12
+            cripple_spacing = get_framing_param(
+                "cripple_spacing", self.wall_data, 16 / 12
             )  # Typically 16 inches
             
             logger.trace(f"Cripple dimensions - width: {cripple_width}, depth: {cripple_depth}, spacing: {cripple_spacing}")

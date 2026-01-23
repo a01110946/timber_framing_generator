@@ -18,10 +18,11 @@ import Rhino.Geometry as rg
 from src.timber_framing_generator.utils.safe_rhino import safe_get_length, safe_get_bounding_box
 
 from src.timber_framing_generator.config.framing import (
-    FRAMING_PARAMS, 
+    FRAMING_PARAMS,
     PROFILES,
     BlockingPattern,
-    get_profile_for_wall_type
+    get_profile_for_wall_type,
+    get_framing_param
 )
 from src.timber_framing_generator.framing_elements.blocking_parameters import (
     BlockingParameters,
@@ -123,8 +124,9 @@ class RowBlockingGenerator:
         self.block_profile = PROFILES.get(self.block_profile_name, self.wall_profile)
         
         # Try to get blocking height thresholds from config, otherwise use defaults
-        self.blocking_height_threshold_1 = FRAMING_PARAMS.get("blocking_row_height_threshold_1", 48/12)  # 48 inches in feet
-        self.blocking_height_threshold_2 = FRAMING_PARAMS.get("blocking_row_height_threshold_2", 96/12)  # 96 inches in feet
+        # Uses wall_data config if available (for material-specific dimensions)
+        self.blocking_height_threshold_1 = get_framing_param("blocking_row_height_threshold_1", wall_data, 48/12)  # 48 inches in feet
+        self.blocking_height_threshold_2 = get_framing_param("blocking_row_height_threshold_2", wall_data, 96/12)  # 96 inches in feet
         
         # Calculate minimum cell height for blocking from profile or default
         try:
@@ -214,7 +216,8 @@ class RowBlockingGenerator:
         print(f"Block profile: {self.block_profile_name}, width: {block_width}, thickness: {block_thickness}")
 
         # Get stud width for adjusting block lengths
-        stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)  # Default to 1.5 inches in feet
+        # Uses wall_data config if available (for material-specific dimensions)
+        stud_width = get_framing_param("stud_width", self.wall_data, 1.5 / 12)  # Default to 1.5 inches in feet
 
         # Store all generated blocks
         all_blocks = []

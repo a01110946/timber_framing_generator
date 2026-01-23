@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Optional
 import Rhino.Geometry as rg
 import math
-from src.timber_framing_generator.config.framing import FRAMING_PARAMS, PROFILES
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, PROFILES, get_framing_param
 from src.timber_framing_generator.utils.safe_rhino import safe_closest_point, safe_get_length, safe_create_extrusion, safe_get_bounding_box
 from ..utils.logging_config import get_logger
 
@@ -285,9 +285,10 @@ class StudGenerator:
             print(f"Found {len(cells)} cells for stud processing")
 
             # Extract dimensions from framing parameters
-            stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)  # Default to 1.5 inches
-            stud_depth = FRAMING_PARAMS.get("stud_depth", 3.5 / 12)  # Default to 3.5 inches
-            stud_spacing = FRAMING_PARAMS.get("stud_spacing", 16 / 12)  # Default to 16 inches on center
+            # Uses wall_data config if available (for material-specific dimensions)
+            stud_width = get_framing_param("stud_width", self.wall_data, 1.5 / 12)  # Default to 1.5 inches
+            stud_depth = get_framing_param("stud_depth", self.wall_data, 3.5 / 12)  # Default to 3.5 inches
+            stud_spacing = get_framing_param("stud_spacing", self.wall_data, 16 / 12)  # Default to 16 inches on center
             logger.debug(f"Stud dimensions - width: {stud_width}, depth: {stud_depth}, spacing: {stud_spacing}")
 
             # Calculate vertical extents for studs
@@ -404,7 +405,7 @@ class StudGenerator:
                     return elevation
 
             # Fallback to wall data if available
-            bottom_plate_thickness = FRAMING_PARAMS.get("plate_thickness", 1.5 / 12)
+            bottom_plate_thickness = get_framing_param("plate_thickness", self.wall_data, 1.5 / 12)
             wall_base_elevation = self.wall_data.get("wall_base_elevation", 0.0)
             elevation = wall_base_elevation + bottom_plate_thickness
             logger.debug(f"Bottom elevation from wall data: {elevation}")
@@ -427,7 +428,7 @@ class StudGenerator:
         logger.debug("Getting top elevation for studs")
         try:
             # Get plate thickness for calculations
-            plate_thickness = FRAMING_PARAMS.get("plate_thickness", 1.5 / 12)
+            plate_thickness = get_framing_param("plate_thickness", self.wall_data, 1.5 / 12)
 
             # If we have a top plate reference, extract its bottom elevation
             # NOTE: self.top_plate should be the FIRST top plate (not cap plate)
@@ -488,7 +489,7 @@ class StudGenerator:
         try:
             # Get wall length and stud dimensions for boundary detection
             wall_length = self.wall_data.get("wall_length", 0)
-            stud_width = FRAMING_PARAMS.get("stud_width", 1.5 / 12)
+            stud_width = get_framing_param("stud_width", self.wall_data, 1.5 / 12)
             half_stud_width = stud_width / 2
 
             # Calculate the width of the cell

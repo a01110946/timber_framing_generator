@@ -3,7 +3,7 @@
 from typing import Dict, List, Any, Tuple
 import Rhino.Geometry as rg
 from src.timber_framing_generator.framing_elements.plate_geometry import PlateGeometry
-from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, get_framing_param
 from src.timber_framing_generator.framing_elements.framing_geometry import (
     create_stud_profile,
 )
@@ -302,9 +302,19 @@ class KingStudGenerator:
         # Initialize debug geometry storage
         self.debug_geometry = {"points": [], "planes": [], "profiles": [], "paths": []}
 
+        # Build framing params - use wall_data config if available, else FRAMING_PARAMS
+        framing_params = {
+            "stud_width": get_framing_param("stud_width", self.wall_data, 1.5 / 12),
+            "stud_depth": get_framing_param("stud_depth", self.wall_data, 3.5 / 12),
+            "trimmer_width": get_framing_param("trimmer_width", self.wall_data, 1.5 / 12),
+            "king_stud_width": get_framing_param("king_stud_width", self.wall_data, 1.5 / 12),
+            "framing_depth": get_framing_param("stud_depth", self.wall_data, 3.5 / 12),
+        }
+        logger.debug(f"Using framing params: {framing_params}")
+
         # Generate king studs with debug geometry
         king_studs, debug_geom = create_king_studs(
-            self.wall_data, opening_data, plate_data, FRAMING_PARAMS
+            self.wall_data, opening_data, plate_data, framing_params
         )
 
         # Store debug geometry

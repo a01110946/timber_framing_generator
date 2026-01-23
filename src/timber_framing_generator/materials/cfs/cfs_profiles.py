@@ -61,7 +61,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     # 3.5" web studs (equivalent to 2x4 wall)
     "350S162-33": ElementProfile(
         name="350S162-33",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=3.5 / 12,      # Web depth: 3.5" = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -76,7 +76,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "350S162-43": ElementProfile(
         name="350S162-43",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=3.5 / 12,      # Web depth = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -91,7 +91,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "350S162-54": ElementProfile(
         name="350S162-54",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=3.5 / 12,      # Web depth = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -108,7 +108,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     # 6" web studs (equivalent to 2x6 wall)
     "600S162-33": ElementProfile(
         name="600S162-33",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -123,7 +123,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "600S162-43": ElementProfile(
         name="600S162-43",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -138,7 +138,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "600S162-54": ElementProfile(
         name="600S162-54",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -153,7 +153,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "600S162-68": ElementProfile(
         name="600S162-68",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -170,7 +170,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     # 8" web studs (deeper walls)
     "800S162-54": ElementProfile(
         name="800S162-54",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=7.25 / 12,     # 2x8 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
@@ -185,7 +185,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "800S162-68": ElementProfile(
         name="800S162-68",
-        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
         depth=7.25 / 12,     # 2x8 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={

@@ -5,7 +5,7 @@ import Rhino.Geometry as rg
 import math
 
 from src.timber_framing_generator.utils.safe_rhino import safe_create_extrusion
-from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+from src.timber_framing_generator.config.framing import FRAMING_PARAMS, get_framing_param
 
 # Import our custom logging module
 from ..utils.logging_config import get_logger
@@ -98,17 +98,18 @@ class HeaderCrippleGenerator:
                 return []
 
             # Calculate header cripple dimensions from framing parameters
-            cripple_width = FRAMING_PARAMS.get(
-                "cripple_width", 1.5 / 12
+            # Uses wall_data config if available (for material-specific dimensions)
+            cripple_width = get_framing_param(
+                "cripple_width", self.wall_data, 1.5 / 12
             )  # Typically 1.5 inches
-            cripple_depth = FRAMING_PARAMS.get(
-                "cripple_depth", 3.5 / 12
+            cripple_depth = get_framing_param(
+                "cripple_depth", self.wall_data, 3.5 / 12
             )  # Typically 3.5 inches
-            cripple_spacing = FRAMING_PARAMS.get(
-                "cripple_spacing", 16 / 12
+            cripple_spacing = get_framing_param(
+                "cripple_spacing", self.wall_data, 16 / 12
             )  # Typically 16 inches
-            min_cripple_length = FRAMING_PARAMS.get(
-                "min_cripple_length", 6 / 12
+            min_cripple_length = get_framing_param(
+                "min_cripple_length", self.wall_data, 6 / 12
             )  # Minimum 6 inches
             
             logger.debug("Header cripple dimensions:")

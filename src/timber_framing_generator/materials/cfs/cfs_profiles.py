@@ -15,9 +15,13 @@ CFS Naming Convention:
     S = Stud (C-section with lips)
     T = Track (C-section without lips, used for top/bottom)
 
-Profile Orientation:
-    - width: Flange width (through wall thickness, W direction in UVW)
-    - depth: Web depth (along wall face, U direction for studs)
+Profile Dimensions:
+    CFS profiles use timber-equivalent dimensions (width/depth) to ensure
+    alignment with the framing generators that use hardcoded 2x lumber sizes.
+    The actual CFS dimensions are stored in properties for reference.
+
+    - width: Timber-equivalent visible edge (1.5" = 2x lumber)
+    - depth: Timber-equivalent wall thickness (3.5", 5.5", 7.25")
 
 Usage:
     from src.timber_framing_generator.materials.cfs.cfs_profiles import (
@@ -57,8 +61,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     # 3.5" web studs (equivalent to 2x4 wall)
     "350S162-33": ElementProfile(
         name="350S162-33",
-        width=1.62 / 12,     # Flange width: 1.62" = 0.135 feet
-        depth=3.5 / 12,      # Web depth: 3.5" = 0.292 feet
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=3.5 / 12,      # Web depth: 3.5" = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -72,8 +76,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "350S162-43": ElementProfile(
         name="350S162-43",
-        width=1.62 / 12,
-        depth=3.5 / 12,
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=3.5 / 12,      # Web depth = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -87,8 +91,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "350S162-54": ElementProfile(
         name="350S162-54",
-        width=1.62 / 12,
-        depth=3.5 / 12,
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=3.5 / 12,      # Web depth = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -104,8 +108,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     # 6" web studs (equivalent to 2x6 wall)
     "600S162-33": ElementProfile(
         name="600S162-33",
-        width=1.62 / 12,
-        depth=6.0 / 12,      # Web depth: 6.0" = 0.5 feet
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -119,8 +123,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "600S162-43": ElementProfile(
         name="600S162-43",
-        width=1.62 / 12,
-        depth=6.0 / 12,
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -134,8 +138,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "600S162-54": ElementProfile(
         name="600S162-54",
-        width=1.62 / 12,
-        depth=6.0 / 12,
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -149,8 +153,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "600S162-68": ElementProfile(
         name="600S162-68",
-        width=1.62 / 12,
-        depth=6.0 / 12,
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=5.5 / 12,      # 2x6 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -166,8 +170,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     # 8" web studs (deeper walls)
     "800S162-54": ElementProfile(
         name="800S162-54",
-        width=1.62 / 12,
-        depth=8.0 / 12,      # Web depth: 8.0" = 0.667 feet
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=7.25 / 12,     # 2x8 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -181,8 +185,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "800S162-68": ElementProfile(
         name="800S162-68",
-        width=1.62 / 12,
-        depth=8.0 / 12,
+        width=1.5 / 12,      # Use timber-equivalent width for alignment
+        depth=7.25 / 12,     # 2x8 equivalent wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "stud",
@@ -199,11 +203,11 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     # TRACKS (C-sections without lips, for top/bottom)
     # =========================================================================
 
-    # 3.5" web tracks
+    # 3.5" web tracks (for horizontal members, flange is vertical height)
     "350T125-33": ElementProfile(
         name="350T125-33",
-        width=1.25 / 12,     # Flange width: 1.25" = 0.104 feet
-        depth=3.5 / 12,      # Web depth: 3.5" = 0.292 feet
+        width=1.25 / 12,     # Flange width: 1.25" = track height (vertical)
+        depth=3.5 / 12,      # Web depth: 3.5" = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "track",
@@ -216,8 +220,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "350T125-43": ElementProfile(
         name="350T125-43",
-        width=1.25 / 12,
-        depth=3.5 / 12,
+        width=1.25 / 12,     # Flange width = track height
+        depth=3.5 / 12,      # Web depth = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "track",
@@ -230,8 +234,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
     ),
     "350T125-54": ElementProfile(
         name="350T125-54",
-        width=1.25 / 12,
-        depth=3.5 / 12,
+        width=1.25 / 12,     # Flange width = track height
+        depth=3.5 / 12,      # Web depth = wall thickness
         material_system=MaterialSystem.CFS,
         properties={
             "profile_type": "track",

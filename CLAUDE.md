@@ -24,14 +24,28 @@ x, y, z = float(point.X), float(point.Y), float(point.Z)
 rc_point = rc_factory.create_point3d(x, y, z)
 ```
 
+**Verify assembly**: `obj.GetType().Assembly.GetName().Name` should return `"RhinoCommon"`
+
 **Full documentation**: `docs/ai/ai-geometry-assembly-solution.md`
 
 ### 2. UVW Coordinate System
 
 All wall-relative positioning uses UVW coordinates:
-- **U**: Along wall length (wall_base_curve direction)
-- **V**: Vertical direction (height)
-- **W**: Through wall thickness (normal to wall face)
+- **U**: Along wall length (wall's XAxis direction)
+- **V**: Vertical direction (wall's YAxis = World Z)
+- **W**: Through wall thickness (wall's ZAxis = wall normal)
+
+**Wall Base Plane**:
+- `Origin`: Wall start point at base elevation
+- `XAxis`: Along wall direction (U)
+- `YAxis`: World Z up (V)
+- `ZAxis`: Wall normal, perpendicular to face (W)
+
+**Converting U-coordinate to World Position**:
+```python
+point_along_wall = base_plane.Origin + base_plane.XAxis * u_coordinate
+world_point = rg.Point3d(point_along_wall.X, point_along_wall.Y, v_elevation)
+```
 
 **Documentation**: `docs/ai/ai-coordinate-system-reference.md`
 
@@ -67,6 +81,86 @@ elements = strategy.generate_framing(wall_data, cell_data, config)
 - `src/timber_framing_generator/core/material_system.py` - FramingStrategy ABC
 - `src/timber_framing_generator/materials/timber/` - Timber implementation
 - `src/timber_framing_generator/materials/cfs/` - CFS implementation
+
+### 5. Box Z-Direction Gotcha (Geometry Creation)
+
+**Problem**: When creating `rg.Box(plane, x_interval, y_interval, z_interval)`, the box's Z direction is determined by the cross product of `plane.XAxis × plane.YAxis`.
+
+**Common mistake**: Using wall's ZAxis (normal) as the plane's Y axis results in the box Z pointing DOWN.
+
+**Solution for upward extrusion**:
+```python
+# For vertical elements that should extrude UP
+box_plane = rg.Plane(
+    start_point,
+    base_plane.XAxis,       # X = along wall
+    rg.Vector3d(0, 0, 1)    # Y = World Z (vertical)
+)
+# Now box Z = XAxis × WorldZ = points into wall (correct)
+# Y interval controls height (extrudes UP)
+```
+
+### 6. Normalized Parameters vs Absolute Coordinates
+
+**Problem**: `Curve.ClosestPoint()` returns a **normalized parameter** (0-1), not an absolute distance.
+
+**Common mistake**:
+```python
+# WRONG: t is 0-1, not feet!
+success, t = curve.ClosestPoint(point)
+start_u = t - half_width  # Produces nonsense like -1.2
+```
+
+**Solution**:
+```python
+success, t = curve.ClosestPoint(point)
+curve_length = curve.GetLength()
+absolute_position = t * curve_length  # Convert to absolute
+start_u = absolute_position - half_width
+```
+
+### 7. Division by Zero in Spacing Calculations
+
+**Problem**: When wall length < stud spacing, `int(length / spacing)` returns 0, causing division by zero.
+
+**Solution**: Always handle edge cases:
+```python
+# Guard against division by zero
+if num_studs == 0:
+    # Place single stud at center or handle specially
+    return [cell_width / 2]
+
+# Safe division
+actual_spacing = cell_width / num_studs  # Only if num_studs > 0
+```
+
+## Framing Domain Knowledge
+
+### Lumber Profile Orientation
+
+For vertical elements (studs, king studs, trimmers, cripples):
+- **Width (1.5")**: Visible edge along wall face - what you see from exterior
+- **Depth (3.5")**: Wall thickness direction - runs through wall
+
+This is **standard residential framing convention**: narrow edge faces out.
+
+### Critical Framing Rules
+
+| Rule | Implementation |
+|------|---------------|
+| Every wall needs end studs | Place at `u=half_stud_width` and `u=wall_length-half_stud_width` |
+| Bottom plates split at doors | Don't run through door openings |
+| Header cripples go UP | From header top to bottom of top plate |
+| Sill cripples go DOWN | From bottom plate top to sill bottom |
+| King studs at openings | At opening's u_start and u_end boundaries |
+| Trimmers inside king studs | Support header, inside of king studs |
+
+### Standard Dimensions
+
+- Stud spacing: 16" OC (1.333 ft) or 24" OC
+- 2x4 actual: 1.5" × 3.5" (0.125' × 0.292')
+- 2x6 actual: 1.5" × 5.5" (0.125' × 0.458')
+- Plate thickness: 1.5" (0.125')
 
 ## Project Structure
 
@@ -134,7 +228,7 @@ mypy src/
 
 **Rhino 8 uses CPython 3** (not IronPython). This affects module imports, reloading, and some .NET interop patterns.
 
-When modifying `scripts/gh-main.py`:
+When modifying GHPython scripts:
 
 1. **Test in Grasshopper** - Load the GH definition, select a test wall, toggle run/reload
 2. **Check diagnostic outputs** - `test_clr_box`, `test_info` verify assembly compatibility
@@ -166,17 +260,38 @@ importlib.reload(studs_module)
 
 See `docs/ai/ai-grasshopper-rhino-patterns.md` for detailed patterns.
 
+### Grasshopper Data Structures
+
+| Python Structure | Grasshopper Result |
+|-----------------|-------------------|
+| `[a, b, c]` (flat list) | Flattened: all items in branch {0} |
+| `[[a, b], [c, d]]` (nested) | Grafted: branch {0}=[a,b], branch {1}=[c,d] |
+| `DataTree[object]()` | Full control over branch structure |
+
+### JSON Communication Layer
+
+Components communicate via JSON strings:
+```
+Wall Analyzer → wall_json → Cell Decomposer → cell_json → Framing Generator → elements_json → Geometry Converter → Breps
+```
+
+Benefits:
+- Inspect data between components (jSwan, Panel)
+- Decoupled, testable components
+- Geometry as coordinates (no assembly issues until final stage)
+
 ## Current Focus Areas
 
 **Completed**:
-1. ✅ **Modularization**: Four JSON-based GHPython components (wall_analyzer, cell_decomposer, framing_generator, geometry_converter)
+1. ✅ **Modularization**: Four JSON-based GHPython components
 2. ✅ **Multi-Material Support**: Timber and CFS strategies with profile catalogs
 3. ✅ **Geometry Pipeline**: RhinoCommonFactory handles assembly mismatch
+4. ✅ **Framing Fixes**: Vertical element orientation, header cripple direction, bottom plate door splits, end studs on all walls
 
 **Next Steps**:
-- Connect strategy methods to existing framing element generators
 - Implement CFS-specific elements (web stiffeners, bridging)
 - Full pipeline integration testing in Grasshopper
+- Documentation polish
 
 See `PRPs/` folder for implementation documentation and `docs/ai/ai-modular-architecture-plan.md` for architecture details.
 
@@ -196,6 +311,24 @@ def test_full_pipeline():
     pass
 ```
 
+## Debugging Strategies
+
+### Logging Levels
+- `DEBUG`: Variable values, intermediate states
+- `INFO`: Start/end of operations, counts
+- `WARNING`: Recoverable issues, fallbacks
+- `ERROR`: Fatal errors with traceback
+
+### Visual Debugging
+- Output intermediate geometry for inspection
+- Use color-coding by element type
+- Check bounding boxes for dimension verification
+
+### Log Analysis
+- Review log files in `logs/` directory
+- Check stud counts match expectations
+- Verify elevations and dimensions
+
 ## Commit Message Format
 
 ```
@@ -206,6 +339,25 @@ Detailed explanation of changes.
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 ```
 
+## Available Skills
+
+### grasshopper-python-assistant
+Located at: `~/.claude/skills/grasshopper-python-assistant/`
+
+Use this skill when:
+- Creating new GHPython components
+- Adding documentation to GH Python code
+- Implementing error handling in GH components
+- Working with DataTrees and Grasshopper data structures
+
+The skill provides:
+- **templates/ghpython_component.py**: Full component template with setup, logging, error handling
+- **templates/module_docstring.md**: Module-level documentation template
+- **templates/function_docstring.md**: Function docstring template
+- **references/common_patterns.md**: DataTree, module reload, JSON, assembly patterns
+- **references/error_handling.md**: Dual logging, graceful degradation, safe wrappers
+- **references/performance_guidelines.md**: Performance documentation standards
+
 ## Do NOT
 
 - Modify geometry creation without understanding assembly mismatch
@@ -213,3 +365,6 @@ Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 - Create new patterns when existing ones work
 - Commit .env files or credentials
 - Use bare `except:` clauses
+- Assume `ClosestPoint()` returns absolute distance (it's normalized 0-1)
+- Forget end studs on short walls
+- Create boxes without verifying Z-direction

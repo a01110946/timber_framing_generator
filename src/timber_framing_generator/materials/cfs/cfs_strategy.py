@@ -20,6 +20,7 @@ Usage:
 """
 
 from typing import Dict, List, Any
+import traceback
 
 from src.timber_framing_generator.core.material_system import (
     MaterialSystem,
@@ -34,6 +35,23 @@ from .cfs_profiles import (
     DEFAULT_CFS_PROFILES,
     get_cfs_profile,
 )
+
+# Import adapters from timber module - they're generic and work for CFS too
+from src.timber_framing_generator.materials.timber.element_adapters import (
+    reconstruct_wall_data,
+    plate_geometry_to_framing_element,
+    brep_to_framing_element,
+    normalize_cells,
+    RHINO_AVAILABLE,
+)
+
+# Import our custom logging module
+try:
+    from src.timber_framing_generator.utils.logging_config import get_logger
+    logger = get_logger(__name__)
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 
 class CFSFramingStrategy(FramingStrategy):
@@ -161,6 +179,7 @@ class CFSFramingStrategy(FramingStrategy):
 
         In CFS framing, tracks (C-sections without lips) are used
         instead of plates for the top and bottom horizontal members.
+        This method reuses the plate generation logic with CFS profiles.
 
         Args:
             wall_data: Wall geometry and properties
@@ -169,13 +188,96 @@ class CFSFramingStrategy(FramingStrategy):
 
         Returns:
             List of FramingElement for tracks
-
-        Note:
-            Phase 4 returns empty list - full integration in Phase 5.
         """
-        # Phase 4: Placeholder - actual integration in Phase 5
-        # Will delegate to track generation logic
-        return []
+        logger.info("Creating horizontal members (CFS tracks)")
+        elements = []
+
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
+
+        # Check if Rhino is available (only works inside Grasshopper)
+        if not RHINO_AVAILABLE:
+            logger.warning(
+                "Rhino not available - returning empty list. "
+                "This is expected when running unit tests outside Grasshopper."
+            )
+            return elements
+
+        try:
+            # Import plate generator (same as timber - geometry is the same)
+            from src.timber_framing_generator.framing_elements.plates import create_plates
+
+            # Reconstruct wall data with Rhino geometry
+            rhino_wall_data = reconstruct_wall_data(wall_data)
+            base_plane = rhino_wall_data.get("base_plane")
+
+            # Get configuration
+            bottom_plate_layers = config.get("bottom_plate_layers", 1)
+            top_plate_layers = config.get("top_plate_layers", 1)  # CFS typically uses single track
+            representation_type = config.get("representation_type", "schematic")
+
+            # Generate bottom tracks (pass openings to skip door locations)
+            openings = rhino_wall_data.get("openings", [])
+            logger.debug(f"Creating bottom tracks (layers={bottom_plate_layers}, openings={len(openings)})")
+            bottom_plates = create_plates(
+                rhino_wall_data,
+                plate_type="bottom_plate",
+                representation_type=representation_type,
+                layers=bottom_plate_layers,
+                openings=openings,
+            )
+
+            # Convert to FramingElement with CFS track profile
+            bottom_profile = self.get_profile(ElementType.BOTTOM_PLATE, config)
+            for i, plate in enumerate(bottom_plates):
+                elem = plate_geometry_to_framing_element(
+                    plate=plate,
+                    element_id=f"bottom_track_{i}",
+                    element_type=ElementType.BOTTOM_PLATE,
+                    profile=bottom_profile,
+                    base_plane=base_plane,
+                    wall_id=wall_id,
+                )
+                elements.append(elem)
+                logger.debug(f"Created bottom_track_{i}")
+
+            # Generate top tracks
+            logger.debug(f"Creating top tracks (layers={top_plate_layers})")
+            top_plates = create_plates(
+                rhino_wall_data,
+                plate_type="top_plate",
+                representation_type=representation_type,
+                layers=top_plate_layers,
+            )
+
+            # Convert to FramingElement with CFS track profile
+            top_profile = self.get_profile(ElementType.TOP_PLATE, config)
+            for i, plate in enumerate(top_plates):
+                elem = plate_geometry_to_framing_element(
+                    plate=plate,
+                    element_id=f"top_track_{i}",
+                    element_type=ElementType.TOP_PLATE,
+                    profile=top_profile,
+                    base_plane=base_plane,
+                    wall_id=wall_id,
+                )
+                elements.append(elem)
+                logger.debug(f"Created top_track_{i}")
+
+            # Store plate geometry for use by vertical member generation
+            self._plate_geometry = {
+                "bottom_plates": bottom_plates,
+                "top_plates": top_plates,
+                "rhino_wall_data": rhino_wall_data,
+            }
+
+            logger.info(f"Created {len(elements)} horizontal members (CFS tracks)")
+
+        except Exception as e:
+            logger.error(f"Error creating horizontal members: {e}")
+            logger.error(traceback.format_exc())
+
+        return elements
 
     def create_vertical_members(
         self,
@@ -189,6 +291,7 @@ class CFSFramingStrategy(FramingStrategy):
 
         In CFS framing, C-section studs with lips are used for
         vertical members. Studs fit inside tracks (flanges overlap).
+        This method reuses the stud generation logic with CFS profiles.
 
         Args:
             wall_data: Wall geometry and properties
@@ -198,13 +301,152 @@ class CFSFramingStrategy(FramingStrategy):
 
         Returns:
             List of FramingElement for vertical members
-
-        Note:
-            Phase 4 returns empty list - full integration in Phase 5.
         """
-        # Phase 4: Placeholder - actual integration in Phase 5
-        # Will delegate to CFS stud generation logic
-        return []
+        logger.info("Creating vertical members (CFS studs)")
+        elements = []
+
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
+
+        # Check if Rhino is available
+        if not RHINO_AVAILABLE:
+            logger.warning("Rhino not available - returning empty list.")
+            return elements
+
+        try:
+            # Import generators
+            from src.timber_framing_generator.framing_elements.king_studs import KingStudGenerator
+            from src.timber_framing_generator.framing_elements.studs import StudGenerator
+            from src.timber_framing_generator.framing_elements.trimmers import TrimmerGenerator
+
+            # Get stored plate geometry or reconstruct
+            if hasattr(self, "_plate_geometry"):
+                bottom_plates = self._plate_geometry["bottom_plates"]
+                top_plates = self._plate_geometry["top_plates"]
+                rhino_wall_data = self._plate_geometry["rhino_wall_data"]
+            else:
+                rhino_wall_data = reconstruct_wall_data(wall_data)
+                openings_for_plates = rhino_wall_data.get("openings", [])
+                # Need to regenerate plates (pass openings to skip door locations)
+                from src.timber_framing_generator.framing_elements.plates import create_plates
+                bottom_plates = create_plates(
+                    rhino_wall_data, plate_type="bottom_plate",
+                    representation_type="schematic", layers=1,
+                    openings=openings_for_plates
+                )
+                top_plates = create_plates(
+                    rhino_wall_data, plate_type="top_plate",
+                    representation_type="schematic", layers=1
+                )
+
+            base_plane = rhino_wall_data.get("base_plane")
+            openings = rhino_wall_data.get("openings", [])
+
+            # Use first bottom plate and FIRST top plate (not cap plate)
+            bottom_plate = bottom_plates[0] if bottom_plates else None
+            top_plate = top_plates[0] if top_plates else None
+
+            if not bottom_plate or not top_plate:
+                logger.warning("No plates available for vertical member generation")
+                return elements
+
+            # Generate king studs for each opening
+            king_stud_breps = []
+            king_profile = self.get_profile(ElementType.KING_STUD, config)
+
+            if openings:
+                logger.debug(f"Creating king studs for {len(openings)} openings")
+                king_gen = KingStudGenerator(rhino_wall_data, bottom_plate, top_plate)
+
+                for i, opening in enumerate(openings):
+                    try:
+                        studs = king_gen.generate_king_studs(opening)
+                        for j, brep in enumerate(studs):
+                            king_stud_breps.append(brep)
+                            elem = brep_to_framing_element(
+                                brep=brep,
+                                element_id=f"king_stud_{i}_{j}",
+                                element_type=ElementType.KING_STUD,
+                                profile=king_profile,
+                                base_plane=base_plane,
+                                wall_id=wall_id,
+                                is_vertical=True,
+                            )
+                            if elem:
+                                elements.append(elem)
+                                logger.debug(f"Created king_stud_{i}_{j}")
+                    except Exception as e:
+                        logger.error(f"Error generating king studs for opening {i}: {e}")
+
+            # Add cells to wall data for stud generator
+            cells = cell_data.get("cells", [])
+            normalized = normalize_cells(cells)
+            rhino_wall_data["cells"] = normalized
+
+            # Generate standard studs
+            logger.debug("Creating standard CFS studs")
+            stud_profile = self.get_profile(ElementType.STUD, config)
+            stud_gen = StudGenerator(
+                rhino_wall_data,
+                bottom_plate,
+                top_plate,
+                king_stud_breps,
+            )
+            stud_breps = stud_gen.generate_studs()
+
+            for i, brep in enumerate(stud_breps):
+                elem = brep_to_framing_element(
+                    brep=brep,
+                    element_id=f"stud_{i}",
+                    element_type=ElementType.STUD,
+                    profile=stud_profile,
+                    base_plane=base_plane,
+                    wall_id=wall_id,
+                    is_vertical=True,
+                )
+                if elem:
+                    elements.append(elem)
+
+            logger.debug(f"Created {len(stud_breps)} standard studs")
+
+            # Generate trimmers for each opening
+            if openings:
+                logger.debug("Creating trimmers")
+                trimmer_profile = self.get_profile(ElementType.TRIMMER, config)
+                trimmer_gen = TrimmerGenerator(rhino_wall_data)
+                plate_boundary = bottom_plate.get_boundary_data()
+
+                for i, opening in enumerate(openings):
+                    try:
+                        trimmers = trimmer_gen.generate_trimmers(opening, plate_boundary)
+                        for j, brep in enumerate(trimmers or []):
+                            elem = brep_to_framing_element(
+                                brep=brep,
+                                element_id=f"trimmer_{i}_{j}",
+                                element_type=ElementType.TRIMMER,
+                                profile=trimmer_profile,
+                                base_plane=base_plane,
+                                wall_id=wall_id,
+                                is_vertical=True,
+                            )
+                            if elem:
+                                elements.append(elem)
+                    except Exception as e:
+                        logger.error(f"Error generating trimmers for opening {i}: {e}")
+
+            # Store for opening member generation
+            self._vertical_geometry = {
+                "king_stud_breps": king_stud_breps,
+                "stud_breps": stud_breps,
+            }
+
+            logger.info(f"Created {len(elements)} vertical members (CFS studs)")
+
+        except Exception as e:
+            logger.error(f"Error creating vertical members: {e}")
+            logger.error(traceback.format_exc())
+
+        return elements
 
     def create_opening_members(
         self,
@@ -216,10 +458,9 @@ class CFSFramingStrategy(FramingStrategy):
         """
         Generate opening-related members (headers, sills, cripples).
 
-        CFS headers are typically made from:
-        - Back-to-back studs
-        - Box headers (4 pieces)
-        - L-headers for light loads
+        This method reuses the header/sill/cripple generation logic
+        with CFS profiles. CFS headers typically use back-to-back studs,
+        but for now we use the same single-piece geometry as timber.
 
         Args:
             wall_data: Wall geometry and properties
@@ -229,13 +470,187 @@ class CFSFramingStrategy(FramingStrategy):
 
         Returns:
             List of FramingElement for opening members
-
-        Note:
-            Phase 4 returns empty list - full integration in Phase 5.
         """
-        # Phase 4: Placeholder - actual integration in Phase 5
-        # Will delegate to CFS header/sill generation logic
-        return []
+        logger.info("Creating opening members (CFS)")
+        elements = []
+
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
+
+        # Check if Rhino is available
+        if not RHINO_AVAILABLE:
+            logger.warning("Rhino not available - returning empty list.")
+            return elements
+
+        try:
+            # Import generators
+            from src.timber_framing_generator.framing_elements.headers import HeaderGenerator
+            from src.timber_framing_generator.framing_elements.sills import SillGenerator
+            from src.timber_framing_generator.framing_elements.header_cripples import HeaderCrippleGenerator
+            from src.timber_framing_generator.framing_elements.sill_cripples import SillCrippleGenerator
+
+            # Get wall data
+            if hasattr(self, "_plate_geometry"):
+                rhino_wall_data = self._plate_geometry["rhino_wall_data"]
+                top_plates = self._plate_geometry["top_plates"]
+                bottom_plates = self._plate_geometry["bottom_plates"]
+            else:
+                rhino_wall_data = reconstruct_wall_data(wall_data)
+                top_plates = []
+                bottom_plates = []
+
+            base_plane = rhino_wall_data.get("base_plane")
+            openings = rhino_wall_data.get("openings", [])
+
+            if not openings:
+                logger.debug("No openings to process")
+                return elements
+
+            # Headers
+            logger.debug(f"Creating headers for {len(openings)} openings")
+            # Create custom header profile using actual FRAMING_PARAMS dimensions
+            from src.timber_framing_generator.config.framing import FRAMING_PARAMS
+            header_height = FRAMING_PARAMS.get("header_height", 7.0 / 12)  # 7" vertical
+            header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)   # 3.5" into wall
+            header_profile = ElementProfile(
+                name="cfs_header",
+                width=header_height,   # vertical dimension
+                depth=header_depth,    # wall-thickness
+                material_system=MaterialSystem.CFS,
+                properties={"description": "CFS header profile"}
+            )
+            logger.info(f"Header profile: width={header_profile.width*12}in (vertical), depth={header_profile.depth*12}in (into wall)")
+            header_gen = HeaderGenerator(rhino_wall_data)
+
+            header_breps = []
+            for i, opening in enumerate(openings):
+                try:
+                    header = header_gen.generate_header(opening)
+                    if header:
+                        header_breps.append(header)
+                        elem = brep_to_framing_element(
+                            brep=header,
+                            element_id=f"header_{i}",
+                            element_type=ElementType.HEADER,
+                            profile=header_profile,
+                            base_plane=base_plane,
+                            wall_id=wall_id,
+                            is_vertical=False,
+                        )
+                        if elem:
+                            elements.append(elem)
+                except Exception as e:
+                    logger.error(f"Error generating header for opening {i}: {e}")
+
+            # Sills (windows only)
+            logger.debug("Creating sills for window openings")
+            sill_profile = self.get_profile(ElementType.SILL, config)
+            sill_gen = SillGenerator(rhino_wall_data)
+
+            sill_breps = []
+            for i, opening in enumerate(openings):
+                if opening.get("opening_type", "").lower() == "window":
+                    try:
+                        sill = sill_gen.generate_sill(opening)
+                        if sill:
+                            sill_breps.append(sill)
+                            elem = brep_to_framing_element(
+                                brep=sill,
+                                element_id=f"sill_{i}",
+                                element_type=ElementType.SILL,
+                                profile=sill_profile,
+                                base_plane=base_plane,
+                                wall_id=wall_id,
+                                is_vertical=False,
+                            )
+                            if elem:
+                                elements.append(elem)
+                    except Exception as e:
+                        logger.error(f"Error generating sill for opening {i}: {e}")
+
+            # Header cripples
+            header_cripple_breps = []
+            if top_plates:
+                logger.debug("Creating header cripples")
+                hc_profile = self.get_profile(ElementType.HEADER_CRIPPLE, config)
+                hc_gen = HeaderCrippleGenerator(rhino_wall_data)
+                top_plate_data = top_plates[0].get_boundary_data() if top_plates else {}
+
+                for i, opening in enumerate(openings):
+                    if i < len(header_breps):
+                        try:
+                            from src.timber_framing_generator.utils.safe_rhino import safe_get_bounding_box
+                            header_bbox = safe_get_bounding_box(header_breps[i], True)
+                            header_data = {"top_elevation": header_bbox.Max.Z}
+                            cripples = hc_gen.generate_header_cripples(
+                                opening, header_data, top_plate_data
+                            )
+                            for j, brep in enumerate(cripples or []):
+                                header_cripple_breps.append(brep)
+                                elem = brep_to_framing_element(
+                                    brep=brep,
+                                    element_id=f"header_cripple_{i}_{j}",
+                                    element_type=ElementType.HEADER_CRIPPLE,
+                                    profile=hc_profile,
+                                    base_plane=base_plane,
+                                    wall_id=wall_id,
+                                    is_vertical=True,
+                                )
+                                if elem:
+                                    elements.append(elem)
+                        except Exception as e:
+                            logger.error(f"Error generating header cripples for opening {i}: {e}")
+
+            # Sill cripples (windows only)
+            sill_cripple_breps = []
+            if bottom_plates:
+                logger.debug("Creating sill cripples")
+                sc_profile = self.get_profile(ElementType.SILL_CRIPPLE, config)
+                sc_gen = SillCrippleGenerator(rhino_wall_data)
+                bottom_plate_data = bottom_plates[0].get_boundary_data() if bottom_plates else {}
+
+                sill_idx = 0
+                for i, opening in enumerate(openings):
+                    if opening.get("opening_type", "").lower() == "window":
+                        if sill_idx < len(sill_breps):
+                            try:
+                                from src.timber_framing_generator.utils.safe_rhino import safe_get_bounding_box
+                                sill_bbox = safe_get_bounding_box(sill_breps[sill_idx], True)
+                                sill_data = {"bottom_elevation": sill_bbox.Min.Z}
+                                cripples = sc_gen.generate_sill_cripples(
+                                    opening, sill_data, bottom_plate_data
+                                )
+                                for j, brep in enumerate(cripples or []):
+                                    sill_cripple_breps.append(brep)
+                                    elem = brep_to_framing_element(
+                                        brep=brep,
+                                        element_id=f"sill_cripple_{i}_{j}",
+                                        element_type=ElementType.SILL_CRIPPLE,
+                                        profile=sc_profile,
+                                        base_plane=base_plane,
+                                        wall_id=wall_id,
+                                        is_vertical=True,
+                                    )
+                                    if elem:
+                                        elements.append(elem)
+                            except Exception as e:
+                                logger.error(f"Error generating sill cripples for opening {i}: {e}")
+                            sill_idx += 1
+
+            # Store opening geometry for use by bracing members
+            self._opening_geometry = {
+                "header_cripple_breps": header_cripple_breps,
+                "sill_cripple_breps": sill_cripple_breps,
+            }
+            logger.debug(f"Stored {len(header_cripple_breps)} header cripple breps and {len(sill_cripple_breps)} sill cripple breps")
+
+            logger.info(f"Created {len(elements)} opening members (CFS)")
+
+        except Exception as e:
+            logger.error(f"Error creating opening members: {e}")
+            logger.error(traceback.format_exc())
+
+        return elements
 
     def create_bracing_members(
         self,
@@ -252,6 +667,9 @@ class CFSFramingStrategy(FramingStrategy):
         - Cold-rolled channel bridging
         - Stud sections as blocking
 
+        For Phase 1, this reuses the row blocking logic from timber.
+        Future phases will implement CFS-specific bridging patterns.
+
         Args:
             wall_data: Wall geometry and properties
             cell_data: Cell decomposition data
@@ -260,13 +678,92 @@ class CFSFramingStrategy(FramingStrategy):
 
         Returns:
             List of FramingElement for bracing members
-
-        Note:
-            Phase 4 returns empty list - full integration in Phase 5.
         """
-        # Phase 4: Placeholder - actual integration in Phase 5
-        # Will delegate to CFS bridging generation logic
-        return []
+        logger.info("Creating bracing members (CFS bridging)")
+        elements = []
+
+        # Extract wall_id for element metadata
+        wall_id = cell_data.get('wall_id', 'unknown')
+
+        # Check if Rhino is available
+        if not RHINO_AVAILABLE:
+            logger.warning("Rhino not available - returning empty list.")
+            return elements
+
+        # Check if blocking is enabled
+        include_blocking = config.get("include_blocking", True)
+        if not include_blocking:
+            logger.debug("Bridging/blocking disabled in config")
+            return elements
+
+        try:
+            from src.timber_framing_generator.framing_elements.row_blocking import RowBlockingGenerator
+
+            # Get wall data
+            if hasattr(self, "_plate_geometry"):
+                rhino_wall_data = self._plate_geometry["rhino_wall_data"]
+            else:
+                rhino_wall_data = reconstruct_wall_data(wall_data)
+
+            base_plane = rhino_wall_data.get("base_plane")
+
+            # Add cells to wall data
+            cells = cell_data.get("cells", [])
+            rhino_wall_data["cells"] = normalize_cells(cells)
+
+            # Get stud breps for blocking placement
+            stud_breps = []
+            king_stud_breps = []
+            if hasattr(self, "_vertical_geometry"):
+                stud_breps = self._vertical_geometry.get("stud_breps", [])
+                king_stud_breps = self._vertical_geometry.get("king_stud_breps", [])
+
+            # Get cripple breps from opening geometry for blocking placement
+            header_cripple_breps = []
+            sill_cripple_breps = []
+            if hasattr(self, "_opening_geometry"):
+                header_cripple_breps = self._opening_geometry.get("header_cripple_breps", [])
+                sill_cripple_breps = self._opening_geometry.get("sill_cripple_breps", [])
+                logger.debug(f"Retrieved {len(header_cripple_breps)} header cripple breps and {len(sill_cripple_breps)} sill cripple breps for bridging")
+
+            # Create blocking generator (reusing timber logic for now)
+            # TODO: Implement CFS-specific bridging patterns
+            blocking_gen = RowBlockingGenerator(
+                wall_data=rhino_wall_data,
+                studs=stud_breps,
+                king_studs=king_stud_breps,
+                trimmers=[],
+                header_cripples=header_cripple_breps,
+                sill_cripples=sill_cripple_breps,
+                blocking_pattern=config.get("blocking_pattern", "INLINE"),
+                include_blocking=include_blocking,
+                block_spacing=config.get("block_spacing", 4.0),
+                first_block_height=config.get("first_block_height", 2.0),
+            )
+
+            blocking_breps = blocking_gen.generate_blocking()
+            blocking_profile = self.get_profile(ElementType.ROW_BLOCKING, config)
+
+            for i, brep in enumerate(blocking_breps):
+                elem = brep_to_framing_element(
+                    brep=brep,
+                    element_id=f"bridging_{i}",
+                    element_type=ElementType.ROW_BLOCKING,
+                    profile=blocking_profile,
+                    base_plane=base_plane,
+                    is_vertical=False,
+                    wall_id=wall_id,
+                )
+                if elem:
+                    elements.append(elem)
+
+            logger.info(f"Created {len(elements)} bridging elements (CFS)")
+
+        except Exception as e:
+            logger.error(f"Error creating bracing members: {e}")
+            logger.error(traceback.format_exc())
+
+        return elements
 
 
 # =============================================================================

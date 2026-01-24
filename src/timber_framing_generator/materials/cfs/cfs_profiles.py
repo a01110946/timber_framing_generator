@@ -105,6 +105,53 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
         }
     ),
 
+    # 3.625" web studs (362-series, common Clark Dietrich size)
+    "362S162-33": ElementProfile(
+        name="362S162-33",
+        width=1.62 / 12,     # Actual CFS flange width (1.62")
+        depth=3.625 / 12,    # Web depth: 3.625"
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.62,
+            "gauge": 33,
+            "thickness_mils": 33,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+        }
+    ),
+    "362S162-43": ElementProfile(
+        name="362S162-43",
+        width=1.62 / 12,
+        depth=3.625 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.62,
+            "gauge": 43,
+            "thickness_mils": 43,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+        }
+    ),
+    "362S162-54": ElementProfile(
+        name="362S162-54",
+        width=1.62 / 12,
+        depth=3.625 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.62,
+            "gauge": 54,
+            "thickness_mils": 54,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+        }
+    ),
+
     # 6" web studs (equivalent to 2x6 wall)
     "600S162-33": ElementProfile(
         name="600S162-33",
@@ -247,6 +294,50 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
         }
     ),
 
+    # 3.625" web tracks (362-series, common Clark Dietrich size)
+    "362T125-33": ElementProfile(
+        name="362T125-33",
+        width=1.25 / 12,     # Flange width: 1.25" = track height
+        depth=3.625 / 12,    # Web depth: 3.625"
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "track",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.25,
+            "gauge": 33,
+            "thickness_mils": 33,
+            "has_lips": False,
+        }
+    ),
+    "362T125-43": ElementProfile(
+        name="362T125-43",
+        width=1.25 / 12,
+        depth=3.625 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "track",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.25,
+            "gauge": 43,
+            "thickness_mils": 43,
+            "has_lips": False,
+        }
+    ),
+    "362T125-54": ElementProfile(
+        name="362T125-54",
+        width=1.25 / 12,
+        depth=3.625 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "track",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.25,
+            "gauge": 54,
+            "thickness_mils": 54,
+            "has_lips": False,
+        }
+    ),
+
     # 6" web tracks
     "600T125-33": ElementProfile(
         name="600T125-33",
@@ -328,7 +419,7 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
 # =============================================================================
 
 # Maps element types to their default CFS profile
-# Uses 3.5" (350) profiles as default, matching typical 2x4 wall equivalence
+# Uses 3.5" (350) profiles as default for 4" walls
 DEFAULT_CFS_PROFILES: Dict[ElementType, str] = {
     # Tracks for horizontal members (plates)
     ElementType.BOTTOM_PLATE: "350T125-54",   # Bottom track

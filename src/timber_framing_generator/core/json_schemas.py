@@ -146,6 +146,9 @@ class WallData:
     openings: List[OpeningData] = field(default_factory=list)
     is_exterior: bool = False
     wall_type: Optional[str] = None
+    # Revit level IDs for RiR baking (Add Structural Column/Beam)
+    base_level_id: Optional[int] = None
+    top_level_id: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -313,6 +316,8 @@ def deserialize_wall_data(json_str: str) -> WallData:
         openings=openings,
         is_exterior=data.get('is_exterior', False),
         wall_type=data.get('wall_type'),
+        base_level_id=data.get('base_level_id'),
+        top_level_id=data.get('top_level_id'),
         metadata=data.get('metadata', {}),
     )
 

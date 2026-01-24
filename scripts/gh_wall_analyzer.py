@@ -101,6 +101,12 @@ def convert_wall_data_to_schema(wall_data: dict, wall_id: str) -> WallData:
             z_axis=Vector3D(0, 0, 1),
         )
 
+    # Extract Revit level IDs for RiR baking
+    base_level = wall_data.get('base_level')
+    top_level = wall_data.get('top_level')
+    base_level_id = base_level.Id.IntegerValue if base_level else None
+    top_level_id = top_level.Id.IntegerValue if top_level else None
+
     # Extract base curve endpoints
     base_curve = wall_data.get('wall_base_curve')
     if base_curve:
@@ -169,6 +175,8 @@ def convert_wall_data_to_schema(wall_data: dict, wall_id: str) -> WallData:
         openings=openings,
         is_exterior=wall_data.get('is_exterior_wall', False),
         wall_type=wall_data.get('wall_type'),
+        base_level_id=base_level_id,
+        top_level_id=top_level_id,
         metadata={
             'revit_id': wall_id,
             'has_cells': 'cells' in wall_data,

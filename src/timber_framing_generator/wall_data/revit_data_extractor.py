@@ -24,6 +24,49 @@ WallInputData = Dict[
     str, Union[rg.Curve, float, bool, List[Dict[str, Union[str, float]]], rg.Plane]
 ]
 
+
+def _get_opening_dimension(element, symbol, param_names: List[str]) -> float:
+    """
+    Try multiple parameter names to get an opening dimension.
+
+    Checks in order:
+    1. Named parameters on instance
+    2. Named parameters on symbol (type)
+
+    Args:
+        element: The FamilyInstance (door/window)
+        symbol: The FamilySymbol (type)
+        param_names: List of parameter names to try (e.g., ["Rough Width", "Width"])
+
+    Returns:
+        The dimension value, or 0.0 if not found
+    """
+    # Try instance parameters first
+    for name in param_names:
+        try:
+            param = element.LookupParameter(name)
+            if param and param.HasValue:
+                value = param.AsDouble()
+                if value > 0:
+                    print(f"    Found {name} on instance: {value}")
+                    return value
+        except Exception as e:
+            print(f"    Error reading instance param '{name}': {e}")
+
+    # Try type (symbol) parameters
+    for name in param_names:
+        try:
+            param = symbol.LookupParameter(name)
+            if param and param.HasValue:
+                value = param.AsDouble()
+                if value > 0:
+                    print(f"    Found {name} on type: {value}")
+                    return value
+        except Exception as e:
+            print(f"    Error reading type param '{name}': {e}")
+
+    return 0.0
+
 def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
     """
     Extracts timber framing data from a Revit wall, decomposes the wall into cells,
@@ -133,22 +176,70 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                 print(f"Opening {insert_id} is {opening_type}")
 
                 family_symbol = insert_element.Symbol
-                rough_width_param = family_symbol.LookupParameter("Rough Width")
-                rough_height_param = family_symbol.LookupParameter("Rough Height")
-                print(f"Opening {insert_id} has rough width: {rough_width_param}")
-                sill_height_param = insert_element.LookupParameter("Sill Height")
-                print(f"Opening {insert_id} has sill height param: {sill_height_param}")
 
-                # Also try getting the built-in parameter for comparison
-                sill_height_builtin = insert_element.get_Parameter(DB.BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM)
-                if sill_height_builtin:
-                    print(f"  Built-in INSTANCE_SILL_HEIGHT_PARAM value: {sill_height_builtin.AsDouble()}")
-                else:
-                    print(f"  Built-in INSTANCE_SILL_HEIGHT_PARAM not found")
-                if rough_width_param and rough_height_param and sill_height_param:
-                    opening_width_value = rough_width_param.AsDouble()
-                    opening_height_value = rough_height_param.AsDouble()
-                    sill_height_value_raw = sill_height_param.AsDouble()
+                # Try multiple parameter names for width/height
+                # Different Revit families use different names
+                width_param_names = [
+                    "Rough Width", "Width", "Default Width", "Frame Width",
+                    "Opening Width", "Clear Width", "Nominal Width"
+                ]
+                height_param_names = [
+                    "Rough Height", "Height", "Default Height", "Frame Height",
+                    "Opening Height", "Clear Height", "Nominal Height"
+                ]
+
+                # Get dimensions using helper function with fallbacks
+                opening_width_value = _get_opening_dimension(
+                    insert_element, family_symbol, width_param_names
+                )
+                opening_height_value = _get_opening_dimension(
+                    insert_element, family_symbol, height_param_names
+                )
+
+                print(f"Opening {insert_id} - width={opening_width_value}, height={opening_height_value}")
+
+                # If standard parameters failed, try to get dimensions from the opening cut
+                if opening_width_value <= 0 or opening_height_value <= 0:
+                    print(f"  WARNING: Could not find dimensions via parameters, trying opening cut...")
+                    try:
+                        # Get the opening cut from the wall
+                        opening_cut = insert_element.GetSubComponentIds()
+                        bbox = insert_element.get_BoundingBox(None)
+                        if bbox:
+                            # Use bounding box as fallback (less accurate but better than nothing)
+                            if opening_width_value <= 0:
+                                # Width is typically along X or Y depending on wall orientation
+                                dx = abs(bbox.Max.X - bbox.Min.X)
+                                dy = abs(bbox.Max.Y - bbox.Min.Y)
+                                opening_width_value = max(dx, dy)  # Use larger dimension as width
+                            if opening_height_value <= 0:
+                                opening_height_value = abs(bbox.Max.Z - bbox.Min.Z)
+                            print(f"  Using bounding box fallback: width={opening_width_value}, height={opening_height_value}")
+                    except Exception as bbox_err:
+                        print(f"  Failed to get bounding box: {bbox_err}")
+
+                # Get sill height parameter
+                sill_height_param = insert_element.LookupParameter("Sill Height")
+                sill_height_builtin = None
+                try:
+                    sill_height_builtin = insert_element.get_Parameter(DB.BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM)
+                    if sill_height_builtin:
+                        print(f"  Built-in INSTANCE_SILL_HEIGHT_PARAM value: {sill_height_builtin.AsDouble()}")
+                except Exception as e:
+                    print(f"  Could not get INSTANCE_SILL_HEIGHT_PARAM: {e}")
+
+                # Get sill height value (raw)
+                sill_height_value_raw = 0.0
+                try:
+                    if sill_height_builtin and sill_height_builtin.HasValue:
+                        sill_height_value_raw = sill_height_builtin.AsDouble()
+                    elif sill_height_param and sill_height_param.HasValue:
+                        sill_height_value_raw = sill_height_param.AsDouble()
+                except Exception as e:
+                    print(f"  Error getting sill height: {e}")
+
+                # Only process if we have valid dimensions
+                if opening_width_value > 0 and opening_height_value > 0:
 
                     # DEBUG: Trace sill height values
                     print(f"\n{'='*50}")
@@ -278,6 +369,8 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     print(f"DEBUG: Sill height value from Revit: {sill_height_value}")
                     print(f"Opening {insert_id} has opening data: {opening_data}")
                     openings_data.append(opening_data)
+                else:
+                    print(f"WARNING: Skipping opening {insert_id} - invalid dimensions (width={opening_width_value}, height={opening_height_value})")
 
         # 6. Get the wall's base plane using our helper.
         wall_base_plane = get_wall_base_plane(

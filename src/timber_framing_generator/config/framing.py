@@ -6,9 +6,10 @@ This module contains all parameters, profiles, and settings related to
 timber framing elements.
 """
 
+import re
 from enum import Enum
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from src.timber_framing_generator.config.units import ProjectUnits, convert_from_feet
 
@@ -158,18 +159,44 @@ class ProfileDimensions:
 
 
 # Standard framing profiles (dimensions in feet)
+# Note: "thickness" is the narrow face (1.5" for all dimensional lumber)
+#       "width" is the wide face (varies: 2.5", 3.5", 5.5", 7.25", 9.25", 11.25")
 PROFILES: Dict[str, ProfileDimensions] = {
+    "2x3": ProfileDimensions(
+        thickness=1.5 / 12,  # 1.5 inches in feet
+        width=2.5 / 12,      # 2.5 inches in feet
+        name="2x3",
+        description="2x3 dimensional lumber",
+    ),
     "2x4": ProfileDimensions(
-        thickness=1.5 / 12,  # 3.5 inches in feet
-        width=3.5 / 12,  # 1.5 inches in feet
+        thickness=1.5 / 12,  # 1.5 inches in feet
+        width=3.5 / 12,      # 3.5 inches in feet
         name="2x4",
         description="Standard 2x4 dimensional lumber",
     ),
     "2x6": ProfileDimensions(
-        thickness=1.5 / 12,  # 5.5 inches in feet
-        width=5.5 / 12,  # 1.5 inches in feet
+        thickness=1.5 / 12,  # 1.5 inches in feet
+        width=5.5 / 12,      # 5.5 inches in feet
         name="2x6",
         description="Standard 2x6 dimensional lumber",
+    ),
+    "2x8": ProfileDimensions(
+        thickness=1.5 / 12,  # 1.5 inches in feet
+        width=7.25 / 12,     # 7.25 inches in feet
+        name="2x8",
+        description="2x8 dimensional lumber",
+    ),
+    "2x10": ProfileDimensions(
+        thickness=1.5 / 12,  # 1.5 inches in feet
+        width=9.25 / 12,     # 9.25 inches in feet
+        name="2x10",
+        description="2x10 dimensional lumber",
+    ),
+    "2x12": ProfileDimensions(
+        thickness=1.5 / 12,  # 1.5 inches in feet
+        width=11.25 / 12,    # 11.25 inches in feet
+        name="2x12",
+        description="2x12 dimensional lumber",
     ),
 }
 
@@ -264,51 +291,134 @@ def get_framing_param(param_name: str, wall_data: Dict[str, Any] = None, default
     return default if default is not None else FRAMING_PARAMS.get(param_name)
 
 
+def _thickness_to_profile(thickness: float) -> Optional[str]:
+    """
+    Map wall thickness (in inches) to lumber profile.
+
+    Uses ranges to handle nominal vs actual dimensions.
+    Profiles checked from largest to smallest to find best fit.
+
+    Args:
+        thickness: Wall thickness in inches
+
+    Returns:
+        Profile name (e.g., "2x4") or None if no match
+    """
+    # Check from largest to smallest for best match
+    # Ranges based on nominal dimensions (e.g., "4" in wall name → 2x4)
+    # Boundary at 3.25 ensures "3" maps to 2x3 and "4" maps to 2x4
+    if 11.0 <= thickness <= 12.5:
+        return "2x12"
+    elif 9.0 <= thickness < 11.0:
+        return "2x10"
+    elif 7.0 <= thickness < 9.0:
+        return "2x8"
+    elif 5.0 <= thickness < 7.0:
+        return "2x6"
+    elif 3.25 <= thickness < 5.0:
+        return "2x4"
+    elif 2.0 <= thickness < 3.25:
+        return "2x3"
+    return None
+
+
+def _infer_profile_from_thickness(wall_type: str) -> Optional[str]:
+    """
+    Infer lumber profile from wall thickness mentioned in the name.
+
+    Looks for patterns like:
+    - "4"" or "6"" (with inch mark)
+    - "- 4" or "- 6" (thickness at end after dash)
+    - "4 inch" or "6 inch"
+    - Standalone "4" or "6" as word boundaries
+
+    Args:
+        wall_type: Wall type string to parse
+
+    Returns:
+        Profile name (e.g., "2x4") or None if no thickness found
+    """
+    # Pattern: number followed by inch mark or "inch"
+    inch_pattern = r'(\d+(?:\.\d+)?)\s*(?:"|inch|in\b)'
+    match = re.search(inch_pattern, wall_type, re.IGNORECASE)
+    if match:
+        thickness = float(match.group(1))
+        return _thickness_to_profile(thickness)
+
+    # Pattern: dash followed by number at end (e.g., "W1 - 4")
+    dash_pattern = r'-\s*(\d+(?:\.\d+)?)\s*$'
+    match = re.search(dash_pattern, wall_type)
+    if match:
+        thickness = float(match.group(1))
+        return _thickness_to_profile(thickness)
+
+    # Pattern: standalone number that could be thickness (3-12 range)
+    # Only match common wall thicknesses to avoid false positives
+    standalone_pattern = r'\b([3-9]|1[0-2])(?:\.\d+)?\b'
+    matches = re.findall(standalone_pattern, wall_type)
+    for m in reversed(matches):  # Check from end (thickness often at end)
+        thickness = float(m)
+        profile = _thickness_to_profile(thickness)
+        if profile:
+            return profile
+
+    return None
+
+
 def get_profile_for_wall_type(wall_type: str) -> ProfileDimensions:
     """
     Gets the appropriate profile dimensions for a wall type.
 
-    This function handles wall type string variations by:
-    1. Trying the exact wall type string first
-    2. Attempting to normalize the string if exact match fails
+    Handles various naming conventions through multiple fallback strategies:
+    1. Exact match in WALL_TYPE_PROFILES
+    2. Normalized match (uppercase, no spaces)
+    3. Pattern match - look for "2xN" anywhere in string
+    4. Thickness extraction from name (e.g., "Basic Wall - W1 - 4" → 2x4)
+    5. Raise error with helpful message
 
     Args:
-        wall_type: The wall type identifier (e.g., "2x4 EXT", "2x6 INT")
+        wall_type: The wall type identifier. Supports formats like:
+            - Standard: "2x4 EXT", "2x6 INT"
+            - Revit default: "Basic Wall - W1 - 4", "Generic - 6"
+            - With units: "4 inch", '6"'
 
     Returns:
         ProfileDimensions object with the appropriate dimensions
 
     Raises:
-        KeyError: If wall type is not recognized or mapped profile not found
+        KeyError: If wall type cannot be resolved to a known profile
     """
-    try:
-        # First try exact match
-        profile_name = WALL_TYPE_PROFILES.get(wall_type)
+    # 1. Exact match
+    profile_name = WALL_TYPE_PROFILES.get(wall_type)
+    if profile_name and profile_name in PROFILES:
+        return PROFILES[profile_name]
 
-        if profile_name is None:
-            # Try normalizing the string (remove extra spaces, convert to uppercase)
-            normalized_type = wall_type.strip().upper().replace(" ", "")
-            profile_name = WALL_TYPE_PROFILES.get(normalized_type)
+    # 2. Normalized match (uppercase, no spaces)
+    normalized = wall_type.strip().upper().replace(" ", "")
+    profile_name = WALL_TYPE_PROFILES.get(normalized)
+    if profile_name and profile_name in PROFILES:
+        return PROFILES[profile_name]
 
-            if profile_name is None:
-                # If still not found, extract the base profile (2x4 or 2x6)
-                base_profile = wall_type.split()[0]  # Get first part (e.g., "2x4")
-                if base_profile in ("2x4", "2x6"):
-                    profile_name = base_profile
-                else:
-                    raise KeyError(
-                        f"No profile mapping found for wall type: {wall_type}"
-                    )
+    # 3. Pattern match - look for "2xN" anywhere in string
+    # Check from largest to smallest to avoid "2x1" matching in "2x12"
+    wall_upper = wall_type.upper()
+    for profile in ["2X12", "2X10", "2X8", "2X6", "2X4", "2X3"]:
+        if profile in wall_upper:
+            profile_lower = profile.lower()  # PROFILES uses lowercase keys
+            if profile_lower in PROFILES:
+                return PROFILES[profile_lower]
 
-        profile = PROFILES.get(profile_name)
-        if not profile:
-            raise KeyError(f"Profile not found: {profile_name}")
+    # 4. Thickness extraction - find numbers that indicate wall thickness
+    profile_name = _infer_profile_from_thickness(wall_type)
+    if profile_name and profile_name in PROFILES:
+        return PROFILES[profile_name]
 
-        return profile
-
-    except Exception as e:
-        print(f"Error processing wall type '{wall_type}': {str(e)}")
-        raise
+    # 5. Failed - raise error with helpful message
+    raise KeyError(
+        f"Cannot determine profile for wall type: '{wall_type}'. "
+        f"Add it to WALL_TYPE_PROFILES or use a recognizable format "
+        f"(e.g., '2x4', '2x6', or include thickness like '4\"' or '6\"')."
+    )
 
 
 def calculate_plate_offset(

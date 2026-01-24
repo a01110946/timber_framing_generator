@@ -8,7 +8,6 @@ from src.timber_framing_generator.config.framing import (
     PROFILES,
     ProfileDimensions,
     get_profile_for_wall_type,
-    WALL_TYPE_PROFILES,
 )
 
 
@@ -146,9 +145,7 @@ class PlateParameters:
             if not profile:
                 raise KeyError(f"Override profile not found: {profile_override}")
         else:
-            profile: ProfileDimensions = PlateParameters.get_profile_for_wall_type(
-                wall_type
-            )
+            profile: ProfileDimensions = get_profile_for_wall_type(wall_type)
 
         return cls(
             thickness=profile.thickness,
@@ -158,30 +155,6 @@ class PlateParameters:
             layer_idx=layer_idx,
             representation_type=representation_type,
         )
-
-    @staticmethod
-    def get_profile_for_wall_type(wall_type: str) -> ProfileDimensions:
-        """
-        Gets the appropriate profile dimensions for a wall type.
-
-        Args:
-            wall_type: The wall type identifier
-
-        Returns:
-            ProfileDimensions object with the appropriate dimensions
-
-        Raises:
-            KeyError: If wall type is not recognized or mapped profile not found
-        """
-        profile_name = WALL_TYPE_PROFILES.get(wall_type)
-        if not profile_name:
-            raise KeyError(f"No profile mapping found for wall type: {wall_type}")
-
-        profile = PROFILES.get(profile_name)
-        if not profile:
-            raise KeyError(f"Profile not found: {profile_name}")
-
-        return profile
 
     @staticmethod
     def _calculate_vertical_offset(

@@ -485,28 +485,25 @@ def create_elbow_fitting(doc, pipe1, pipe2):
         return None
 
 
-def create_tee_fitting(doc, branch_pipe, trunk_pipe, merge_point):
-    """Create tee fitting at merge point by splitting trunk pipe.
+def create_tee_fitting(doc, branch_pipe, trunk_pipe, merge_point, all_trunk_pipes=None):
+    """Connect branch pipe to trunk at merge point.
 
     Args:
         doc: Revit document
         branch_pipe: Branch pipe connecting to trunk
-        trunk_pipe: Main trunk pipe (will be split at merge point)
+        trunk_pipe: First trunk pipe (merge point is at its start)
         merge_point: (x, y, z) tuple where branch meets trunk
+        all_trunk_pipes: List of all trunk pipes (to find connectors)
 
     Returns:
-        Fitting element or None
+        Fitting element, "connected" string, or None
 
     Note:
-        The merge point is typically in the MIDDLE of the trunk pipe.
-        We need to:
-        1. Split the trunk pipe at the merge point using PlumbingUtils
-        2. This creates a tee fitting automatically
-        3. Connect the branch to the new tee
+        The merge point is at the START of the trunk pipes (not middle).
+        Multiple branches may connect to the same point - we need to find
+        any available connector near the merge point.
     """
     try:
-        from Autodesk.Revit.DB.Plumbing import PlumbingUtils
-
         # Get end connector of branch (the end that meets the trunk)
         branch_conn = get_pipe_end_connector(branch_pipe, at_end=True)
 
@@ -518,63 +515,48 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe, merge_point):
             log_info(f"  Tee: Branch connector already connected")
             return None
 
-        # Get the merge point as XYZ
         merge_xyz = XYZ(merge_point[0], merge_point[1], merge_point[2])
-        log_info(f"  Tee: Branch {branch_pipe.Id.IntegerValue} at merge point ({merge_point[0]:.2f}, {merge_point[1]:.2f}, {merge_point[2]:.2f})")
+        log_info(f"  Tee: Branch {branch_pipe.Id.IntegerValue} seeking connection at ({merge_point[0]:.2f}, {merge_point[1]:.2f}, {merge_point[2]:.2f})")
 
-        # Try to break/split the trunk pipe at the merge point
-        # This should create a tee fitting
-        try:
-            # BreakCurve splits a pipe at a point and returns the new element ID
-            new_element_id = PlumbingUtils.BreakCurve(doc, trunk_pipe.Id, merge_xyz)
+        # Collect all pipes to search for connectors
+        pipes_to_check = [trunk_pipe]
+        if all_trunk_pipes:
+            pipes_to_check = list(all_trunk_pipes)
 
-            if new_element_id != ElementId.InvalidElementId:
-                log_info(f"  Tee: Split trunk pipe, new segment Id: {new_element_id.IntegerValue}")
+        # Find any unconnected connector near the merge point
+        best_conn = None
+        best_dist = float('inf')
 
-                # After splitting, there should be a fitting at the split point
-                # Now connect the branch to that fitting
-                # Re-find the connector closest to branch
-                trunk_pipe_after = doc.GetElement(trunk_pipe.Id)
-                new_pipe = doc.GetElement(new_element_id)
+        for pipe in pipes_to_check:
+            if pipe is None:
+                continue
+            try:
+                for conn in pipe.ConnectorManager.Connectors:
+                    if not conn.IsConnected:
+                        dist = conn.Origin.DistanceTo(branch_conn.Origin)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_conn = conn
+            except:
+                pass
 
-                # Find connector at merge point on either piece
-                for pipe in [trunk_pipe_after, new_pipe]:
-                    if pipe is None:
-                        continue
-                    for conn in pipe.ConnectorManager.Connectors:
-                        if not conn.IsConnected:
-                            dist = conn.Origin.DistanceTo(branch_conn.Origin)
-                            if dist < 0.01:  # Very close
-                                try:
-                                    branch_conn.ConnectTo(conn)
-                                    if branch_conn.IsConnected:
-                                        log_info(f"  Tee: Connected branch to split point")
-                                        return "connected"
-                                except:
-                                    pass
+        if best_conn is not None and best_dist < 0.1:  # Within 0.1 ft tolerance
+            try:
+                branch_conn.ConnectTo(best_conn)
+                if branch_conn.IsConnected:
+                    log_info(f"  Tee: Connected branch to trunk (dist={best_dist:.4f})")
+                    return "connected"
+            except Exception as e_connect:
+                log_info(f"  Tee: ConnectTo failed - {e_connect}")
 
-                log_info(f"  Tee: Split succeeded but couldn't connect branch")
-                return new_element_id
+        # If no direct connection possible, the user needs to manually add fitting
+        # This happens when multiple branches meet at one point (need a cross/wye)
+        if best_dist >= 0.1:
+            log_info(f"  Tee: No connector found near merge point (closest={best_dist:.2f}ft)")
+        else:
+            log_info(f"  Tee: Could not connect - connector may already be used")
+            log_info(f"  Tee: Note: Multiple branches at same point need manual wye/cross fitting")
 
-        except Exception as e_break:
-            log_info(f"  Tee: BreakCurve failed - {e_break}")
-
-        # Fallback: Try direct NewTeeFitting if trunk connectors are close enough
-        # First check if branch end is at a trunk end (not middle)
-        trunk_connectors = trunk_pipe.ConnectorManager.Connectors
-        for conn in trunk_connectors:
-            if not conn.IsConnected:
-                dist = conn.Origin.DistanceTo(branch_conn.Origin)
-                if dist < 0.01:  # Branch is at trunk end, not middle
-                    try:
-                        branch_conn.ConnectTo(conn)
-                        if branch_conn.IsConnected:
-                            log_info(f"  Tee: Connected via ConnectTo (branch at trunk end)")
-                            return "connected"
-                    except Exception as e3:
-                        log_info(f"  Tee: ConnectTo failed - {e3}")
-
-        log_info(f"  Tee: Could not create tee fitting")
         return None
 
     except Exception as e:
@@ -662,15 +644,19 @@ def create_pipes_from_network(doc, network, pipe_type_id, level_id, do_fittings)
     if do_fittings and network.needs_tee_fitting() and len(trunk_pipes) > 0:
         merge_point = network.merge_point
         debug.append(f"Attempting tee fittings at merge point: {merge_point}")
+        debug.append(f"  {len(all_branch_pipes)} branches need to connect to trunk")
         first_trunk_pipe = trunk_pipes[0]
         for bi, branch_pipes_list in enumerate(all_branch_pipes):
             if len(branch_pipes_list) > 0:
                 try:
                     last_branch_pipe = branch_pipes_list[-1]
-                    fitting = create_tee_fitting(doc, last_branch_pipe, first_trunk_pipe, merge_point)
+                    # Pass all trunk pipes so we can find any available connector
+                    fitting = create_tee_fitting(doc, last_branch_pipe, first_trunk_pipe, merge_point, trunk_pipes)
                     if fitting is not None:
                         fittings.append(fitting)
-                        debug.append(f"  Created tee fitting for branch {bi}")
+                        debug.append(f"  Connected branch {bi} to trunk")
+                    else:
+                        debug.append(f"  Branch {bi}: Manual connection needed (wye/cross fitting)")
                 except Exception as e:
                     debug.append(f"  Tee fitting for branch {bi} failed: {e}")
 
@@ -842,11 +828,14 @@ def main():
         debug_lines.append(f"Networks failed: {networks_failed}")
 
         # Build output JSON
+        # Filter out string placeholders from fittings (ConnectTo returns "connected" not an element)
+        actual_fittings = [f for f in created_fittings if hasattr(f, 'Id')]
         output_data = {
             "pipes_created": len(created_pipes),
-            "fittings_created": len(created_fittings),
+            "fittings_created": len(actual_fittings),
+            "connections_made": len(created_fittings) - len(actual_fittings),
             "pipe_ids": [p.Id.IntegerValue for p in created_pipes],
-            "fitting_ids": [f.Id.IntegerValue for f in created_fittings],
+            "fitting_ids": [f.Id.IntegerValue for f in actual_fittings],
             "networks_processed": len(networks),
             "source": "gh_revit_pipe_creator",
         }

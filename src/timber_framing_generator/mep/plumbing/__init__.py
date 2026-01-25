@@ -13,13 +13,46 @@ System Types:
     - DomesticHotWater: Hot water supply
     - Vent: Vent lines
 
-Future Classes:
-    PlumbingSystem: Main plumbing system handler
-    PlumbingExtractor: Connector extraction from fixtures
-    PipeRouter: Pipe routing algorithm
+Example:
+    >>> from src.timber_framing_generator.mep.plumbing import PlumbingSystem
+    >>> system = PlumbingSystem()
+    >>> connectors = system.extract_connectors(fixtures)
+    >>> routes = system.calculate_routes(connectors, framing_data, [], config)
 """
 
-# Future imports when implemented
-# from .plumbing_system import PlumbingSystem
-# from .plumbing_extractor import PlumbingExtractor
-# from .pipe_router import PipeRouter
+from .plumbing_system import PlumbingSystem
+from .connector_extractor import (
+    extract_plumbing_connectors,
+    extract_connectors_from_json,
+)
+from .pipe_router import (
+    calculate_pipe_routes,
+    find_wall_entry,
+    extract_walls_from_framing,
+)
+from .penetration_rules import (
+    generate_plumbing_penetrations,
+    get_pipe_size_info,
+    STANDARD_PIPE_SIZES,
+    PLUMBING_PENETRATION_CLEARANCE,
+    MAX_PENETRATION_RATIO,
+)
+
+__all__ = [
+    # Main class
+    "PlumbingSystem",
+    # Connector extraction
+    "extract_plumbing_connectors",
+    "extract_connectors_from_json",
+    # Pipe routing
+    "calculate_pipe_routes",
+    "find_wall_entry",
+    "extract_walls_from_framing",
+    # Penetration generation
+    "generate_plumbing_penetrations",
+    "get_pipe_size_info",
+    # Constants
+    "STANDARD_PIPE_SIZES",
+    "PLUMBING_PENETRATION_CLEARANCE",
+    "MAX_PENETRATION_RATIO",
+]

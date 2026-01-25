@@ -15,10 +15,11 @@ Submodules:
 
 Example:
     >>> from src.timber_framing_generator.mep import PlumbingSystem
-    >>> from src.timber_framing_generator.mep.core import MEPDomain, MEPConnector
+    >>> from src.timber_framing_generator.mep import MEPDomain, MEPConnector
     >>>
     >>> plumbing = PlumbingSystem()
     >>> connectors = plumbing.extract_connectors(fixtures)
+    >>> routes = plumbing.calculate_routes(connectors, framing_data, [], config)
 """
 
 from src.timber_framing_generator.core.mep_system import (
@@ -28,9 +29,15 @@ from src.timber_framing_generator.core.mep_system import (
     MEPSystem,
 )
 
+# Import plumbing system
+from .plumbing import PlumbingSystem
+
 __all__ = [
+    # Core types
     "MEPDomain",
     "MEPConnector",
     "MEPRoute",
     "MEPSystem",
+    # Plumbing
+    "PlumbingSystem",
 ]

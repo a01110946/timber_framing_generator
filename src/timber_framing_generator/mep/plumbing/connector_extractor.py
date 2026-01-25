@@ -190,11 +190,10 @@ def _process_connector(
     )
 
     # Get connector direction from CoordinateSystem.BasisZ
-    # TODO: Investigate how Revit manages connector directions for different
-    # fixture types. The BasisZ may represent the family's local axis rather
-    # than the physical routing direction. Different fixtures have different
-    # pipe connection patterns (faucets from below, drains down, etc.).
-    # For now, we store the raw BasisZ for diagnostic purposes.
+    # Note: BasisZ behavior varies by system type:
+    # - Sanitary: Always (0, 0, -1) DOWN - reliable for routing
+    # - Supply: Points toward pipe source - varies by fixture
+    # The pipe_router module handles these differences appropriately.
     direction_tuple = _get_connector_direction(conn)
 
     # Get radius (for round connectors)
@@ -227,13 +226,20 @@ def _get_connector_direction(conn: Any) -> Tuple[float, float, float]:
     Get the direction vector from a Revit connector.
 
     This returns the raw CoordinateSystem.BasisZ from the connector.
-    The meaning of this vector may vary by fixture type and family authoring.
+    The meaning varies by system type (based on empirical analysis):
 
-    TODO: Investigate what BasisZ actually represents for different fixture types:
-    - Faucets: supply comes UP from below
-    - Drains: pipes go DOWN (gravity)
-    - Toilets: often horizontal flex connectors
-    - Wall-mounted vs floor-mounted fixtures differ
+    System Type Behavior:
+    - **Sanitary (drains)**: BasisZ consistently points DOWN (0, 0, -1)
+      regardless of fixture type. This is reliable for routing.
+    - **Vent**: Similar to sanitary but pipes route UP.
+    - **Supply (DomesticColdWater, DomesticHotWater)**: BasisZ points
+      toward the pipe source. This varies by fixture design:
+      - Upward-facing faucets: points DOWN toward supply
+      - Side-connected fixtures: points horizontally
+
+    Note: The pipe_router module handles these differences by using
+    get_wall_search_direction() for wall finding and
+    get_vertical_routing_direction() for vertical pipe routing.
 
     Args:
         conn: Revit Connector object

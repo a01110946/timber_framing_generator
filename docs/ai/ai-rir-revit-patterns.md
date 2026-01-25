@@ -393,8 +393,125 @@ This assembly mismatch affects ALL geometry creation:
 
 ---
 
+---
+
+## MEP Connector Direction Patterns
+
+**Discovery Date**: January 2026
+
+### Understanding Connector.CoordinateSystem.BasisZ
+
+The `BasisZ` vector from a Revit MEP connector does NOT universally indicate "pipe routing direction." Its meaning varies by **system type**:
+
+| System Type | BasisZ Behavior | Routing Implication |
+|-------------|-----------------|---------------------|
+| **Sanitary (drains)** | Always (0, 0, -1) DOWN | Reliable - route pipes DOWN |
+| **Supply (water)** | Points toward pipe source | Varies by fixture design |
+
+### Empirical Findings by Fixture Type
+
+**Kitchen Sink (Double):**
+```
+Sanitary:         BasisZ = (0, 0, -1)  → DOWN (drain)
+DomesticColdWater: BasisZ = (0, 0, -1)  → DOWN (supply from below cabinet)
+DomesticHotWater:  BasisZ = (0, 0, -1)  → DOWN (supply from below cabinet)
+```
+All connectors point DOWN - pipes come from below the cabinet.
+
+**Lavatory (Vanity Sink):**
+```
+Sanitary:         BasisZ = (0, 0, -1)  → DOWN (drain through P-trap)
+DomesticColdWater: BasisZ = (0, -1, 0) or (1, 0, 0)  → Horizontal to wall
+DomesticHotWater:  BasisZ = (0, -1, 0) or (1, 0, 0)  → Horizontal to wall
+```
+Drains go down; supply comes horizontally from wall valves.
+
+**Bathtub:**
+```
+Sanitary:         BasisZ = (0, 0, -1)  → DOWN (drain)
+DomesticColdWater: BasisZ = (0, -1, 0) or (1, 0, 0)  → Horizontal
+DomesticHotWater:  BasisZ = (0, -1, 0) or (1, 0, 0)  → Horizontal
+```
+Similar to lavatory - drains down, supply horizontal.
+
+**Toilet (Water Closet):**
+```
+Sanitary:         BasisZ = (0, 0, -1)  → DOWN (waste line)
+DomesticColdWater: BasisZ = (0, -1, 0) or (1, 0, 0)  → Horizontal to wall
+```
+Drain down to floor; supply horizontal from wall valve.
+
+### Key Insight
+
+> **For Sanitary connectors, BasisZ is reliable and always points DOWN (gravity flow). For Supply connectors, BasisZ points toward where the pipe comes FROM - this varies based on fixture design and orientation.**
+
+### Routing Strategy
+
+```python
+def get_initial_routing_direction(connector):
+    """
+    Get the initial pipe routing direction from a connector.
+
+    Returns:
+        Tuple (x, y, z) - direction to route pipe initially
+    """
+    system_type = connector.system_type.lower()
+    basis_z = connector.direction  # This is BasisZ from extraction
+
+    # Sanitary: ALWAYS route DOWN initially (gravity)
+    if 'sanitary' in system_type:
+        return (0.0, 0.0, -1.0)
+
+    # Vent: ALWAYS route UP initially
+    if 'vent' in system_type:
+        return (0.0, 0.0, 1.0)
+
+    # Supply (cold/hot water): Use BasisZ as it points toward source
+    # If pointing down → supply comes from below (route down)
+    # If pointing horizontal → supply comes from wall (route horizontal)
+    if basis_z[2] < -0.5:  # Mostly pointing down
+        return (0.0, 0.0, -1.0)
+    else:
+        # Horizontal - normalize to pure horizontal
+        x, y = basis_z[0], basis_z[1]
+        mag = (x*x + y*y) ** 0.5
+        if mag > 0.01:
+            return (x/mag, y/mag, 0.0)
+        else:
+            return (0.0, 0.0, -1.0)  # Fallback to down
+```
+
+### Route Path Construction
+
+For plumbing fixtures, the typical route is:
+
+1. **From connector** → follow initial direction
+2. **Drop/rise to routing elevation** (usually near floor level)
+3. **Horizontal run** → to nearest wall
+4. **Wall entry** → penetrate wall face
+5. **First vertical connection** → inside wall cavity
+
+```
+Fixture
+   │
+   │ (initial direction from BasisZ)
+   ▼
+   ● Routing point (below fixture)
+   │
+   │ (horizontal to wall)
+   ─────────────●───────────● Wall entry + vertical connection
+              Wall face   Inside wall
+```
+
+### FlowDirection Property
+
+The `FlowDirection` property was `None` for all tested fixtures. This appears to only be set when connectors are actually connected to pipes in Revit. It's not useful for routing unconnected fixtures.
+
+---
+
 ## Future Topics
 
 - Level assignment from Revit walls
 - Type matching strategies
 - Structural framing vs structural column classification
+- MEP system routing optimization

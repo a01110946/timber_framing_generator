@@ -299,9 +299,23 @@ def main():
         }
         debug_lines.append(f"Max search distance: {search_dist} ft")
 
+        # Analyze connectors by fixture
+        fixture_groups = {}
+        for conn in connectors:
+            fid = conn.owner_element_id or 0
+            if fid not in fixture_groups:
+                fixture_groups[fid] = []
+            fixture_groups[fid].append(conn)
+
+        debug_lines.append("")
+        debug_lines.append(f"Fixtures: {len(fixture_groups)}")
+        for fid, fconns in fixture_groups.items():
+            sys_types = set(c.system_type for c in fconns)
+            debug_lines.append(f"  Fixture {fid}: {len(fconns)} connectors ({', '.join(sys_types)})")
+
         # Calculate routes
         debug_lines.append("")
-        debug_lines.append("Calculating routes...")
+        debug_lines.append("Calculating routes with fixture-aware merging...")
 
         framing_data = {"walls": walls_list}
         routes = calculate_pipe_routes(connectors, framing_data, [], config)
@@ -312,17 +326,41 @@ def main():
             debug_lines.append("Check that fixtures are within search distance of walls")
             return routes_json, route_curves, route_points, "\n".join(debug_lines)
 
-        # Analyze routes
+        # Analyze routes by system type
         total_length = sum(route.get_length() for route in routes)
         end_types = {}
+        system_types = {}
+        path_point_counts = {}
         for route in routes:
             et = route.end_point_type
+            st = route.system_type
+            pts = len(route.path_points)
             end_types[et] = end_types.get(et, 0) + 1
+            system_types[st] = system_types.get(st, 0) + 1
+            path_point_counts[pts] = path_point_counts.get(pts, 0) + 1
 
         debug_lines.append("")
         debug_lines.append("Route summary:")
         debug_lines.append(f"  Total routes: {len(routes)}")
         debug_lines.append(f"  Total length: {total_length:.2f} ft")
+        debug_lines.append("")
+        debug_lines.append("By system type (all orthogonal segments):")
+        for st, count in system_types.items():
+            # Show routing behavior based on system type
+            if "sanitary" in st.lower():
+                behavior = "↓DROP → →MERGE → ⊥WALL → →INTO → ↓DOWN"
+            elif "vent" in st.lower():
+                behavior = "↓DROP → →MERGE → ⊥WALL → →INTO → ↑UP"
+            else:
+                # Supply water goes UP to connect to vertical risers
+                behavior = "↓DROP → →MERGE → ⊥WALL → →INTO → ↑UP"
+            debug_lines.append(f"  {st}: {count} - {behavior}")
+        debug_lines.append("")
+        debug_lines.append("Path structure:")
+        for pts, count in sorted(path_point_counts.items()):
+            debug_lines.append(f"  {pts}-point paths: {count}")
+        debug_lines.append("")
+        debug_lines.append("By end type:")
         for et, count in end_types.items():
             debug_lines.append(f"  {et}: {count}")
 

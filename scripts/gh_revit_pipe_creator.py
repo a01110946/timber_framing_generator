@@ -311,22 +311,44 @@ def get_pipe_end_connector(pipe, at_end=True):
     Returns:
         Connector or None
     """
-    connectors = pipe.ConnectorManager.Connectors
+    try:
+        conn_manager = pipe.ConnectorManager
+        if conn_manager is None:
+            log_info(f"    Pipe {pipe.Id.IntegerValue} has no ConnectorManager")
+            return None
 
-    # Get pipe curve to determine start/end
-    curve = pipe.Location.Curve
-    target_point = curve.GetEndPoint(1) if at_end else curve.GetEndPoint(0)
+        connectors = conn_manager.Connectors
+        if connectors is None:
+            log_info(f"    Pipe {pipe.Id.IntegerValue} has no Connectors")
+            return None
 
-    closest_conn = None
-    closest_dist = float('inf')
+        # Get pipe curve to determine start/end
+        location = pipe.Location
+        if location is None:
+            log_info(f"    Pipe {pipe.Id.IntegerValue} has no Location")
+            return None
 
-    for conn in connectors:
-        dist = conn.Origin.DistanceTo(target_point)
-        if dist < closest_dist:
-            closest_dist = dist
-            closest_conn = conn
+        curve = location.Curve
+        if curve is None:
+            log_info(f"    Pipe {pipe.Id.IntegerValue} has no Curve")
+            return None
 
-    return closest_conn
+        target_point = curve.GetEndPoint(1) if at_end else curve.GetEndPoint(0)
+
+        closest_conn = None
+        closest_dist = float('inf')
+
+        for conn in connectors:
+            dist = conn.Origin.DistanceTo(target_point)
+            if dist < closest_dist:
+                closest_dist = dist
+                closest_conn = conn
+
+        return closest_conn
+
+    except Exception as e:
+        log_info(f"    get_pipe_end_connector error: {e}")
+        return None
 
 
 def create_pipe_element(doc, segment, pipe_type_id, system_type_id, level_id):
@@ -424,20 +446,27 @@ def create_elbow_fitting(doc, pipe1, pipe2):
         conn2 = get_pipe_end_connector(pipe2, at_end=False)
 
         if conn1 is None or conn2 is None:
-            log_info("Could not find connectors for elbow - skipping")
+            log_info(f"  Elbow: Could not find connectors (conn1={conn1}, conn2={conn2})")
             return None
 
         # Check if connectors are already connected
-        if conn1.IsConnected or conn2.IsConnected:
-            log_info("Connector already connected - skipping elbow")
+        if conn1.IsConnected:
+            log_info(f"  Elbow: conn1 already connected")
+            return None
+        if conn2.IsConnected:
+            log_info(f"  Elbow: conn2 already connected")
             return None
 
+        # Log connector info for debugging
+        dist = conn1.Origin.DistanceTo(conn2.Origin)
+        log_info(f"  Elbow: Creating between pipes {pipe1.Id.IntegerValue} and {pipe2.Id.IntegerValue}, dist={dist:.4f}")
+
         fitting = doc.Create.NewElbowFitting(conn1, conn2)
+        log_info(f"  Elbow: Created fitting Id {fitting.Id.IntegerValue}")
         return fitting
 
     except Exception as e:
-        # Don't log as warning - fitting failures are common and non-critical
-        log_info(f"Elbow fitting skipped: {e}")
+        log_info(f"  Elbow: FAILED - {e}")
         return None
 
 
@@ -464,11 +493,11 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe):
         branch_conn = get_pipe_end_connector(branch_pipe, at_end=True)
 
         if branch_conn is None:
-            log_info("Could not find branch connector for tee - skipping")
+            log_info(f"  Tee: Could not find branch connector")
             return None
 
         if branch_conn.IsConnected:
-            log_info("Branch connector already connected - skipping tee")
+            log_info(f"  Tee: Branch connector already connected")
             return None
 
         # Find closest connector on trunk pipe
@@ -476,23 +505,27 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe):
         closest_conn = None
         closest_dist = float('inf')
 
+        conn_count = 0
         for conn in trunk_connectors:
+            conn_count += 1
             if not conn.IsConnected:  # Only consider unconnected connectors
                 dist = conn.Origin.DistanceTo(branch_conn.Origin)
                 if dist < closest_dist:
                     closest_dist = dist
                     closest_conn = conn
 
+        log_info(f"  Tee: Trunk pipe {trunk_pipe.Id.IntegerValue} has {conn_count} connectors, closest_dist={closest_dist:.4f}")
+
         if closest_conn is None:
-            log_info("Could not find unconnected trunk connector for tee - skipping")
+            log_info(f"  Tee: Could not find unconnected trunk connector")
             return None
 
         fitting = doc.Create.NewTeeFitting(branch_conn, closest_conn)
+        log_info(f"  Tee: Created fitting Id {fitting.Id.IntegerValue}")
         return fitting
 
     except Exception as e:
-        # Don't log as warning - tee failures are common and non-critical
-        log_info(f"Tee fitting skipped: {e}")
+        log_info(f"  Tee: FAILED - {e}")
         return None
 
 # =============================================================================

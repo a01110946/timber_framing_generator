@@ -50,7 +50,9 @@ Input Requirements:
         Access: Item
 
     create_fittings (fittings) - bool:
-        Create elbows at corners (default: True)
+        Create elbows at corners (default: False)
+        WARNING: Fitting creation can cause Revit errors due to pipe
+        direction/flow issues. Leave False until pipes are verified.
         Required: No
         Access: Item
 
@@ -389,20 +391,33 @@ def create_elbow_fitting(doc, pipe1, pipe2):
 
     Returns:
         Fitting element or None
+
+    Note:
+        Elbow fitting creation can fail due to:
+        - Pipe direction/flow issues
+        - Non-perpendicular pipes
+        - Incompatible pipe sizes
+        Errors are logged but don't stop execution.
     """
     try:
         conn1 = get_pipe_end_connector(pipe1, at_end=True)
         conn2 = get_pipe_end_connector(pipe2, at_end=False)
 
         if conn1 is None or conn2 is None:
-            log_warning("Could not find connectors for elbow")
+            log_info("Could not find connectors for elbow - skipping")
+            return None
+
+        # Check if connectors are already connected
+        if conn1.IsConnected or conn2.IsConnected:
+            log_info("Connector already connected - skipping elbow")
             return None
 
         fitting = doc.Create.NewElbowFitting(conn1, conn2)
         return fitting
 
     except Exception as e:
-        log_warning(f"Failed to create elbow fitting: {e}")
+        # Don't log as warning - fitting failures are common and non-critical
+        log_info(f"Elbow fitting skipped: {e}")
         return None
 
 
@@ -416,13 +431,24 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe):
 
     Returns:
         Fitting element or None
+
+    Note:
+        Tee fitting creation is complex and can fail due to:
+        - Flow direction mismatches
+        - Connector not at correct location on trunk
+        - Pipe size incompatibilities
+        Errors are logged but don't stop execution.
     """
     try:
         # Get end connector of branch
         branch_conn = get_pipe_end_connector(branch_pipe, at_end=True)
 
         if branch_conn is None:
-            log_warning("Could not find branch connector for tee")
+            log_info("Could not find branch connector for tee - skipping")
+            return None
+
+        if branch_conn.IsConnected:
+            log_info("Branch connector already connected - skipping tee")
             return None
 
         # Find closest connector on trunk pipe
@@ -431,20 +457,22 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe):
         closest_dist = float('inf')
 
         for conn in trunk_connectors:
-            dist = conn.Origin.DistanceTo(branch_conn.Origin)
-            if dist < closest_dist:
-                closest_dist = dist
-                closest_conn = conn
+            if not conn.IsConnected:  # Only consider unconnected connectors
+                dist = conn.Origin.DistanceTo(branch_conn.Origin)
+                if dist < closest_dist:
+                    closest_dist = dist
+                    closest_conn = conn
 
         if closest_conn is None:
-            log_warning("Could not find trunk connector for tee")
+            log_info("Could not find unconnected trunk connector for tee - skipping")
             return None
 
         fitting = doc.Create.NewTeeFitting(branch_conn, closest_conn)
         return fitting
 
     except Exception as e:
-        log_warning(f"Failed to create tee fitting: {e}")
+        # Don't log as warning - tee failures are common and non-critical
+        log_info(f"Tee fitting skipped: {e}")
         return None
 
 # =============================================================================
@@ -491,10 +519,14 @@ def create_pipes_from_network(doc, network, pipe_type_id, level_id, do_fittings)
 
     # Create elbows between trunk segments
     if do_fittings and len(trunk_pipes) > 1:
+        debug.append(f"Attempting {len(trunk_pipes)-1} trunk elbows...")
         for i in range(len(trunk_pipes) - 1):
-            fitting = create_elbow_fitting(doc, trunk_pipes[i], trunk_pipes[i+1])
-            if fitting is not None:
-                fittings.append(fitting)
+            try:
+                fitting = create_elbow_fitting(doc, trunk_pipes[i], trunk_pipes[i+1])
+                if fitting is not None:
+                    fittings.append(fitting)
+            except Exception as e:
+                debug.append(f"  Trunk elbow {i} failed: {e}")
 
     # Create branch pipes (unique per connector)
     all_branch_pipes = []
@@ -511,21 +543,29 @@ def create_pipes_from_network(doc, network, pipe_type_id, level_id, do_fittings)
 
         # Create elbows between branch segments
         if do_fittings and len(branch_pipes) > 1:
+            debug.append(f"  Attempting {len(branch_pipes)-1} branch elbows...")
             for i in range(len(branch_pipes) - 1):
-                fitting = create_elbow_fitting(doc, branch_pipes[i], branch_pipes[i+1])
-                if fitting is not None:
-                    fittings.append(fitting)
+                try:
+                    fitting = create_elbow_fitting(doc, branch_pipes[i], branch_pipes[i+1])
+                    if fitting is not None:
+                        fittings.append(fitting)
+                except Exception as e:
+                    debug.append(f"    Branch elbow {i} failed: {e}")
 
     # Create tee fittings at merge point
     if do_fittings and network.needs_tee_fitting() and len(trunk_pipes) > 0:
+        debug.append("Attempting tee fittings at merge point...")
         first_trunk_pipe = trunk_pipes[0]
-        for branch_pipes in all_branch_pipes:
-            if len(branch_pipes) > 0:
-                last_branch_pipe = branch_pipes[-1]
-                fitting = create_tee_fitting(doc, last_branch_pipe, first_trunk_pipe)
-                if fitting is not None:
-                    fittings.append(fitting)
-                    debug.append("Created tee fitting at merge point")
+        for bi, branch_pipes_list in enumerate(all_branch_pipes):
+            if len(branch_pipes_list) > 0:
+                try:
+                    last_branch_pipe = branch_pipes_list[-1]
+                    fitting = create_tee_fitting(doc, last_branch_pipe, first_trunk_pipe)
+                    if fitting is not None:
+                        fittings.append(fitting)
+                        debug.append(f"  Created tee fitting for branch {bi}")
+                except Exception as e:
+                    debug.append(f"  Tee fitting for branch {bi} failed: {e}")
 
     return pipes, fittings, debug
 
@@ -639,34 +679,60 @@ def main():
         # Start transaction
         debug_lines.append("")
         debug_lines.append("Creating pipes in Revit...")
+        debug_lines.append(f"Fittings enabled: {create_fittings}")
 
         t = Transaction(doc, "Create Plumbing Pipes")
         t.Start()
 
+        networks_succeeded = 0
+        networks_failed = 0
+
         try:
-            # Process each network
+            # Process each network with individual error handling
             for network in networks:
                 debug_lines.append("")
                 debug_lines.append(f"Network: Fixture {network.fixture_id} - {network.system_type}")
 
-                pipes, fittings, net_debug = create_pipes_from_network(
-                    doc, network, pipe_type_id, level_id, create_fittings
-                )
+                try:
+                    pipes, fittings, net_debug = create_pipes_from_network(
+                        doc, network, pipe_type_id, level_id, create_fittings
+                    )
 
-                created_pipes.extend(pipes)
-                created_fittings.extend(fittings)
-                debug_lines.extend(net_debug)
+                    created_pipes.extend(pipes)
+                    created_fittings.extend(fittings)
+                    debug_lines.extend(net_debug)
 
-            # Commit transaction
-            t.Commit()
-            debug_lines.append("")
-            debug_lines.append("Transaction committed successfully")
+                    if len(pipes) > 0:
+                        networks_succeeded += 1
+                    else:
+                        networks_failed += 1
+                        debug_lines.append("  No pipes created for this network")
+
+                except Exception as net_error:
+                    networks_failed += 1
+                    debug_lines.append(f"  ERROR processing network: {net_error}")
+                    log_warning(f"Network {network.fixture_id} {network.system_type} failed: {net_error}")
+                    # Continue with other networks
+
+            # Only commit if we created something
+            if len(created_pipes) > 0:
+                t.Commit()
+                debug_lines.append("")
+                debug_lines.append("Transaction committed successfully")
+            else:
+                t.RollBack()
+                debug_lines.append("")
+                debug_lines.append("Transaction rolled back - no pipes created")
 
         except Exception as e:
-            t.RollBack()
+            if t.HasStarted():
+                t.RollBack()
             debug_lines.append(f"ERROR: Transaction rolled back: {e}")
             debug_lines.append(traceback.format_exc())
             return created_pipes, created_fittings, creation_json, "\n".join(debug_lines)
+
+        debug_lines.append(f"Networks succeeded: {networks_succeeded}")
+        debug_lines.append(f"Networks failed: {networks_failed}")
 
         # Build output JSON
         output_data = {
@@ -712,7 +778,7 @@ if 'level' not in dir():
     level = None
 
 if 'create_fittings' not in dir():
-    create_fittings = True
+    create_fittings = False  # Disabled by default - can cause Revit crashes
 
 # Execute main and assign to output variables
 created_pipes, created_fittings, creation_json, debug_info = main()

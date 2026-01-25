@@ -218,8 +218,6 @@ class RhinoCommonFactory:
         Returns:
             PolylineCurve from RhinoCommon assembly
         """
-        from System import Array
-
         if not points or len(points) < 2:
             return None
 
@@ -235,14 +233,13 @@ class RhinoCommonFactory:
             else:
                 rc_points.append(pt)
 
-        # Create Point3d array
-        Point3d_Type = self._get_type("Point3d")
-        point_array = Array.CreateInstance(Point3d_Type, len(rc_points))
-        for i, pt in enumerate(rc_points):
-            point_array[i] = pt
+        # Create Polyline by adding points one at a time
+        # (avoids constructor overload issues with Activator.CreateInstance)
+        polyline = self._create_instance("Polyline")
+        for pt in rc_points:
+            polyline.Add(pt)
 
-        # Create Polyline from points, then PolylineCurve
-        polyline = self._create_instance("Polyline", point_array)
+        # Create PolylineCurve from Polyline
         return self._create_instance("PolylineCurve", polyline)
 
     def create_circle(

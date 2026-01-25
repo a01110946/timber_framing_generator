@@ -588,29 +588,23 @@ class TimberFramingStrategy(FramingStrategy):
                 logger.debug("No openings to process")
                 return elements
 
-            # Headers
+            # Headers - use same profile as blocking (2x4 for timber)
             logger.debug(f"Creating headers for {len(openings)} openings")
-            # Create custom header profile using actual FRAMING_PARAMS dimensions
-            # The geometry factory swaps width/depth for horizontal members:
-            #   - profile.width -> becomes vertical dimension
-            #   - profile.depth -> becomes wall-thickness dimension
-            from src.timber_framing_generator.config.framing import FRAMING_PARAMS
-            header_height = FRAMING_PARAMS.get("header_height", 7.0 / 12)  # 7" vertical
-            header_depth = FRAMING_PARAMS.get("header_depth", 3.5 / 12)   # 3.5" into wall
-            header_profile = ElementProfile(
-                name="header",
-                width=header_height,   # vertical dimension (will be swapped to vertical)
-                depth=header_depth,    # wall-thickness (will be swapped to through-wall)
-                material_system=MaterialSystem.TIMBER,
-                properties={"description": "Custom header profile from FRAMING_PARAMS"}
-            )
-            logger.info(f"Header profile: width={header_profile.width*12}in (vertical), depth={header_profile.depth*12}in (into wall)")
+            header_profile = self.get_profile(ElementType.ROW_BLOCKING, config)
+            logger.info(f"Header profile: {header_profile.name} (same as blocking)")
+            logger.info(f"  Profile dimensions: width={header_profile.width*12}in, depth={header_profile.depth*12}in")
             header_gen = HeaderGenerator(rhino_wall_data)
 
             header_breps = []
             for i, opening in enumerate(openings):
                 try:
-                    header = header_gen.generate_header(opening)
+                    # Pass actual profile dimensions to generate correct geometry
+                    # For horizontal members: width = vertical dimension, depth = into wall
+                    header = header_gen.generate_header(
+                        opening,
+                        profile_height=header_profile.width,  # vertical dimension
+                        profile_depth=header_profile.depth,   # into wall
+                    )
                     if header:
                         header_breps.append(header)
                         elem = brep_to_framing_element(

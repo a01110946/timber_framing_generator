@@ -42,6 +42,8 @@ class HeaderGenerator:
         self,
         opening_data: Dict[str, Any],
         king_stud_positions: Optional[Tuple[float, float]] = None,
+        profile_height: Optional[float] = None,
+        profile_depth: Optional[float] = None,
     ) -> Optional[rg.Brep]:
         """
         Generate a header above an opening.
@@ -49,13 +51,17 @@ class HeaderGenerator:
         This method creates a header based on:
         1. The opening data for positioning and dimensions
         2. Optional king stud positions for span length
-        3. Wall type for appropriate profile selection
+        3. Profile dimensions for sizing
 
         Args:
             opening_data: Dictionary with opening information
             king_stud_positions: Optional tuple of (left, right) u-coordinates
                                  If not provided, calculated from opening width
                                  plus configured offsets
+            profile_height: Optional height (vertical dimension) of header profile.
+                           If not provided, uses FRAMING_PARAMS["header_height"].
+            profile_depth: Optional depth (into wall) of header profile.
+                          If not provided, uses FRAMING_PARAMS["header_depth"].
 
         Returns:
             Header geometry as a Rhino Brep
@@ -93,20 +99,27 @@ class HeaderGenerator:
                 logger.warning("No base plane available for header generation")
                 return None
 
-            # Calculate header dimensions from framing parameters
-            # Uses wall_data config if available (for material-specific dimensions)
+            # Calculate header dimensions
+            # Use provided profile dimensions if available, otherwise fall back to FRAMING_PARAMS
             king_stud_offset = get_framing_param("king_stud_offset", self.wall_data, 1.5 / 12 / 2)
-            header_width = get_framing_param(
-                "header_depth", self.wall_data, 5.5 / 12
-            )  # Through wall thickness
-            header_height = get_framing_param(
-                "header_height", self.wall_data, 7.0 / 12
-            )  # Vertical dimension
+
+            if profile_depth is not None:
+                header_width = profile_depth  # Through wall thickness
+                logger.debug(f"Using provided profile_depth: {profile_depth}")
+            else:
+                header_width = get_framing_param("header_depth", self.wall_data, 5.5 / 12)
+
+            if profile_height is not None:
+                header_height = profile_height  # Vertical dimension
+                logger.debug(f"Using provided profile_height: {profile_height}")
+            else:
+                header_height = get_framing_param("header_height", self.wall_data, 7.0 / 12)
+
             header_height_above_opening = get_framing_param(
                 "header_height_above_opening", self.wall_data, 0.0
             )  # Distance above opening
 
-            logger.info("Header dimensions (wall_data config or FRAMING_PARAMS):")
+            logger.info("Header dimensions:")
             logger.info(f"  header_width (depth into wall): {header_width} ft = {header_width * 12} in")
             logger.info(f"  header_height (vertical): {header_height} ft = {header_height * 12} in")
             logger.info(f"  height_above_opening: {header_height_above_opening}")

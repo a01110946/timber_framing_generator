@@ -435,11 +435,9 @@ def create_elbow_fitting(doc, pipe1, pipe2):
         Fitting element or None
 
     Note:
-        Elbow fitting creation can fail due to:
-        - Pipe direction/flow issues
-        - Non-perpendicular pipes
-        - Incompatible pipe sizes
-        Errors are logged but don't stop execution.
+        Tries multiple approaches:
+        1. NewElbowFitting - requires fitting families loaded
+        2. Connector.ConnectTo - may auto-insert fittings
     """
     try:
         conn1 = get_pipe_end_connector(pipe1, at_end=True)
@@ -459,11 +457,28 @@ def create_elbow_fitting(doc, pipe1, pipe2):
 
         # Log connector info for debugging
         dist = conn1.Origin.DistanceTo(conn2.Origin)
-        log_info(f"  Elbow: Creating between pipes {pipe1.Id.IntegerValue} and {pipe2.Id.IntegerValue}, dist={dist:.4f}")
+        log_info(f"  Elbow: Pipes {pipe1.Id.IntegerValue} -> {pipe2.Id.IntegerValue}, dist={dist:.4f}")
 
-        fitting = doc.Create.NewElbowFitting(conn1, conn2)
-        log_info(f"  Elbow: Created fitting Id {fitting.Id.IntegerValue}")
-        return fitting
+        # Try Method 1: NewElbowFitting
+        try:
+            fitting = doc.Create.NewElbowFitting(conn1, conn2)
+            if fitting is not None:
+                log_info(f"  Elbow: Created fitting Id {fitting.Id.IntegerValue}")
+                return fitting
+        except Exception as e1:
+            log_info(f"  Elbow: NewElbowFitting failed - {e1}")
+
+        # Try Method 2: Direct connector connection
+        # This may auto-insert a fitting if routing preferences allow
+        try:
+            conn1.ConnectTo(conn2)
+            if conn1.IsConnected:
+                log_info(f"  Elbow: Connected via ConnectTo (fitting may be auto-inserted)")
+                return "connected"  # Return non-None to indicate success
+        except Exception as e2:
+            log_info(f"  Elbow: ConnectTo failed - {e2}")
+
+        return None
 
     except Exception as e:
         log_info(f"  Elbow: FAILED - {e}")
@@ -482,11 +497,8 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe):
         Fitting element or None
 
     Note:
-        Tee fitting creation is complex and can fail due to:
-        - Flow direction mismatches
-        - Connector not at correct location on trunk
-        - Pipe size incompatibilities
-        Errors are logged but don't stop execution.
+        NewTeeFitting requires 3 connectors (two trunk ends + branch).
+        Since we create separate pipe segments, we try ConnectTo instead.
     """
     try:
         # Get end connector of branch
@@ -514,15 +526,23 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe):
                     closest_dist = dist
                     closest_conn = conn
 
-        log_info(f"  Tee: Trunk pipe {trunk_pipe.Id.IntegerValue} has {conn_count} connectors, closest_dist={closest_dist:.4f}")
+        log_info(f"  Tee: Branch {branch_pipe.Id.IntegerValue} -> Trunk {trunk_pipe.Id.IntegerValue}, dist={closest_dist:.4f}")
 
         if closest_conn is None:
             log_info(f"  Tee: Could not find unconnected trunk connector")
             return None
 
-        fitting = doc.Create.NewTeeFitting(branch_conn, closest_conn)
-        log_info(f"  Tee: Created fitting Id {fitting.Id.IntegerValue}")
-        return fitting
+        # NewTeeFitting needs 3 connectors - doesn't work for our case
+        # Try direct connection instead
+        try:
+            branch_conn.ConnectTo(closest_conn)
+            if branch_conn.IsConnected:
+                log_info(f"  Tee: Connected via ConnectTo")
+                return "connected"
+        except Exception as e2:
+            log_info(f"  Tee: ConnectTo failed - {e2}")
+
+        return None
 
     except Exception as e:
         log_info(f"  Tee: FAILED - {e}")

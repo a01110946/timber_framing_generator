@@ -673,10 +673,15 @@ class StudGenerator:
 
             # Create end point at top elevation (Z = top_v)
             end_point = rg.Point3d(point_along_wall.X, point_along_wall.Y, top_v)
-            
+
             logger.debug(f"Centerline start point: ({start_point.X}, {start_point.Y}, {start_point.Z})")
             logger.debug(f"Centerline end point: ({end_point.X}, {end_point.Y}, {end_point.Z})")
             print(f"      Stud centerline: start=({start_point.X:.2f}, {start_point.Y:.2f}, {start_point.Z:.2f}) end=({end_point.X:.2f}, {end_point.Y:.2f}, {end_point.Z:.2f})")
+
+            # DEBUG: Show base_plane origin and wall normal for alignment verification
+            print(f"      DEBUG ALIGNMENT: base_plane.Origin=({base_plane.Origin.X:.4f}, {base_plane.Origin.Y:.4f}, {base_plane.Origin.Z:.4f})")
+            print(f"      DEBUG ALIGNMENT: wall_normal (ZAxis)=({base_plane.ZAxis.X:.4f}, {base_plane.ZAxis.Y:.4f}, {base_plane.ZAxis.Z:.4f})")
+            print(f"      DEBUG ALIGNMENT: stud at u={u_coordinate:.4f}, XY=({start_point.X:.4f}, {start_point.Y:.4f})")
 
             # Create the centerline as a curve
             # Convert to NurbsCurve to ensure proper type for SweepOneRail.PerformSweep()

@@ -36,8 +36,12 @@ Input Requirements:
         Access: Item
 
     pipe_type (pipe_type) - Revit PipeType:
-        Pipe type from RiR Type Picker
-        Required: Yes
+        Pipe type from RiR Type Picker.
+        IMPORTANT: This must be a PipeType (physical pipe configuration like
+        "Standard", "Copper", "PVC"), NOT a PipingSystemType (like "Domestic
+        Cold Water" or "Sanitary").
+        Use: Element Type Picker > Category: Pipe Types
+        Required: No (will use first available if not provided)
         Access: Item
 
     level (level) - Revit Level:
@@ -200,6 +204,75 @@ def setup_component():
 # Revit Helper Functions
 # =============================================================================
 
+def get_available_pipe_types(doc):
+    """Get all available PipeType elements in the document.
+
+    Returns:
+        List of (name, ElementId) tuples
+    """
+    from Autodesk.Revit.DB.Plumbing import PipeType
+
+    collector = FilteredElementCollector(doc)
+    pipe_types = collector.OfClass(PipeType).ToElements()
+
+    return [(pt.Name, pt.Id) for pt in pipe_types]
+
+
+def validate_pipe_type(doc, pipe_type_element):
+    """Validate that the input is actually a PipeType.
+
+    Args:
+        doc: Revit document
+        pipe_type_element: Element from RiR Type Picker
+
+    Returns:
+        tuple: (is_valid, error_message, pipe_type_id)
+    """
+    from Autodesk.Revit.DB.Plumbing import PipeType
+
+    if pipe_type_element is None:
+        return False, "No pipe_type provided", None
+
+    # Debug: show what type we received
+    element_clr_type = pipe_type_element.GetType()
+    log_info(f"pipe_type input CLR type: {element_clr_type.FullName}")
+
+    # Get the actual element from document to verify
+    try:
+        element_id = pipe_type_element.Id
+        log_info(f"pipe_type.Id = {element_id.IntegerValue}")
+
+        element = doc.GetElement(element_id)
+
+        if element is None:
+            return False, f"Could not find element with Id {element_id.IntegerValue}", None
+
+        element_type_name = element.GetType().Name
+        log_info(f"Element from doc: {element_type_name}")
+
+        # Check if it's a PipeType
+        if isinstance(element, PipeType):
+            log_info(f"Validated as PipeType: {element.Name}")
+            return True, None, element_id
+
+        # It's not a PipeType - provide helpful error
+        actual_type = element.GetType().Name
+        available = get_available_pipe_types(doc)
+        available_names = [name for name, _ in available]
+
+        error_msg = (
+            f"Input is a {actual_type}, not a PipeType.\n"
+            f"Element name: {pipe_type_element.Name}\n"
+            f"Available PipeTypes in document: {', '.join(available_names)}\n"
+            f"Use a Type Picker filtered to 'Pipe Types' category."
+        )
+        return False, error_msg, None
+
+    except Exception as e:
+        import traceback
+        return False, f"Error validating pipe type: {e}\n{traceback.format_exc()}", None
+
+
 def get_piping_system_type(doc, system_type_name):
     """Get PipingSystemType by name.
 
@@ -279,9 +352,13 @@ def create_pipe_element(doc, segment, pipe_type_id, system_type_id, level_id):
         )
 
         # Check for zero-length pipe
-        if start_xyz.DistanceTo(end_xyz) < 0.01:  # Less than 0.01 ft
+        length = start_xyz.DistanceTo(end_xyz)
+        if length < 0.01:  # Less than 0.01 ft
             log_warning(f"Skipping zero-length segment in route {segment.route_id}")
             return None
+
+        log_info(f"Creating pipe: {segment.start_point} -> {segment.end_point} (len={length:.3f})")
+        log_info(f"  system_type_id={system_type_id.IntegerValue}, pipe_type_id={pipe_type_id.IntegerValue}, level_id={level_id.IntegerValue}")
 
         pipe = Pipe.Create(
             doc,
@@ -292,10 +369,13 @@ def create_pipe_element(doc, segment, pipe_type_id, system_type_id, level_id):
             end_xyz
         )
 
+        log_info(f"  Created pipe Id: {pipe.Id.IntegerValue}")
         return pipe
 
     except Exception as e:
         log_warning(f"Failed to create pipe segment: {e}")
+        log_info(f"  Segment: {segment.start_point} -> {segment.end_point}")
+        log_info(f"  IDs: system={system_type_id.IntegerValue}, pipe={pipe_type_id.IntegerValue}, level={level_id.IntegerValue}")
         return None
 
 
@@ -464,8 +544,7 @@ def validate_inputs():
     if not routes_json:
         return False, "No routes_json provided"
 
-    if pipe_type is None:
-        return False, "No pipe_type provided (use RiR Type Picker)"
+    # pipe_type is optional - will use first available if not provided
 
     if level is None:
         return False, "No level provided (use RiR Level Picker)"
@@ -506,11 +585,39 @@ def main():
 
         debug_lines.append(f"Document: {doc.Title}")
 
-        # Get element IDs
-        pipe_type_id = pipe_type.Id
+        # Show available pipe types for debugging
+        available_pipe_types = get_available_pipe_types(doc)
+        debug_lines.append("")
+        debug_lines.append(f"Available PipeTypes in document: {len(available_pipe_types)}")
+        for pt_name, pt_id in available_pipe_types:
+            debug_lines.append(f"  - {pt_name} (Id: {pt_id.IntegerValue})")
+
+        # Validate pipe type input
+        pipe_type_name = "Unknown"
+        if pipe_type is not None:
+            is_valid_type, type_error, pipe_type_id = validate_pipe_type(doc, pipe_type)
+            if not is_valid_type:
+                debug_lines.append("")
+                debug_lines.append(f"ERROR: Invalid pipe_type input")
+                debug_lines.append(type_error)
+                log_error(type_error)
+                return created_pipes, created_fittings, creation_json, "\n".join(debug_lines)
+            pipe_type_name = pipe_type.Name
+        else:
+            # No pipe_type provided - use first available
+            if len(available_pipe_types) > 0:
+                pipe_type_name, pipe_type_id = available_pipe_types[0]
+                debug_lines.append("")
+                debug_lines.append(f"No pipe_type input - using first available: {pipe_type_name}")
+            else:
+                debug_lines.append("")
+                debug_lines.append("ERROR: No pipe_type provided and no PipeTypes found in document")
+                return created_pipes, created_fittings, creation_json, "\n".join(debug_lines)
+
         level_id = level.Id
 
-        debug_lines.append(f"Pipe Type: {pipe_type.Name}")
+        debug_lines.append("")
+        debug_lines.append(f"Using Pipe Type: {pipe_type_name} (Id: {pipe_type_id.IntegerValue})")
         debug_lines.append(f"Level: {level.Name}")
         debug_lines.append(f"Create Fittings: {create_fittings}")
 

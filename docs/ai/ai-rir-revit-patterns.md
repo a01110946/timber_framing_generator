@@ -509,9 +509,181 @@ The `FlowDirection` property was `None` for all tested fixtures. This appears to
 
 ---
 
+## MEP Pipe Creation Patterns
+
+**Discovery Date**: January 2026
+
+### Creating Pipes with Revit API
+
+Revit pipes are created using `Autodesk.Revit.DB.Plumbing.Pipe.Create()`:
+
+```python
+from Autodesk.Revit.DB import XYZ, Transaction
+from Autodesk.Revit.DB.Plumbing import Pipe
+
+def create_pipe(doc, start, end, pipe_type_id, system_type_id, level_id):
+    """Create a single pipe segment."""
+    start_xyz = XYZ(start[0], start[1], start[2])
+    end_xyz = XYZ(end[0], end[1], end[2])
+
+    pipe = Pipe.Create(
+        doc,
+        system_type_id,   # PipingSystemType ElementId
+        pipe_type_id,     # PipeType ElementId
+        level_id,         # Level ElementId
+        start_xyz,
+        end_xyz
+    )
+    return pipe
+```
+
+### Required ElementIds
+
+| Parameter | Source | How to Get |
+|-----------|--------|------------|
+| `system_type_id` | PipingSystemType | `FilteredElementCollector(doc).OfClass(PipingSystemType)` |
+| `pipe_type_id` | PipeType | RiR Type Picker component |
+| `level_id` | Level | RiR Level Picker component |
+
+### System Type Mapping
+
+Map internal system type names to Revit piping system names:
+
+```python
+SYSTEM_TYPE_MAPPING = {
+    "Sanitary": "Sanitary",
+    "DomesticColdWater": "Domestic Cold Water",
+    "DomesticHotWater": "Domestic Hot Water",
+    "Vent": "Sanitary Vent",
+}
+
+def get_piping_system_type(doc, system_type_name):
+    """Find PipingSystemType by name."""
+    collector = FilteredElementCollector(doc)
+    system_types = collector.OfClass(PipingSystemType).ToElements()
+
+    for st in system_types:
+        if st.Name == system_type_name:
+            return st
+        # Partial match fallback
+        if system_type_name.lower() in st.Name.lower():
+            return st
+
+    return None
+```
+
+### Transaction Management
+
+All Revit modifications must be wrapped in a transaction:
+
+```python
+from RhinoInside.Revit import Revit
+
+doc = Revit.ActiveDBDocument
+t = Transaction(doc, "Create Plumbing Pipes")
+t.Start()
+
+try:
+    # Create pipes and fittings here
+    for segment in segments:
+        pipe = create_pipe(doc, segment.start, segment.end, ...)
+        pipes.append(pipe)
+
+    t.Commit()
+except Exception as e:
+    t.RollBack()
+    raise
+```
+
+### Creating Fittings
+
+**Elbow Fittings** (at 90° corners):
+
+```python
+def create_elbow(doc, pipe1, pipe2):
+    """Create elbow fitting between two pipes."""
+    # Get end connector of first pipe
+    conn1 = get_pipe_end_connector(pipe1, at_end=True)
+    # Get start connector of second pipe
+    conn2 = get_pipe_end_connector(pipe2, at_end=False)
+
+    fitting = doc.Create.NewElbowFitting(conn1, conn2)
+    return fitting
+```
+
+**Tee Fittings** (at merge points):
+
+```python
+def create_tee(doc, branch_pipe, trunk_pipe):
+    """Create tee fitting at merge point."""
+    branch_conn = get_pipe_end_connector(branch_pipe, at_end=True)
+
+    # Find closest connector on trunk pipe
+    trunk_connectors = trunk_pipe.ConnectorManager.Connectors
+    closest_conn = min(trunk_connectors,
+                       key=lambda c: c.Origin.DistanceTo(branch_conn.Origin))
+
+    fitting = doc.Create.NewTeeFitting(branch_conn, closest_conn)
+    return fitting
+```
+
+### Getting Pipe Connectors
+
+```python
+def get_pipe_end_connector(pipe, at_end=True):
+    """Get connector at pipe start or end."""
+    curve = pipe.Location.Curve
+    target_point = curve.GetEndPoint(1 if at_end else 0)
+
+    connectors = pipe.ConnectorManager.Connectors
+    closest_conn = None
+    closest_dist = float('inf')
+
+    for conn in connectors:
+        dist = conn.Origin.DistanceTo(target_point)
+        if dist < closest_dist:
+            closest_dist = dist
+            closest_conn = conn
+
+    return closest_conn
+```
+
+### Branch/Trunk Topology for Merged Routes
+
+When multiple connectors merge (e.g., double sink drains), avoid creating duplicate pipes:
+
+```
+Route 1: Connector1 → Drop → MERGE → Wall → Down
+Route 2: Connector2 → Drop → MERGE → Wall → Down
+                             ↑
+                    Shared from here!
+```
+
+**Solution**: Use `PipeNetwork` data structure:
+
+```python
+@dataclass
+class PipeNetwork:
+    branches: List[List[PipeSegment]]  # Unique per connector
+    trunk: List[PipeSegment]            # Shared after merge
+    merge_point: Optional[Tuple]        # T-fitting location
+
+# Creation order:
+# 1. Create trunk pipes first (shared segments)
+# 2. Create branch pipes (unique per connector)
+# 3. Create T-fittings connecting branches to trunk
+# 4. Create elbows at corners
+```
+
+### Key Insight
+
+> **For multi-connector fixtures, build a pipe network that identifies branch vs trunk segments. Create trunk segments ONCE, branches for each connector, then connect with T-fittings at merge points.**
+
+---
+
 ## Future Topics
 
 - Level assignment from Revit walls
 - Type matching strategies
 - Structural framing vs structural column classification
-- MEP system routing optimization
+- ~~MEP system routing optimization~~ (completed: orthogonal routing with fixture merging)

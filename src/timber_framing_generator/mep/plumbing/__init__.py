@@ -37,6 +37,17 @@ from .penetration_rules import (
     PLUMBING_PENETRATION_CLEARANCE,
     MAX_PENETRATION_RATIO,
 )
+from .pipe_creator import (
+    PipeSegment,
+    PipeNetwork,
+    parse_routes_json,
+    parse_routes_to_segments,
+    build_pipe_network,
+    build_all_pipe_networks,
+    get_networks_summary,
+    get_revit_system_type_name,
+    SYSTEM_TYPE_MAPPING,
+)
 
 __all__ = [
     # Main class
@@ -55,4 +66,14 @@ __all__ = [
     "STANDARD_PIPE_SIZES",
     "PLUMBING_PENETRATION_CLEARANCE",
     "MAX_PENETRATION_RATIO",
+    "SYSTEM_TYPE_MAPPING",
+    # Pipe creation
+    "PipeSegment",
+    "PipeNetwork",
+    "parse_routes_json",
+    "parse_routes_to_segments",
+    "build_pipe_network",
+    "build_all_pipe_networks",
+    "get_networks_summary",
+    "get_revit_system_type_name",
 ]

@@ -13,7 +13,7 @@ The extraction works with Revit FamilyInstances that have MEP connectors
 defined in their families.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import logging
 
 from src.timber_framing_generator.core.mep_system import (
@@ -189,20 +189,13 @@ def _process_connector(
         float(getattr(origin, 'Z', 0))
     )
 
-    # Get direction from CoordinateSystem.BasisZ
-    coord_sys = getattr(conn, 'CoordinateSystem', None)
-    if coord_sys is not None:
-        basis_z = getattr(coord_sys, 'BasisZ', None)
-        if basis_z is not None:
-            direction_tuple = (
-                float(getattr(basis_z, 'X', 0)),
-                float(getattr(basis_z, 'Y', 0)),
-                float(getattr(basis_z, 'Z', 1))
-            )
-        else:
-            direction_tuple = (0.0, 0.0, 1.0)
-    else:
-        direction_tuple = (0.0, 0.0, 1.0)
+    # Get connector direction from CoordinateSystem.BasisZ
+    # TODO: Investigate how Revit manages connector directions for different
+    # fixture types. The BasisZ may represent the family's local axis rather
+    # than the physical routing direction. Different fixtures have different
+    # pipe connection patterns (faucets from below, drains down, etc.).
+    # For now, we store the raw BasisZ for diagnostic purposes.
+    direction_tuple = _get_connector_direction(conn)
 
     # Get radius (for round connectors)
     radius = getattr(conn, 'Radius', None)
@@ -227,6 +220,39 @@ def _process_connector(
         radius=radius,
         flow_direction=flow_direction_str,
     )
+
+
+def _get_connector_direction(conn: Any) -> Tuple[float, float, float]:
+    """
+    Get the direction vector from a Revit connector.
+
+    This returns the raw CoordinateSystem.BasisZ from the connector.
+    The meaning of this vector may vary by fixture type and family authoring.
+
+    TODO: Investigate what BasisZ actually represents for different fixture types:
+    - Faucets: supply comes UP from below
+    - Drains: pipes go DOWN (gravity)
+    - Toilets: often horizontal flex connectors
+    - Wall-mounted vs floor-mounted fixtures differ
+
+    Args:
+        conn: Revit Connector object
+
+    Returns:
+        Direction tuple (x, y, z) - raw BasisZ from connector
+    """
+    coord_sys = getattr(conn, 'CoordinateSystem', None)
+    if coord_sys is not None:
+        basis_z = getattr(coord_sys, 'BasisZ', None)
+        if basis_z is not None:
+            return (
+                float(getattr(basis_z, 'X', 0)),
+                float(getattr(basis_z, 'Y', 0)),
+                float(getattr(basis_z, 'Z', 1))
+            )
+
+    # Default: up (Z+)
+    return (0.0, 0.0, 1.0)
 
 
 def _get_element_id(element: Any) -> int:

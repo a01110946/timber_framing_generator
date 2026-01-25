@@ -228,12 +228,36 @@ mypy src/
 
 **Rhino 8 uses CPython 3** (not IronPython). This affects module imports, reloading, and some .NET interop patterns.
 
+### CRITICAL: Before Writing ANY GHPython Script
+
+**ALWAYS read the grasshopper-python-assistant skill first!**
+Location: `~/.claude/skills/grasshopper-python-assistant/`
+
+The skill contains:
+- **templates/ghpython_component.py** - Required structure for all components
+- **references/common_patterns.md** - Assembly checking, DataTrees, JSON patterns
+
+**MANDATORY requirements for GHPython components:**
+
+1. **Use RhinoCommonFactory for ALL geometry output** (points, vectors, curves, breps)
+   ```python
+   from src.timber_framing_generator.utils.geometry_factory import get_factory
+   factory = get_factory()
+   pt = factory.create_point3d(x, y, z)  # NOT rg.Point3d(x, y, z)
+   vec = factory.create_vector3d(x, y, z)  # NOT rg.Vector3d(x, y, z)
+   curve = factory.create_polyline_curve(points)  # NOT rg.Polyline
+   ```
+
+2. **Match input/output names with existing components** - Check existing component outputs before defining inputs
+
+3. **Follow the template structure** - setup_component(), validate_inputs(), main(), etc.
+
 When modifying GHPython scripts:
 
 1. **Test in Grasshopper** - Load the GH definition, select a test wall, toggle run/reload
 2. **Check diagnostic outputs** - `test_clr_box`, `test_info` verify assembly compatibility
 3. **Use DataTree for grafted outputs** - One wall can have multiple elements
-4. **Always convert geometry** - Use `rc_factory.convert_geometry_from_rhino3dm()` before output
+4. **Always convert geometry** - Use RhinoCommonFactory methods, NOT direct rg.* constructors
 
 ### Force Module Reload (Without Restarting Rhino)
 
@@ -368,3 +392,6 @@ The skill provides:
 - Assume `ClosestPoint()` returns absolute distance (it's normalized 0-1)
 - Forget end studs on short walls
 - Create boxes without verifying Z-direction
+- Write GHPython scripts without reading the grasshopper-python-assistant skill first
+- Use `rg.Point3d()`, `rg.Vector3d()`, etc. directly in GH components - use RhinoCommonFactory
+- Define component inputs/outputs without checking existing component interfaces

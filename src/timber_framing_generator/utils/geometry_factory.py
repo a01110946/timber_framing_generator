@@ -95,6 +95,8 @@ class RhinoCommonFactory:
             "Rhino.Geometry.LineCurve",
             "Rhino.Geometry.PolylineCurve",
             "Rhino.Geometry.Polyline",
+            "Rhino.Geometry.Circle",
+            "Rhino.Geometry.Arc",
             "Rhino.Geometry.BoundingBox",
             "Rhino.Geometry.Box",
             "Rhino.Geometry.Interval",
@@ -205,6 +207,103 @@ class RhinoCommonFactory:
         """
         line = self.create_line(start_point, end_point)
         return self._create_instance("LineCurve", line)
+
+    def create_polyline_curve(self, points: List[Point3DLike]):
+        """
+        Create a RhinoCommon PolylineCurve from a list of points.
+
+        Args:
+            points: List of Point3d or (x, y, z) tuples
+
+        Returns:
+            PolylineCurve from RhinoCommon assembly
+        """
+        from System import Array
+
+        if not points or len(points) < 2:
+            return None
+
+        # Convert all points to RhinoCommon Point3d
+        rc_points = []
+        for pt in points:
+            if isinstance(pt, (tuple, list)):
+                rc_points.append(self.create_point3d(*pt))
+            elif hasattr(pt, 'X'):
+                rc_points.append(self.create_point3d(
+                    float(pt.X), float(pt.Y), float(pt.Z)
+                ))
+            else:
+                rc_points.append(pt)
+
+        # Create Point3d array
+        Point3d_Type = self._get_type("Point3d")
+        point_array = Array.CreateInstance(Point3d_Type, len(rc_points))
+        for i, pt in enumerate(rc_points):
+            point_array[i] = pt
+
+        # Create Polyline from points, then PolylineCurve
+        polyline = self._create_instance("Polyline", point_array)
+        return self._create_instance("PolylineCurve", polyline)
+
+    def create_circle(
+        self,
+        center: Point3DLike,
+        radius: float,
+        normal: Vector3DLike = (0, 0, 1)
+    ):
+        """
+        Create a RhinoCommon Circle as a NurbsCurve.
+
+        Args:
+            center: Center point as Point3d or (x, y, z) tuple
+            radius: Circle radius
+            normal: Normal vector for circle plane (default: Z-up)
+
+        Returns:
+            NurbsCurve representing the circle from RhinoCommon assembly
+        """
+        from System.Reflection import BindingFlags
+
+        # Convert center to Point3d
+        if isinstance(center, (tuple, list)):
+            center_pt = self.create_point3d(*center)
+        elif hasattr(center, 'X'):
+            center_pt = self.create_point3d(
+                float(center.X), float(center.Y), float(center.Z)
+            )
+        else:
+            center_pt = center
+
+        # Convert normal to Vector3d
+        if isinstance(normal, (tuple, list)):
+            normal_vec = self.create_vector3d(*normal)
+        elif hasattr(normal, 'X'):
+            normal_vec = self.create_vector3d(
+                float(normal.X), float(normal.Y), float(normal.Z)
+            )
+        else:
+            normal_vec = normal
+
+        # Create plane from center and normal
+        # Use Plane(origin, normal) constructor
+        plane = self._create_instance("Plane", center_pt, normal_vec)
+
+        # Get Circle type and create circle
+        Circle_Type = self._get_type("Circle")
+        if Circle_Type is None:
+            # Fallback: cache it
+            self._types_cache["Circle"] = self._rc_assembly.GetType("Rhino.Geometry.Circle")
+            Circle_Type = self._types_cache["Circle"]
+
+        # Create Circle(plane, radius)
+        circle = self._create_instance("Circle", plane, float(radius))
+
+        # Convert to NurbsCurve for output
+        try:
+            return circle.ToNurbsCurve()
+        except Exception as e:
+            print(f"create_circle error converting to NurbsCurve: {e}")
+            return None
 
     def create_interval(self, t0: float, t1: float):
         """Create a RhinoCommon Interval."""

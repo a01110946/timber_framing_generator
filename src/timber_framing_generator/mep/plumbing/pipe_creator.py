@@ -137,7 +137,20 @@ def extract_segments_from_route(route: Dict[str, Any]) -> List[PipeSegment]:
 
     route_id = route.get("id", "unknown")
     system_type = route.get("system_type", "Unknown")
-    pipe_size = route.get("pipe_size", 0.0833)  # Default 1"
+
+    # Get pipe_size - handle None values explicitly
+    # Default to 1.5" (0.125 ft) for sanitary, 0.5" (0.0417 ft) for supply
+    raw_pipe_size = route.get("pipe_size")
+    if raw_pipe_size is None or raw_pipe_size <= 0:
+        # Use sensible defaults based on system type
+        if "sanitary" in system_type.lower():
+            pipe_size = 0.125  # 1.5" for drains
+        elif "vent" in system_type.lower():
+            pipe_size = 0.125  # 1.5" for vents
+        else:
+            pipe_size = 0.0417  # 0.5" for supply water
+    else:
+        pipe_size = raw_pipe_size
 
     for i in range(len(path_points) - 1):
         start = path_points[i]

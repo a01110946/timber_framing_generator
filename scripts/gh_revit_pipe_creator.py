@@ -154,6 +154,7 @@ try:
         ElementId,
         FilteredElementCollector,
         BuiltInCategory,
+        BuiltInParameter,
     )
     from Autodesk.Revit.DB.Plumbing import (
         Pipe,
@@ -333,7 +334,7 @@ def create_pipe_element(doc, segment, pipe_type_id, system_type_id, level_id):
 
     Args:
         doc: Revit document
-        segment: PipeSegment with start/end points
+        segment: PipeSegment with start/end points and pipe_size
         pipe_type_id: ElementId of PipeType
         system_type_id: ElementId of PipingSystemType
         level_id: ElementId of Level
@@ -359,7 +360,11 @@ def create_pipe_element(doc, segment, pipe_type_id, system_type_id, level_id):
             log_warning(f"Skipping zero-length segment in route {segment.route_id}")
             return None
 
-        log_info(f"Creating pipe: {segment.start_point} -> {segment.end_point} (len={length:.3f})")
+        # Get pipe size (in feet) - use segment's pipe_size which has system-appropriate defaults
+        pipe_diameter = segment.pipe_size if segment.pipe_size and segment.pipe_size > 0 else 0.0417  # 0.5" fallback
+        pipe_diameter_inches = pipe_diameter * 12
+
+        log_info(f"Creating pipe: len={length:.3f}ft, dia={pipe_diameter_inches:.2f}in ({segment.system_type})")
         log_info(f"  system_type_id={system_type_id.IntegerValue}, pipe_type_id={pipe_type_id.IntegerValue}, level_id={level_id.IntegerValue}")
 
         pipe = Pipe.Create(
@@ -370,6 +375,21 @@ def create_pipe_element(doc, segment, pipe_type_id, system_type_id, level_id):
             start_xyz,
             end_xyz
         )
+
+        # Set the pipe diameter
+        # The diameter parameter is RBS_PIPE_DIAMETER_PARAM
+        diameter_param = pipe.get_Parameter(BuiltInParameter.RBS_PIPE_DIAMETER_PARAM)
+        if diameter_param is not None and not diameter_param.IsReadOnly:
+            diameter_param.Set(pipe_diameter)
+            log_info(f"  Set diameter to {pipe_diameter:.4f} ft ({pipe_diameter * 12:.2f} in)")
+        else:
+            # Try setting via LookupParameter
+            diameter_param2 = pipe.LookupParameter("Diameter")
+            if diameter_param2 is not None and not diameter_param2.IsReadOnly:
+                diameter_param2.Set(pipe_diameter)
+                log_info(f"  Set diameter via LookupParameter to {pipe_diameter:.4f} ft")
+            else:
+                log_info(f"  Could not set diameter - parameter is read-only or not found")
 
         log_info(f"  Created pipe Id: {pipe.Id.IntegerValue}")
         return pipe

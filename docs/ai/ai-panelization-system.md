@@ -186,22 +186,79 @@ for result in results:
 
 ## Grasshopper Integration
 
+The panelization system uses two GHPython components:
+1. **Panel Decomposer** - Calculates panels and adjusted geometry (no Revit modification)
+2. **Wall Corner Adjuster** - Optionally applies corner adjustments to Revit walls
+
 ### gh_panel_decomposer.py
 
+Calculates panel decomposition and corner adjustments. Outputs adjusted geometry for manufacturing but does NOT modify Revit walls.
+
 **Inputs:**
-- `walls_json`: JSON from Wall Analyzer
-- `framing_json`: JSON from Framing Generator (optional)
-- `max_panel_length`: Maximum panel length (default 24.0)
-- `min_joint_to_opening`: Joint offset from openings (default 1.0)
-- `min_joint_to_corner`: Joint offset from corners (default 2.0)
-- `stud_spacing`: Stud spacing for alignment (default 1.333)
-- `run`: Boolean trigger
+| Input | NickName | Description | Default |
+|-------|----------|-------------|---------|
+| Walls JSON | `walls_json` | JSON from Wall Analyzer | Required |
+| Framing JSON | `framing_json` | JSON from Framing Generator | Optional |
+| Max Panel Length | `max_length` | Maximum panel length (ft) | 24.0 |
+| Joint to Opening | `joint_opening` | Joint offset from openings (ft) | 1.0 |
+| Joint to Corner | `joint_corner` | Joint offset from corners (ft) | 2.0 |
+| Stud Spacing | `stud_space` | Stud spacing for alignment (ft) | 1.333 |
+| Run | `run` | Boolean trigger | False |
 
 **Outputs:**
-- `panels_json`: JSON string with panel results
-- `panel_curves`: DataTree of panel boundary curves
-- `joint_points`: DataTree of joint location points
-- `debug_info`: Status messages
+| Output | NickName | Description |
+|--------|----------|-------------|
+| Panels JSON | `panels_json` | JSON with panels, joints, and corner_adjustments |
+| Panel Curves | `panel_curves` | DataTree of panel boundary curves |
+| Joint Points | `joint_points` | DataTree of joint location points |
+| Debug Info | `debug_info` | Status messages |
+
+### gh_wall_corner_adjuster.py
+
+Applies corner adjustments to Revit walls using Rhino.Inside.Revit API. Use this component when you want the Revit model to reflect the adjusted wall geometry.
+
+**Inputs:**
+| Input | NickName | Description | Default |
+|-------|----------|-------------|---------|
+| Panels JSON | `panels_json` | JSON from Panel Decomposer | Required* |
+| Adjustments JSON | `adj_json` | Direct adjustments JSON | Optional* |
+| Dry Run | `dry_run` | Preview mode (no Revit changes) | True |
+| Run | `run` | Boolean trigger | False |
+
+*Either `panels_json` or `adj_json` required
+
+**Outputs:**
+| Output | NickName | Description |
+|--------|----------|-------------|
+| Modified Walls | `modified` | List of modified wall element IDs |
+| Preview Lines | `preview` | Original and adjusted wall extent lines |
+| Debug Info | `debug_info` | Status messages |
+
+**Revit API Operations:**
+1. `WallUtils.DisallowWallJoinAtEnd()` - Prevents auto-rejoining
+2. `Wall.Location.Curve` modification - Extends/shortens wall
+
+### Workflow Options
+
+**Option A: Manufacturing Only (No Revit Changes)**
+```
+Wall Analyzer → Panel Decomposer → panels_json → Shop Drawings
+                      ↓
+              panel_curves → Visualization
+```
+- Revit model unchanged (centerline joins preserved)
+- Panel geometry output uses adjusted dimensions
+- Suitable when Revit is for coordination only
+
+**Option B: Full Revit Integration**
+```
+Wall Analyzer → Panel Decomposer → panels_json → Wall Corner Adjuster
+                      ↓                                  ↓
+              panel_curves                    Modified Revit Walls
+```
+- Revit walls physically modified at corners
+- Model reflects manufacturing dimensions
+- Use dry_run=True first to preview changes
 
 ## Joint Placement Algorithm
 

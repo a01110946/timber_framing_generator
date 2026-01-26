@@ -485,3 +485,220 @@ def validate_cell_data(data: Union[str, Dict, CellData]) -> Tuple[bool, List[str
         errors.append(f"Validation error: {str(e)}")
 
     return len(errors) == 0, errors
+
+
+# =============================================================================
+# Panel Data Classes (Panelization System)
+# =============================================================================
+
+@dataclass
+class PanelJoint:
+    """A joint between two adjacent panels.
+
+    Panel joints must be placed at stud locations and respect
+    exclusion zones around openings, corners, and shear panels.
+
+    Attributes:
+        u_coord: Position along wall in U coordinates (feet)
+        joint_type: Type of joint ("field", "corner", "opening_adjacent")
+        left_panel_id: ID of panel to the left of joint
+        right_panel_id: ID of panel to the right of joint
+        stud_u_coords: U positions of studs at joint (typically double stud)
+    """
+    u_coord: float
+    joint_type: str
+    left_panel_id: str
+    right_panel_id: str
+    stud_u_coords: List[float] = field(default_factory=list)
+
+
+@dataclass
+class PanelCorners:
+    """Panel corner points in world coordinates.
+
+    Corners are named relative to the wall orientation:
+    - Bottom: At base elevation
+    - Top: At wall height
+    - Left: At panel u_start
+    - Right: At panel u_end
+    """
+    bottom_left: Point3D
+    bottom_right: Point3D
+    top_right: Point3D
+    top_left: Point3D
+
+    def to_list(self) -> List[Tuple[float, float, float]]:
+        """Convert corners to list of tuples."""
+        return [
+            self.bottom_left.to_tuple(),
+            self.bottom_right.to_tuple(),
+            self.top_right.to_tuple(),
+            self.top_left.to_tuple(),
+        ]
+
+
+@dataclass
+class PanelData:
+    """A single wall panel from panelization.
+
+    Panels are the unit of prefab production - each panel is
+    manufactured, transported, and installed as a unit.
+
+    Attributes:
+        id: Unique panel identifier
+        wall_id: ID of the source wall
+        panel_index: Order along wall (0, 1, 2...)
+        u_start: Start position along wall (feet)
+        u_end: End position along wall (feet)
+        length: Panel length (u_end - u_start)
+        height: Panel height (wall height)
+        corners: Corner points in world coordinates
+        cell_ids: IDs of cells contained in this panel
+        element_ids: IDs of framing elements in this panel
+        estimated_weight: Estimated panel weight (lbs)
+        assembly_sequence: Order for field assembly
+        metadata: Additional panel metadata
+    """
+    id: str
+    wall_id: str
+    panel_index: int
+    u_start: float
+    u_end: float
+    length: float
+    height: float
+    corners: PanelCorners
+    cell_ids: List[str] = field(default_factory=list)
+    element_ids: List[str] = field(default_factory=list)
+    estimated_weight: float = 0.0
+    assembly_sequence: int = 0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class WallCornerAdjustment:
+    """Adjustment to apply to a wall at a corner connection.
+
+    Revit walls join at centerlines, but for panelization we need
+    face-to-face dimensions. This describes how to extend or recede
+    a wall at a corner to achieve accurate panel geometry.
+
+    Attributes:
+        wall_id: ID of the wall to adjust
+        corner_type: Which end of wall ("start" or "end")
+        adjustment_type: Type of adjustment ("extend" or "recede")
+        adjustment_amount: Amount to extend/recede (feet)
+        connecting_wall_id: ID of the wall being connected to
+        connecting_wall_thickness: Thickness of connecting wall (feet)
+    """
+    wall_id: str
+    corner_type: str  # "start" or "end"
+    adjustment_type: str  # "extend" or "recede"
+    adjustment_amount: float
+    connecting_wall_id: str
+    connecting_wall_thickness: float
+
+
+@dataclass
+class PanelResults:
+    """Complete panelization results for a wall.
+
+    This is the output of the panel decomposer and contains all
+    panels, joints, and corner adjustments for a single wall.
+
+    Attributes:
+        wall_id: ID of the source wall
+        panels: List of panels decomposed from the wall
+        joints: List of joints between panels
+        corner_adjustments: Adjustments applied at wall corners
+        total_panel_count: Total number of panels
+        original_wall_length: Wall length before corner adjustments
+        adjusted_wall_length: Wall length after corner adjustments
+        metadata: Additional results metadata
+    """
+    wall_id: str
+    panels: List[PanelData]
+    joints: List[PanelJoint]
+    corner_adjustments: List[WallCornerAdjustment] = field(default_factory=list)
+    total_panel_count: int = 0
+    original_wall_length: float = 0.0
+    adjusted_wall_length: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Calculate total panel count if not set."""
+        if self.total_panel_count == 0:
+            self.total_panel_count = len(self.panels)
+
+
+# =============================================================================
+# Panel Serialization Functions
+# =============================================================================
+
+def serialize_panel_results(results: PanelResults) -> str:
+    """Serialize PanelResults to JSON string.
+
+    Args:
+        results: PanelResults object
+
+    Returns:
+        JSON string representation
+    """
+    return json.dumps(asdict(results), cls=FramingJSONEncoder, indent=2)
+
+
+def deserialize_panel_results(json_str: str) -> PanelResults:
+    """Deserialize JSON string to PanelResults.
+
+    Args:
+        json_str: JSON string to deserialize
+
+    Returns:
+        PanelResults object
+    """
+    data = json.loads(json_str)
+
+    # Reconstruct panels
+    panels = []
+    for p in data.get('panels', []):
+        corners = PanelCorners(
+            bottom_left=Point3D(**p['corners']['bottom_left']),
+            bottom_right=Point3D(**p['corners']['bottom_right']),
+            top_right=Point3D(**p['corners']['top_right']),
+            top_left=Point3D(**p['corners']['top_left']),
+        )
+        panel = PanelData(
+            id=p['id'],
+            wall_id=p['wall_id'],
+            panel_index=p['panel_index'],
+            u_start=p['u_start'],
+            u_end=p['u_end'],
+            length=p['length'],
+            height=p['height'],
+            corners=corners,
+            cell_ids=p.get('cell_ids', []),
+            element_ids=p.get('element_ids', []),
+            estimated_weight=p.get('estimated_weight', 0.0),
+            assembly_sequence=p.get('assembly_sequence', 0),
+            metadata=p.get('metadata', {}),
+        )
+        panels.append(panel)
+
+    # Reconstruct joints
+    joints = [PanelJoint(**j) for j in data.get('joints', [])]
+
+    # Reconstruct corner adjustments
+    corner_adjustments = [
+        WallCornerAdjustment(**adj)
+        for adj in data.get('corner_adjustments', [])
+    ]
+
+    return PanelResults(
+        wall_id=data['wall_id'],
+        panels=panels,
+        joints=joints,
+        corner_adjustments=corner_adjustments,
+        total_panel_count=data.get('total_panel_count', len(panels)),
+        original_wall_length=data.get('original_wall_length', 0.0),
+        adjusted_wall_length=data.get('adjusted_wall_length', 0.0),
+        metadata=data.get('metadata', {}),
+    )

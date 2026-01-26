@@ -681,6 +681,134 @@ class PipeNetwork:
 
 ---
 
+## Tee/Wye Fitting Creation for Multi-Branch Merges
+
+**Discovery Date**: January 2026
+
+### The Problem: Multiple Branches Meeting at One Point
+
+When multiple pipes need to connect at a single merge point (e.g., double sink drains), `NewTeeFitting` often fails with "failed to insert tee" errors.
+
+**Configuration**: Double sink sanitary system
+```
+Branch1 (left)  ────→  ┐
+                       ├── Merge Point ── Trunk (down)
+Branch2 (right) ────→  ┘
+```
+
+### Critical Discovery: Connector Location Requirements
+
+**`NewTeeFitting` requires all three connectors to be at the EXACT same location.**
+
+| Approach | Result |
+|----------|--------|
+| Trim pipes back from merge (gap) | ❌ `NewTeeFitting` fails, `ConnectTo` just extends pipes without fitting |
+| All pipes meet at exact merge point | ✅ `NewTeeFitting` can insert fitting |
+
+### Why Trimming Fails
+
+When pipes are trimmed to create a "gap" for the fitting:
+1. Connectors are at different locations (2" apart)
+2. `NewTeeFitting` fails because geometry doesn't match tee requirements
+3. `ConnectTo` fallback extends/joins pipes directly WITHOUT inserting a fitting
+4. Result: First branch connects, second branch has nowhere to connect
+
+```python
+# BAD: Trimming creates gaps - fitting won't be inserted
+Branch1 endpoint: (15.948, 20.944, 1.292)  # 2" from merge
+Branch2 endpoint: (16.282, 20.944, 1.292)  # 2" from merge
+Trunk startpoint: (16.115, 20.944, 1.292)  # at merge
+# ConnectTo just extends pipes, no fitting created
+```
+
+### The Solution: No Trimming
+
+All pipes must meet at the EXACT merge point:
+
+```python
+# GOOD: All connectors at same point - fitting can be inserted
+Branch1 endpoint: (16.115, 20.944, 1.292)  # at merge
+Branch2 endpoint: (16.115, 20.944, 1.292)  # at merge
+Trunk startpoint: (16.115, 20.944, 1.292)  # at merge
+```
+
+### Correct Connector Order for NewTeeFitting
+
+For `NewTeeFitting(conn1, conn2, conn3)`:
+- `conn1` and `conn2` form the "run" (straight through path)
+- `conn3` is the "branch" (perpendicular)
+
+**For double-sink (horizontal branches + vertical trunk):**
+
+```python
+# Branch1 → Branch2 = horizontal run
+# Trunk = perpendicular branch (going down)
+
+# Try this order first:
+fitting = doc.Create.NewTeeFitting(branch1_conn, branch2_conn, trunk_conn)
+```
+
+### Implementation Pattern
+
+```python
+def create_wye_fitting(doc, branch1_conn, branch2_conn, trunk_conn):
+    """Create tee/wye fitting at merge point.
+
+    CRITICAL: All three connectors MUST be at the exact same location.
+    """
+    # Verify connectors are at same location
+    dist_b1_b2 = branch1_conn.Origin.DistanceTo(branch2_conn.Origin)
+    dist_b1_trunk = branch1_conn.Origin.DistanceTo(trunk_conn.Origin)
+
+    if dist_b1_b2 > 0.01 or dist_b1_trunk > 0.01:
+        log_warning("Connectors not at same point - fitting may fail")
+
+    # Try Branch1-Branch2 as run, Trunk as branch
+    try:
+        fitting = doc.Create.NewTeeFitting(branch1_conn, branch2_conn, trunk_conn)
+        if fitting:
+            return fitting
+    except:
+        pass
+
+    # Try reversed run direction
+    try:
+        fitting = doc.Create.NewTeeFitting(branch2_conn, branch1_conn, trunk_conn)
+        if fitting:
+            return fitting
+    except:
+        pass
+
+    # Fallback: ConnectTo (may not create fitting)
+    branch1_conn.ConnectTo(trunk_conn)
+    # Note: After ConnectTo, look for auto-inserted fitting to connect branch2
+
+    return None
+```
+
+### When NewTeeFitting Still Fails
+
+Even with connectors at the same point, `NewTeeFitting` may fail if:
+
+1. **No suitable tee fitting family loaded** - Check Pipe Fittings in Project Browser
+2. **Pipe diameter mismatch** - Fitting must support the pipe sizes
+3. **Angle not supported** - Standard tee = 90°; other angles need specific families
+4. **System type mismatch** - Fitting must be compatible with piping system
+
+**Debug checklist:**
+```python
+log_info(f"Branch1 at: {branch1_conn.Origin}")
+log_info(f"Branch2 at: {branch2_conn.Origin}")
+log_info(f"Trunk at: {trunk_conn.Origin}")
+log_info(f"Distances: b1-b2={dist_b1_b2:.4f}, b1-trunk={dist_b1_trunk:.4f}")
+```
+
+### Key Insight
+
+> **For `NewTeeFitting` to work, DO NOT trim/offset pipe endpoints from the merge point. All connectors must be at the exact same location. The connector order matters: the first two connectors form the "run" (straight path), the third is the perpendicular "branch".**
+
+---
+
 ## Future Topics
 
 - Level assignment from Revit walls

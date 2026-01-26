@@ -40,6 +40,7 @@ from .penetration_rules import (
 from .pipe_creator import (
     PipeSegment,
     PipeNetwork,
+    MergePointInfo,
     parse_routes_json,
     parse_routes_to_segments,
     build_pipe_network,
@@ -47,6 +48,7 @@ from .pipe_creator import (
     get_networks_summary,
     get_revit_system_type_name,
     SYSTEM_TYPE_MAPPING,
+    WYE_FITTING_GAP,
 )
 
 __all__ = [
@@ -70,10 +72,12 @@ __all__ = [
     # Pipe creation
     "PipeSegment",
     "PipeNetwork",
+    "MergePointInfo",
     "parse_routes_json",
     "parse_routes_to_segments",
     "build_pipe_network",
     "build_all_pipe_networks",
     "get_networks_summary",
     "get_revit_system_type_name",
+    "WYE_FITTING_GAP",
 ]

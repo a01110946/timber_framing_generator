@@ -21,6 +21,47 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# Constants
+# =============================================================================
+
+# Fitting gap distances (feet)
+WYE_FITTING_GAP = 0.167  # 2 inches - minimum gap for fitting
+MIN_PIPE_LENGTH = 0.0833  # 1 inch - minimum remaining pipe length
+
+
+# =============================================================================
+# Vector Helper Functions
+# =============================================================================
+
+def vector_subtract(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Subtract vector b from vector a."""
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def vector_add(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Add vectors a and b."""
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def vector_scale(v: Tuple[float, float, float], s: float) -> Tuple[float, float, float]:
+    """Scale vector v by scalar s."""
+    return (v[0] * s, v[1] * s, v[2] * s)
+
+
+def vector_normalize(v: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Normalize vector to unit length."""
+    length = (v[0]**2 + v[1]**2 + v[2]**2) ** 0.5
+    if length < 0.0001:
+        return (0.0, 0.0, 0.0)
+    return (v[0] / length, v[1] / length, v[2] / length)
+
+
+def vector_length(v: Tuple[float, float, float]) -> float:
+    """Calculate vector length."""
+    return (v[0]**2 + v[1]**2 + v[2]**2) ** 0.5
+
+
+# =============================================================================
 # Data Classes
 # =============================================================================
 
@@ -44,6 +85,28 @@ class PipeSegment:
 
 
 @dataclass
+class MergePointInfo:
+    """Geometry information for wye fitting insertion at merge points.
+
+    When multiple branches merge, we need to create a gap where the wye fitting
+    will connect three separate pipe ends. This class stores the trimmed endpoints
+    for each branch and the trunk.
+
+    Attributes:
+        original_point: The original merge point coordinates (x, y, z)
+        branch_endpoints: List of trimmed endpoint for each branch (pulled back from merge)
+        trunk_startpoint: Trimmed start point for trunk (pushed forward from merge)
+        branch_directions: Unit vectors pointing from branch toward merge point
+        trunk_direction: Unit vector pointing from merge toward trunk end
+    """
+    original_point: Tuple[float, float, float]
+    branch_endpoints: List[Tuple[float, float, float]]
+    trunk_startpoint: Tuple[float, float, float]
+    branch_directions: List[Tuple[float, float, float]]
+    trunk_direction: Tuple[float, float, float]
+
+
+@dataclass
 class PipeNetwork:
     """
     Represents a pipe network for a single fixture + system type.
@@ -52,12 +115,14 @@ class PipeNetwork:
     - branches: [[Drain1→Merge], [Drain2→Merge]] - unique per connector
     - trunk: [Merge→Wall→Down] - shared, created once
     - merge_point: location where branches join
+    - merge_info: geometry for wye fitting insertion (trimmed endpoints)
     """
     system_type: str
     fixture_id: int
     branches: List[List[PipeSegment]] = field(default_factory=list)
     trunk: List[PipeSegment] = field(default_factory=list)
     merge_point: Optional[Tuple[float, float, float]] = None
+    merge_info: Optional[MergePointInfo] = None
 
     def get_total_segment_count(self) -> int:
         """Total segments to create (branches + trunk)."""
@@ -321,6 +386,138 @@ def find_merge_point_index(path_points: List, merge_point: Tuple) -> int:
 
 
 # =============================================================================
+# Merge Geometry Calculation
+# =============================================================================
+
+def calculate_merge_geometry(
+    merge_point: Tuple[float, float, float],
+    branches: List[List[PipeSegment]],
+    trunk: List[PipeSegment],
+    gap_distance: float = WYE_FITTING_GAP
+) -> Optional[MergePointInfo]:
+    """Calculate trimmed endpoints for wye fitting insertion.
+
+    Creates a gap at the merge point where branches meet the trunk, allowing
+    Revit's NewTeeFitting to connect three separate pipe ends.
+
+    Args:
+        merge_point: The original merge point coordinates
+        branches: List of branch segment lists (each branch ends at merge)
+        trunk: Trunk segment list (trunk starts at merge)
+        gap_distance: Distance to pull back endpoints from merge point
+
+    Returns:
+        MergePointInfo with trimmed endpoints, or None if calculation fails
+    """
+    print(f"[CALC_MERGE] Called with merge_point={merge_point}, {len(branches)} branches, {len(trunk)} trunk segments")
+
+    if not merge_point:
+        print("[CALC_MERGE] ERROR: merge_point is None/empty")
+        return None
+
+    branch_endpoints = []
+    branch_directions = []
+
+    # Process each branch - find direction and calculate trimmed endpoint
+    for branch_segments in branches:
+        if not branch_segments:
+            continue
+
+        last_seg = branch_segments[-1]
+
+        # Direction from segment start toward end (toward merge point)
+        direction = vector_subtract(last_seg.end_point, last_seg.start_point)
+        direction = vector_normalize(direction)
+
+        # Validate we have a valid direction
+        if vector_length(direction) < 0.001:
+            logger.warning("Branch has zero-length direction vector")
+            continue
+
+        # Trim endpoint: move back from merge point along branch direction
+        # This creates a gap for the fitting
+        offset = vector_scale(direction, gap_distance)
+        trimmed_endpoint = vector_subtract(merge_point, offset)
+
+        # Verify the trimmed endpoint doesn't go past the segment start
+        seg_length = last_seg.get_length()
+        if seg_length < gap_distance + MIN_PIPE_LENGTH:
+            # Reduce gap to leave minimum pipe length
+            adjusted_gap = max(0, seg_length - MIN_PIPE_LENGTH)
+            offset = vector_scale(direction, adjusted_gap)
+            trimmed_endpoint = vector_subtract(merge_point, offset)
+            logger.info(f"Adjusted gap from {gap_distance:.3f} to {adjusted_gap:.3f} for short branch")
+
+        branch_endpoints.append(trimmed_endpoint)
+        branch_directions.append(direction)
+
+    # Process trunk - find direction and calculate trimmed startpoint
+    if trunk:
+        first_seg = trunk[0]
+        # Direction from merge point toward trunk end
+        trunk_dir = vector_subtract(first_seg.end_point, first_seg.start_point)
+        trunk_dir = vector_normalize(trunk_dir)
+
+        # Validate trunk direction
+        if vector_length(trunk_dir) < 0.001:
+            trunk_dir = (0.0, 0.0, -1.0)  # Default: down
+            logger.warning("Trunk has zero-length direction, using default (0,0,-1)")
+
+        # Trim startpoint: move forward from merge point along trunk direction
+        offset = vector_scale(trunk_dir, gap_distance)
+        trunk_start = vector_add(merge_point, offset)
+
+        # Verify the trimmed startpoint doesn't go past segment end
+        seg_length = first_seg.get_length()
+        if seg_length < gap_distance + MIN_PIPE_LENGTH:
+            adjusted_gap = max(0, seg_length - MIN_PIPE_LENGTH)
+            offset = vector_scale(trunk_dir, adjusted_gap)
+            trunk_start = vector_add(merge_point, offset)
+            logger.info(f"Adjusted trunk gap from {gap_distance:.3f} to {adjusted_gap:.3f}")
+    else:
+        # No trunk segments - use default direction
+        trunk_dir = (0.0, 0.0, -1.0)  # Default: down
+        offset = vector_scale(trunk_dir, gap_distance)
+        trunk_start = vector_add(merge_point, offset)
+        logger.info("No trunk segments, using default direction (down)")
+
+    if not branch_endpoints:
+        logger.warning("No valid branch endpoints calculated")
+        return None
+
+    return MergePointInfo(
+        original_point=merge_point,
+        branch_endpoints=branch_endpoints,
+        trunk_startpoint=trunk_start,
+        branch_directions=branch_directions,
+        trunk_direction=trunk_dir
+    )
+
+
+def apply_merge_trimming(network: 'PipeNetwork') -> None:
+    """Apply trimmed endpoints from merge_info to actual pipe segments.
+
+    NOTE: After extensive testing, we found that trimming pipes PREVENTS
+    Revit from inserting tee/cross fittings. For NewTeeFitting to work,
+    all connectors must be at the EXACT same location.
+
+    This function now does NO trimming - all pipes meet at the merge point.
+    The merge_info is still calculated for reference but not applied.
+
+    Args:
+        network: PipeNetwork with merge_info already calculated
+    """
+    if network.merge_info is None:
+        return
+
+    # NO TRIMMING - all pipes must meet at exact merge point for NewTeeFitting to work
+    # If we trim, ConnectTo just extends pipes without inserting fittings
+    print(f"[APPLY_TRIM] NO trimming applied - all pipes meet at merge point")
+    print(f"[APPLY_TRIM] Branch endpoints remain at merge point: {network.merge_info.original_point}")
+    print(f"[APPLY_TRIM] Trunk starts at merge point: {network.trunk[0].start_point if network.trunk else 'N/A'}")
+
+
+# =============================================================================
 # Pipe Network Building
 # =============================================================================
 
@@ -404,6 +601,27 @@ def build_pipe_network(
 
         network.branches.append(branch_segments)
         trunk_set = True
+
+    # Calculate merge geometry for wye fitting insertion (for 2+ branches)
+    if network.merge_point is not None and len(network.branches) >= 2:
+        print(f"[PIPE_CREATOR] Calculating merge geometry for {len(network.branches)} branches")
+        print(f"[PIPE_CREATOR] Merge point: {network.merge_point}")
+        print(f"[PIPE_CREATOR] Branch counts: {[len(b) for b in network.branches]}")
+        print(f"[PIPE_CREATOR] Trunk segments: {len(network.trunk)}")
+
+        network.merge_info = calculate_merge_geometry(
+            network.merge_point,
+            network.branches,
+            network.trunk
+        )
+
+        if network.merge_info is not None:
+            # Apply trimming to create gaps for wye fitting
+            apply_merge_trimming(network)
+            print(f"[PIPE_CREATOR] Applied merge trimming: {len(network.merge_info.branch_endpoints)} branch endpoints")
+            print(f"[PIPE_CREATOR] Trunk startpoint: {network.merge_info.trunk_startpoint}")
+        else:
+            print("[PIPE_CREATOR] WARNING: Failed to calculate merge geometry")
 
     return network
 

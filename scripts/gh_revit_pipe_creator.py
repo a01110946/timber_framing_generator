@@ -131,6 +131,7 @@ try:
         get_revit_system_type_name,
         PipeNetwork,
         PipeSegment,
+        MergePointInfo,
     )
     PROJECT_AVAILABLE = True
     PROJECT_ERROR = None
@@ -563,6 +564,221 @@ def create_tee_fitting(doc, branch_pipe, trunk_pipe, merge_point, all_trunk_pipe
         log_info(f"  Tee: FAILED - {e}")
         return None
 
+
+def create_wye_fitting(doc, all_branch_pipes, trunk_pipes, merge_info):
+    """Create wye fitting connecting branches to trunk at merge point.
+
+    Uses Revit's NewTeeFitting(conn1, conn2, conn3) which requires 3 connectors
+    from 3 different pipe elements. The trimmed pipe ends provide these connectors.
+
+    For 2 branches:
+        - conn1: End of branch 1 (becomes "run in")
+        - conn2: Start of trunk (becomes "run out")
+        - conn3: End of branch 2 (becomes "branch")
+
+    Args:
+        doc: Revit document
+        all_branch_pipes: List of lists of branch pipes [[branch1_pipes], [branch2_pipes], ...]
+        trunk_pipes: List of trunk pipe elements
+        merge_info: MergePointInfo with trimmed coordinates
+
+    Returns:
+        Fitting element, "connected" string, or None
+    """
+    if len(all_branch_pipes) < 2:
+        log_info("  Wye: Need at least 2 branches")
+        return None
+
+    if not trunk_pipes:
+        log_info("  Wye: No trunk pipes available")
+        return None
+
+    # Get the last pipe of each branch (these have ends near merge point)
+    branch1_pipes = all_branch_pipes[0] if all_branch_pipes[0] else []
+    branch2_pipes = all_branch_pipes[1] if len(all_branch_pipes) > 1 and all_branch_pipes[1] else []
+
+    if not branch1_pipes or not branch2_pipes:
+        log_info("  Wye: One or both branches have no pipes")
+        return None
+
+    branch1_last = branch1_pipes[-1]
+    branch2_last = branch2_pipes[-1]
+    trunk_first = trunk_pipes[0]
+
+    log_info(f"  Wye: Connecting branch1={branch1_last.Id.IntegerValue}, branch2={branch2_last.Id.IntegerValue}, trunk={trunk_first.Id.IntegerValue}")
+
+    # Get connectors (end of branches, start of trunk)
+    branch1_conn = get_pipe_end_connector(branch1_last, at_end=True)
+    branch2_conn = get_pipe_end_connector(branch2_last, at_end=True)
+    trunk_conn = get_pipe_end_connector(trunk_first, at_end=False)  # START of trunk
+
+    # Validate all connectors exist
+    if branch1_conn is None:
+        log_info("  Wye: Branch 1 end connector not found")
+        return None
+    if branch2_conn is None:
+        log_info("  Wye: Branch 2 end connector not found")
+        return None
+    if trunk_conn is None:
+        log_info("  Wye: Trunk start connector not found")
+        return None
+
+    # Check if connectors are already connected
+    if branch1_conn.IsConnected:
+        log_info("  Wye: Branch 1 connector already connected")
+        return None
+    if branch2_conn.IsConnected:
+        log_info("  Wye: Branch 2 connector already connected")
+        return None
+    if trunk_conn.IsConnected:
+        log_info("  Wye: Trunk connector already connected")
+        return None
+
+    # Log connector positions for debugging
+    log_info(f"  Wye: Branch1 conn at ({branch1_conn.Origin.X:.3f}, {branch1_conn.Origin.Y:.3f}, {branch1_conn.Origin.Z:.3f})")
+    log_info(f"  Wye: Branch2 conn at ({branch2_conn.Origin.X:.3f}, {branch2_conn.Origin.Y:.3f}, {branch2_conn.Origin.Z:.3f})")
+    log_info(f"  Wye: Trunk conn at ({trunk_conn.Origin.X:.3f}, {trunk_conn.Origin.Y:.3f}, {trunk_conn.Origin.Z:.3f})")
+
+    # For NewTeeFitting: conn1 and conn2 form the "run" (straight through), conn3 is the "branch"
+    # Based on geometry: Branch1 (left) → Branch2 (right) = horizontal run, Trunk = perpendicular branch
+
+    # Try Method 1: Branch1-Branch2 as run, Trunk as branch (most likely correct for this geometry)
+    try:
+        fitting = doc.Create.NewTeeFitting(branch1_conn, branch2_conn, trunk_conn)
+        if fitting is not None:
+            log_info(f"  Wye: Created tee fitting (b1-b2 run, trunk branch) Id {fitting.Id.IntegerValue}")
+            return fitting
+    except Exception as e1:
+        log_info(f"  Wye: NewTeeFitting(b1, b2, trunk) failed - {e1}")
+
+    # Try Method 2: Reverse the run direction
+    try:
+        fitting = doc.Create.NewTeeFitting(branch2_conn, branch1_conn, trunk_conn)
+        if fitting is not None:
+            log_info(f"  Wye: Created tee fitting (b2-b1 run, trunk branch) Id {fitting.Id.IntegerValue}")
+            return fitting
+    except Exception as e2:
+        log_info(f"  Wye: NewTeeFitting(b2, b1, trunk) failed - {e2}")
+
+    # Try Method 3: Trunk as part of run (less likely but worth trying)
+    try:
+        fitting = doc.Create.NewTeeFitting(branch1_conn, trunk_conn, branch2_conn)
+        if fitting is not None:
+            log_info(f"  Wye: Created tee fitting (b1-trunk run) Id {fitting.Id.IntegerValue}")
+            return fitting
+    except Exception as e3:
+        log_info(f"  Wye: NewTeeFitting(b1, trunk, b2) failed - {e3}")
+
+    # Try Method 4: Other combinations
+    try:
+        fitting = doc.Create.NewTeeFitting(trunk_conn, branch1_conn, branch2_conn)
+        if fitting is not None:
+            log_info(f"  Wye: Created tee fitting (trunk-b1 run) Id {fitting.Id.IntegerValue}")
+            return fitting
+    except Exception as e4:
+        log_info(f"  Wye: NewTeeFitting(trunk, b1, b2) failed - {e4}")
+
+    log_info("  Wye: All NewTeeFitting attempts failed - connectors may need to be at exact same point")
+
+    # Fallback: Connect branches directly to trunk
+    # When ConnectTo is used, Revit may auto-insert fittings based on routing preferences
+    log_info("  Wye: All NewTeeFitting attempts failed, trying direct connections")
+    connected_count = 0
+
+    # Connect branch1 to trunk
+    try:
+        branch1_conn.ConnectTo(trunk_conn)
+        if branch1_conn.IsConnected:
+            log_info("  Wye: Connected branch1 to trunk via ConnectTo")
+            connected_count += 1
+    except Exception as e:
+        log_info(f"  Wye: branch1→trunk ConnectTo failed - {e}")
+
+    # Try to connect branch2 - need to find an available connector
+    # IMPORTANT: After ConnectTo, Revit may have modified the document, invalidating connector references.
+    # We need to re-fetch branch2's connector to get a fresh reference.
+    if connected_count > 0:
+        # Re-fetch branch2 connector (original may be stale after document modification)
+        try:
+            branch2_conn = get_pipe_end_connector(branch2_last, at_end=True)
+            if branch2_conn is None:
+                log_info("  Wye: Could not re-fetch branch2 connector")
+            elif branch2_conn.IsConnected:
+                log_info("  Wye: branch2 already connected")
+                connected_count += 1
+        except Exception as e:
+            log_info(f"  Wye: Error re-fetching branch2 connector - {e}")
+            branch2_conn = None
+
+    if connected_count > 0 and branch2_conn is not None and not branch2_conn.IsConnected:
+        fitting_found = False
+
+        # Re-fetch branch1 connector too (needed to access AllRefs after document modification)
+        try:
+            branch1_conn = get_pipe_end_connector(branch1_last, at_end=True)
+        except Exception as e:
+            log_info(f"  Wye: Error re-fetching branch1 connector - {e}")
+            branch1_conn = None
+
+        # Strategy 1: Find the fitting that branch1 is now connected to
+        if branch1_conn is not None:
+            try:
+                log_info("  Wye: Looking for fitting connected to branch1...")
+                for ref in branch1_conn.AllRefs:
+                    if ref is None:
+                        continue
+                    owner = ref.Owner
+                    if owner is None:
+                        continue
+
+                    # Check if this is a fitting (has MEPModel)
+                    owner_type = owner.GetType().Name
+                    log_info(f"  Wye: branch1 connected to {owner_type} Id={owner.Id.IntegerValue}")
+
+                    if hasattr(owner, 'MEPModel') and owner.MEPModel is not None:
+                        # This is a fitting - find available connectors
+                        try:
+                            fitting_connectors = owner.MEPModel.ConnectorManager.Connectors
+                            log_info(f"  Wye: Fitting has {fitting_connectors.Size} connectors")
+
+                            for fc in fitting_connectors:
+                                try:
+                                    if not fc.IsConnected:
+                                        log_info(f"  Wye: Found unconnected fitting connector, attempting branch2 connection...")
+                                        branch2_conn.ConnectTo(fc)
+                                        if branch2_conn.IsConnected:
+                                            log_info(f"  Wye: Connected branch2 to fitting {owner.Id.IntegerValue}")
+                                            connected_count += 1
+                                            fitting_found = True
+                                            break
+                                except Exception as fc_err:
+                                    log_info(f"  Wye: Fitting connector error - {fc_err}")
+                        except Exception as mep_err:
+                            log_info(f"  Wye: MEPModel access error - {mep_err}")
+
+                    if fitting_found:
+                        break
+            except Exception as e:
+                log_info(f"  Wye: Strategy 1 (fitting search) failed - {e}")
+
+        # Strategy 2: If no fitting found, try using PlumbingUtils to break the pipe
+        # and insert a tee (this requires the trunk pipe to still be valid)
+        if not fitting_found and connected_count < 2:
+            log_info("  Wye: No fitting connector found for branch2")
+            # At this point, branch1 is connected but branch2 isn't.
+            # The user will need to manually add a cross fitting or adjust the connection.
+
+    if connected_count >= 2:
+        log_info(f"  Wye: Successfully connected {connected_count} branches")
+        return "connected"
+    elif connected_count == 1:
+        log_info("  Wye: Only 1 branch connected - second branch needs manual connection")
+        return "partial"
+
+    log_info("  Wye: All connection attempts failed - manual wye/cross fitting needed")
+    return None
+
+
 # =============================================================================
 # Main Processing
 # =============================================================================
@@ -640,17 +856,60 @@ def create_pipes_from_network(doc, network, pipe_type_id, level_id, do_fittings)
                 except Exception as e:
                     debug.append(f"    Branch elbow {i} failed: {e}")
 
-    # Create tee fittings at merge point
-    if do_fittings and network.needs_tee_fitting() and len(trunk_pipes) > 0:
+    # Debug: Show merge info state
+    log_info(f"Merge point check: merge_point={network.merge_point is not None}, merge_info={network.merge_info is not None}")
+    log_info(f"  branches={len(all_branch_pipes)}, trunk_pipes={len(trunk_pipes)}")
+    if network.merge_info:
+        log_info(f"  merge_info.branch_endpoints={len(network.merge_info.branch_endpoints)}")
+    else:
+        log_info(f"  merge_info is None - will use legacy fallback")
+
+    # Create wye fitting at merge point (for 2+ branches with merge_info)
+    if do_fittings and network.merge_info is not None and len(all_branch_pipes) >= 2 and len(trunk_pipes) > 0:
+        merge_info = network.merge_info
+        debug.append(f"Creating wye fitting at merge point")
+        debug.append(f"  Original merge: {merge_info.original_point}")
+        debug.append(f"  Trimmed trunk start: {merge_info.trunk_startpoint}")
+        debug.append(f"  {len(merge_info.branch_endpoints)} branch endpoints trimmed")
+
+        try:
+            fitting = create_wye_fitting(doc, all_branch_pipes, trunk_pipes, merge_info)
+            if fitting is not None:
+                fittings.append(fitting)
+                debug.append("  Wye fitting created successfully")
+            else:
+                debug.append("  Wye fitting failed - manual connection needed")
+        except Exception as e:
+            debug.append(f"  Wye fitting error: {e}")
+
+    # For single branch, use simple tee fitting at merge point
+    elif do_fittings and network.needs_tee_fitting() and len(trunk_pipes) > 0 and len(all_branch_pipes) == 1:
         merge_point = network.merge_point
-        debug.append(f"Attempting tee fittings at merge point: {merge_point}")
+        debug.append(f"Attempting single branch tee fitting at: {merge_point}")
+        first_trunk_pipe = trunk_pipes[0]
+        branch_pipes_list = all_branch_pipes[0]
+        if len(branch_pipes_list) > 0:
+            try:
+                last_branch_pipe = branch_pipes_list[-1]
+                fitting = create_tee_fitting(doc, last_branch_pipe, first_trunk_pipe, merge_point, trunk_pipes)
+                if fitting is not None:
+                    fittings.append(fitting)
+                    debug.append("  Connected branch to trunk")
+                else:
+                    debug.append("  Branch: Manual connection needed")
+            except Exception as e:
+                debug.append(f"  Tee fitting failed: {e}")
+
+    # Fallback for merge point without merge_info (shouldn't happen with new code)
+    elif do_fittings and network.merge_point is not None and len(all_branch_pipes) >= 2 and len(trunk_pipes) > 0:
+        merge_point = network.merge_point
+        debug.append(f"Attempting tee fittings at merge point (legacy): {merge_point}")
         debug.append(f"  {len(all_branch_pipes)} branches need to connect to trunk")
         first_trunk_pipe = trunk_pipes[0]
         for bi, branch_pipes_list in enumerate(all_branch_pipes):
             if len(branch_pipes_list) > 0:
                 try:
                     last_branch_pipe = branch_pipes_list[-1]
-                    # Pass all trunk pipes so we can find any available connector
                     fitting = create_tee_fitting(doc, last_branch_pipe, first_trunk_pipe, merge_point, trunk_pipes)
                     if fitting is not None:
                         fittings.append(fitting)

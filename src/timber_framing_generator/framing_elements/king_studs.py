@@ -72,13 +72,17 @@ def create_king_studs(
         logger.debug(f"  Trimmer width: {trimmer_width}")
         logger.debug(f"  King stud width: {king_stud_width}")
 
-        # 2. Get elevations
-        bottom_elevation = plate_data["bottom_plate_elevation"]
-        top_elevation = plate_data["top_elevation"]
+        # 2. Get elevations - convert from absolute to relative (above base plane origin)
+        # BUG FIX: plate_data elevations are absolute Z coordinates, but
+        # base_plane.PointAt() adds the v parameter to origin.Z, causing double elevation
+        base_z = base_plane.Origin.Z
+        bottom_elevation = plate_data["bottom_plate_elevation"] - base_z
+        top_elevation = plate_data["top_elevation"] - base_z
 
-        logger.debug("Elevations:")
-        logger.debug(f"  Bottom: {bottom_elevation}")
-        logger.debug(f"  Top: {top_elevation}")
+        logger.debug("Elevations (relative to base plane origin):")
+        logger.debug(f"  Base plane Z: {base_z}")
+        logger.debug(f"  Bottom (relative): {bottom_elevation}")
+        logger.debug(f"  Top (relative): {top_elevation}")
 
         # 3. Calculate horizontal positions
         opening_start = opening_data["start_u_coordinate"]

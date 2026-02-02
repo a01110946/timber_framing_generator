@@ -38,10 +38,14 @@ Performance Considerations:
 
 Usage:
     1. Connect 'walls_json' from Wall Analyzer component
-    2. Optionally connect 'framing_json' from Framing Generator
+    2. Optionally connect 'framing_json' from Framing Generator (for stud-aligned joints)
     3. Configure panel constraints (max_length, joint offsets, etc.)
     4. Set 'run' to True to execute
     5. Use 'panels_json' for downstream processing or shop drawings
+
+    Note: In the new pipeline (panelization-before-framing), this component
+    typically receives walls_json directly without framing_json. The stud
+    alignment is calculated from stud_spacing parameter instead.
 
 Input Requirements:
     walls_json (walls_json) - str:
@@ -51,7 +55,7 @@ Input Requirements:
 
     framing_json (framing_json) - str:
         JSON string from Framing Generator with framing elements
-        Required: No (enhances joint stud detection)
+        Required: No (enhances joint stud detection when available)
         Access: Item
 
     max_panel_length (max_length) - float:
@@ -210,10 +214,13 @@ def setup_component():
 
     This function handles:
     1. Setting component metadata (name, category, etc.)
-    2. Configuring input parameters
-    3. Configuring output parameters
+    2. Configuring input parameter names, descriptions, and access
+    3. Configuring output parameter names and descriptions
 
     Note: Output[0] is reserved for GH's internal 'out' - start from Output[1]
+
+    IMPORTANT: Type Hints cannot be set programmatically in Rhino 8.
+    They must be configured via UI: Right-click input → Type hint → Select type
     """
     ghenv.Component.Name = COMPONENT_NAME
     ghenv.Component.NickName = COMPONENT_NICKNAME
@@ -222,15 +229,23 @@ def setup_component():
     ghenv.Component.SubCategory = COMPONENT_SUBCATEGORY
 
     # Configure inputs
+    # NOTE: Type Hints must be set via GH UI (right-click → Type hint)
     inputs = ghenv.Component.Params.Input
     input_config = [
-        ("Walls JSON", "walls_json", "JSON string from Wall Analyzer", Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Framing JSON", "framing_json", "JSON string from Framing Generator (optional)", Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Max Panel Length", "max_length", "Maximum panel length in feet (default 24.0)", Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Joint to Opening", "joint_opening", "Min distance from joint to opening in feet (default 1.0)", Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Joint to Corner", "joint_corner", "Min distance from joint to corner in feet (default 2.0)", Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Stud Spacing", "stud_space", "Stud spacing in feet (default 1.333 = 16\" OC)", Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Run", "run", "Boolean to trigger execution", Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Walls JSON", "walls_json", "JSON string from Wall Analyzer",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Framing JSON", "framing_json", "JSON string from Framing Generator (optional, for stud alignment)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Max Panel Length", "max_length", "Maximum panel length in feet (default 24.0)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Joint to Opening", "joint_opening", "Min distance from joint to opening in feet (default 1.0)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Joint to Corner", "joint_corner", "Min distance from joint to corner in feet (default 2.0)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Stud Spacing", "stud_space", "Stud spacing in feet (default 1.333 = 16\" OC)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Run", "run", "Boolean to trigger execution",
+         Grasshopper.Kernel.GH_ParamAccess.item),
     ]
 
     for i, (name, nick, desc, access) in enumerate(input_config):
@@ -298,7 +313,7 @@ def parse_walls_json(walls_json):
 
 
 def parse_framing_json(framing_json):
-    """Parse framing JSON to list of framing dictionaries.
+    """Parse framing JSON to list of framing element dictionaries.
 
     Args:
         framing_json: JSON string or None
@@ -374,7 +389,7 @@ def process_panelization(walls_data, framing_data, config):
 
     Args:
         walls_data: List of wall dictionaries
-        framing_data: List of framing dictionaries or None
+        framing_data: List of framing dictionaries or None (from Framing Generator)
         config: PanelConfig instance
 
     Returns:

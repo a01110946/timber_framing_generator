@@ -190,6 +190,32 @@ The panelization system uses two GHPython components:
 1. **Panel Decomposer** - Calculates panels and adjusted geometry (no Revit modification)
 2. **Wall Corner Adjuster** - Optionally applies corner adjustments to Revit walls
 
+### Pipeline Architecture
+
+**Recommended Flow (Panelization Before Framing):**
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐     ┌───────────────────┐     ┌───────────────────┐
+│  Wall Analyzer  │ ──► │ Panel Decomposer │ ──► │ Cell Decomposer │ ──► │ Framing Generator │ ──► │ Geometry Converter│
+│                 │     │                  │     │   (per panel)   │     │    (per panel)    │     │                   │
+│  walls_json     │     │  panels_json     │     │   cell_json     │     │   elements_json   │     │      Breps        │
+└─────────────────┘     └──────────────────┘     └─────────────────┘     └───────────────────┘     └───────────────────┘
+```
+
+This flow ensures:
+- Each panel is framed as an independent unit
+- End studs appear at panel joints (double studs at joints)
+- No framing members cross panel boundaries
+- Cells are decomposed within panel boundaries
+
+**Legacy Flow (Without Panelization):**
+```
+Wall Analyzer → Cell Decomposer → Framing Generator → Geometry Converter
+```
+
+The Cell Decomposer supports both flows:
+- **Panel-aware mode**: Connect `panels_json` from Panel Decomposer
+- **Legacy mode**: Leave `panels_json` disconnected
+
 ### gh_panel_decomposer.py
 
 Calculates panel decomposition and corner adjustments. Outputs adjusted geometry for manufacturing but does NOT modify Revit walls.
@@ -198,12 +224,14 @@ Calculates panel decomposition and corner adjustments. Outputs adjusted geometry
 | Input | NickName | Description | Default |
 |-------|----------|-------------|---------|
 | Walls JSON | `walls_json` | JSON from Wall Analyzer | Required |
-| Framing JSON | `framing_json` | JSON from Framing Generator | Optional |
+| Elements JSON | `elements_json` | JSON from Framing Generator (optional, for stud alignment) | Optional |
 | Max Panel Length | `max_length` | Maximum panel length (ft) | 24.0 |
 | Joint to Opening | `joint_opening` | Joint offset from openings (ft) | 1.0 |
 | Joint to Corner | `joint_corner` | Joint offset from corners (ft) | 2.0 |
 | Stud Spacing | `stud_space` | Stud spacing for alignment (ft) | 1.333 |
 | Run | `run` | Boolean trigger | False |
+
+> **Note**: In the recommended pipeline (panelization before framing), the Panel Decomposer typically receives `walls_json` directly without `elements_json`. Stud alignment is calculated from the `stud_spacing` parameter instead.
 
 **Outputs:**
 | Output | NickName | Description |
@@ -240,17 +268,32 @@ Applies corner adjustments to Revit walls using Rhino.Inside.Revit API. Use this
 
 ### Workflow Options
 
-**Option A: Manufacturing Only (No Revit Changes)**
+**Option A: Full Panelized Framing (Recommended for Offsite Construction)**
 ```
-Wall Analyzer → Panel Decomposer → panels_json → Shop Drawings
-                      ↓
-              panel_curves → Visualization
+Wall Analyzer → Panel Decomposer → Cell Decomposer → Framing Generator → Geometry Converter
+      |              ↓                    ↓                  ↓                    ↓
+ walls_json    panels_json           cell_json         elements_json          Breps
+               (connect to Cell         |                  ↓
+                Decomposer's      panel-aware IDs    panel_id in metadata
+                panels_json)
 ```
-- Revit model unchanged (centerline joins preserved)
-- Panel geometry output uses adjusted dimensions
-- Suitable when Revit is for coordination only
+- Each panel framed independently with end studs
+- Cell IDs include panel info: `wall_1_panel_0_SC_0`
+- Framing elements have `panel_id` in metadata
+- Double studs at every panel joint
 
-**Option B: Full Revit Integration**
+**Option B: Whole-Wall Framing (Legacy Mode)**
+```
+Wall Analyzer → Cell Decomposer → Framing Generator → Geometry Converter
+      ↓               ↓                  ↓                    ↓
+ walls_json      cell_json         elements_json          Breps
+```
+- Leave Panel Decomposer disconnected
+- Cell Decomposer processes entire walls
+- Cell IDs without panel info: `wall_1_SC_0`
+- No panel joint considerations
+
+**Option C: Manufacturing with Revit Changes**
 ```
 Wall Analyzer → Panel Decomposer → panels_json → Wall Corner Adjuster
                       ↓                                  ↓

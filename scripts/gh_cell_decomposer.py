@@ -1,51 +1,124 @@
 # File: scripts/gh_cell_decomposer.py
-"""
-GHPython Component: Cell Decomposer
+"""Cell Decomposer for Grasshopper.
 
-Decomposes wall data into cells (stud regions, opening regions, etc.)
-and serializes to JSON format.
+Decomposes wall data into cells (stud regions, opening regions, cripple regions)
+and serializes to JSON format. Supports both whole-wall and panel-aware
+decomposition for offsite construction workflows.
 
-Inputs:
-    wall_json: JSON string from Wall Analyzer component
-    run: Boolean to trigger execution
+Key Features:
+1. Cell Decomposition
+   - Splits walls into stud cells (SC), opening cells (OC)
+   - Creates header cripple cells (HCC) above openings
+   - Creates sill cripple cells (SCC) below windows
 
-Outputs:
-    cell_json: JSON string containing cell data for all walls
-    cell_srf: DataTree of cell boundary surfaces for visualization
-    cell_types: DataTree of cell type labels (SC, OC, HCC, SCC)
-    debug_info: Debug information and status messages
+2. Panel-Aware Mode
+   - Integrates with Panel Decomposer output
+   - Decomposes cells within panel boundaries
+   - Generates panel-aware cell IDs (wall_1_panel_0_SC_0)
+
+3. Legacy Mode
+   - Works without Panel Decomposer
+   - Decomposes entire walls as single units
+   - Backward compatible with existing workflows
+
+Environment:
+    Rhino 8
+    Grasshopper
+    Python component (CPython 3)
+
+Dependencies:
+    - Rhino.Geometry: Core geometry types
+    - Grasshopper: DataTree for output organization
+    - timber_framing_generator.core: JSON schemas
+    - timber_framing_generator.cell_decomposition: Panel-aware functions
+
+Performance Considerations:
+    - Processing time scales linearly with wall count
+    - Panel-aware mode adds overhead per panel
+    - Typical walls process in < 50ms
 
 Usage:
-    1. Connect 'wall_json' from Wall Analyzer
-    2. Set 'run' to True to execute
-    3. Connect 'cell_json' to Framing Generator component
+    Option A - Without panelization (legacy mode):
+        1. Connect 'wall_json' from Wall Analyzer
+        2. Leave 'panels_json' empty
+        3. Set 'run' to True to execute
+
+    Option B - With panelization (recommended for offsite construction):
+        1. Connect 'wall_json' from Wall Analyzer
+        2. Connect 'panels_json' from Panel Decomposer
+        3. Set 'run' to True to execute
+
+Input Requirements:
+    Walls JSON (wall_json) - str:
+        JSON string from Wall Analyzer component
+        Required: Yes
+        Access: Item
+
+    Panels JSON (panels_json) - str:
+        JSON string from Panel Decomposer (optional)
+        Required: No
+        Access: Item
+
+    Run (run) - bool:
+        Boolean to trigger execution
+        Required: Yes
+        Access: Item
+
+Outputs:
+    Cell JSON (cell_json) - str:
+        JSON string containing cell data for all walls/panels
+
+    Cell Surfaces (cell_srf) - DataTree[Surface]:
+        Cell boundary surfaces for visualization
+
+    Cell Types (cell_types) - DataTree[str]:
+        Cell type labels (SC, OC, HCC, SCC)
+
+    Debug Info (debug_info) - str:
+        Debug information and status messages
+
+Technical Details:
+    - Cell IDs without panels: wall_1_SC_0
+    - Cell IDs with panels: wall_1_panel_0_SC_0
+    - Openings clipped to panel boundaries
+
+Error Handling:
+    - Invalid JSON returns empty outputs with error in debug_info
+    - Missing panels falls back to legacy mode
+    - Processing errors logged but don't halt execution
+
+Author: Timber Framing Generator
+Version: 1.1.0
 """
 
+# =============================================================================
+# Imports
+# =============================================================================
+
+# Standard library
 import sys
 import json
+import traceback
 from dataclasses import asdict
+
+# .NET / CLR
+import clr
+clr.AddReference("Grasshopper")
+clr.AddReference("RhinoCommon")
+
+# Rhino / Grasshopper
+import Rhino.Geometry as rg
+import Grasshopper
+from Grasshopper import DataTree
+from Grasshopper.Kernel.Data import GH_Path
 
 # =============================================================================
 # Force Module Reload (CPython 3 in Rhino 8)
 # =============================================================================
-# Clear cached modules to ensure fresh imports when script changes
+
 _modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
 for mod in _modules_to_clear:
     del sys.modules[mod]
-print(f"[RELOAD] Cleared {len(_modules_to_clear)} cached timber_framing_generator modules")
-
-# =============================================================================
-# RhinoCommon Setup
-# =============================================================================
-
-import clr
-
-clr.AddReference('RhinoCommon')
-clr.AddReference('Grasshopper')
-
-import Rhino.Geometry as rg
-from Grasshopper import DataTree
-from Grasshopper.Kernel.Data import GH_Path
 
 # =============================================================================
 # Project Setup
@@ -60,14 +133,145 @@ from src.timber_framing_generator.core.json_schemas import (
     deserialize_wall_data, FramingJSONEncoder
 )
 from src.timber_framing_generator.utils.geometry_factory import get_factory
+from src.timber_framing_generator.cell_decomposition import (
+    get_openings_in_range,
+    clip_opening_to_range,
+    check_opening_spans_panel_joint,
+    generate_panel_cell_id,
+)
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+COMPONENT_NAME = "Cell Decomposer"
+COMPONENT_NICKNAME = "CellDecomp"
+COMPONENT_MESSAGE = "v1.1"
+COMPONENT_CATEGORY = "Timber Framing"
+COMPONENT_SUBCATEGORY = "Analysis"
+
+# =============================================================================
+# Logging Utilities
+# =============================================================================
+
+def log_message(message, level="info"):
+    """Log to console and optionally add GH runtime message."""
+    print(f"[{level.upper()}] {message}")
+
+    if level == "warning":
+        ghenv.Component.AddRuntimeMessage(
+            Grasshopper.Kernel.GH_RuntimeMessageLevel.Warning, message)
+    elif level == "error":
+        ghenv.Component.AddRuntimeMessage(
+            Grasshopper.Kernel.GH_RuntimeMessageLevel.Error, message)
+
+
+def log_debug(message):
+    """Log debug message (console only)."""
+    print(f"[DEBUG] {message}")
+
+
+def log_info(message):
+    """Log info message (console only)."""
+    print(f"[INFO] {message}")
+
+
+def log_warning(message):
+    """Log warning message (console + GH UI)."""
+    log_message(message, "warning")
+
+
+def log_error(message):
+    """Log error message (console + GH UI)."""
+    log_message(message, "error")
+
+# =============================================================================
+# Component Setup
+# =============================================================================
+
+def setup_component():
+    """Initialize and configure the Grasshopper component.
+
+    Configures:
+    1. Component metadata (name, category, etc.)
+    2. Input parameter names, descriptions, and access
+    3. Output parameter names and descriptions
+
+    Note: Output[0] is reserved for GH's internal 'out' - start from Output[1]
+
+    IMPORTANT: Type Hints cannot be set programmatically in Rhino 8.
+    They must be configured via UI: Right-click input -> Type hint -> Select type
+    """
+    ghenv.Component.Name = COMPONENT_NAME
+    ghenv.Component.NickName = COMPONENT_NICKNAME
+    ghenv.Component.Message = COMPONENT_MESSAGE
+    ghenv.Component.Category = COMPONENT_CATEGORY
+    ghenv.Component.SubCategory = COMPONENT_SUBCATEGORY
+
+    # Configure inputs
+    inputs = ghenv.Component.Params.Input
+    input_config = [
+        ("Walls JSON", "wall_json", "JSON string from Wall Analyzer",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Panels JSON", "panels_json", "JSON string from Panel Decomposer (optional)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Run", "run", "Boolean to trigger execution",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+    ]
+
+    for i, (name, nick, desc, access) in enumerate(input_config):
+        if i < inputs.Count:
+            inputs[i].Name = name
+            inputs[i].NickName = nick
+            inputs[i].Description = desc
+            inputs[i].Access = access
+
+    # Configure outputs (start from index 1)
+    outputs = ghenv.Component.Params.Output
+    output_config = [
+        ("Cell JSON", "cell_json", "JSON string containing cell data"),
+        ("Cell Surfaces", "cell_srf", "Cell boundary surfaces for visualization"),
+        ("Cell Types", "cell_types", "Cell type labels (SC, OC, HCC, SCC)"),
+        ("Debug Info", "debug_info", "Debug information and status"),
+    ]
+
+    for i, (name, nick, desc) in enumerate(output_config):
+        idx = i + 1
+        if idx < outputs.Count:
+            outputs[idx].Name = name
+            outputs[idx].NickName = nick
+            outputs[idx].Description = desc
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
-def create_cell_surface(corners: CellCorners):
+def validate_inputs(wall_json, run):
+    """Validate component inputs.
+
+    Args:
+        wall_json: JSON string with wall data
+        run: Boolean trigger
+
+    Returns:
+        tuple: (is_valid, error_message)
     """
-    Create a visualization surface from cell corners using RhinoCommonFactory.
+    if not run:
+        return False, "Component not running. Set 'run' to True."
+
+    if not wall_json:
+        return False, "No wall_json input provided"
+
+    try:
+        json.loads(wall_json)
+    except json.JSONDecodeError as e:
+        return False, f"Invalid JSON in wall_json: {e}"
+
+    return True, None
+
+
+def create_cell_surface(corners):
+    """Create a visualization surface from cell corners using RhinoCommonFactory.
 
     Args:
         corners: CellCorners with bottom_left, bottom_right, top_right, top_left
@@ -84,16 +288,268 @@ def create_cell_surface(corners: CellCorners):
             (corners.top_left.x, corners.top_left.y, corners.top_left.z),
         )
     except Exception as e:
-        print(f"Error creating cell surface: {e}")
+        log_debug(f"Error creating cell surface: {e}")
         return None
 
 
-def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
-    """
-    Decompose a single wall from JSON to cells.
+def parse_panels_json(panels_json_str):
+    """Parse panels JSON to extract panel data.
 
-    This is a simplified version - in full implementation would call
-    the cell_segmentation module with reconstructed Rhino geometry.
+    Args:
+        panels_json_str: JSON string containing panels data
+
+    Returns:
+        List of panel result dictionaries
+    """
+    if not panels_json_str:
+        return []
+    data = json.loads(panels_json_str)
+    return data if isinstance(data, list) else [data]
+
+
+def get_panels_for_wall(panels_data, wall_id):
+    """Get panels for a specific wall from the panels data.
+
+    Args:
+        panels_data: List of panel result dictionaries
+        wall_id: Wall ID to look up
+
+    Returns:
+        List of panel dictionaries for this wall
+    """
+    for result in panels_data:
+        if result.get('wall_id') == wall_id:
+            return result.get('panels', [])
+    return []
+
+
+def decompose_panel_to_cells(wall_dict, panel, wall_index, panel_index):
+    """Decompose a single panel (wall segment) to cells.
+
+    Args:
+        wall_dict: Wall data dictionary from JSON
+        panel: Panel dictionary with id, u_start, u_end, etc.
+        wall_index: Index for this wall
+        panel_index: Index for this panel within the wall
+
+    Returns:
+        Tuple of (CellData, list of surfaces, list of type labels)
+    """
+    wall_id = wall_dict.get('wall_id', f'wall_{wall_index}')
+    panel_id = panel.get('id', f'{wall_id}_panel_{panel_index}')
+    panel_u_start = panel.get('u_start', 0)
+    panel_u_end = panel.get('u_end', wall_dict.get('wall_length', 0))
+    panel_length = panel_u_end - panel_u_start
+
+    wall_height = wall_dict.get('wall_height', 0)
+    base_elevation = wall_dict.get('base_elevation', 0)
+
+    base_plane = wall_dict.get('base_plane', {})
+    origin = base_plane.get('origin', {'x': 0, 'y': 0, 'z': 0})
+    x_axis = base_plane.get('x_axis', {'x': 1, 'y': 0, 'z': 0})
+
+    cells = []
+    surfaces = []
+    type_labels = []
+
+    all_openings = wall_dict.get('openings', [])
+    panel_openings = get_openings_in_range(all_openings, panel_u_start, panel_u_end)
+
+    log_debug(f"Panel {panel_id}: range u={panel_u_start:.2f} to {panel_u_end:.2f}, {len(panel_openings)} openings")
+
+    def world_point(u_coord, v_coord):
+        return Point3D(
+            origin['x'] + x_axis['x'] * u_coord,
+            origin['y'] + x_axis['y'] * u_coord,
+            base_elevation + v_coord
+        )
+
+    cell_idx = 0
+
+    if not panel_openings:
+        corners = CellCorners(
+            bottom_left=world_point(panel_u_start, 0),
+            bottom_right=world_point(panel_u_end, 0),
+            top_right=world_point(panel_u_end, wall_height),
+            top_left=world_point(panel_u_start, wall_height),
+        )
+        cell = CellInfo(
+            id=generate_panel_cell_id(wall_id, panel_index, "SC", cell_idx),
+            cell_type="SC",
+            u_start=panel_u_start,
+            u_end=panel_u_end,
+            v_start=0,
+            v_end=wall_height,
+            corners=corners,
+            panel_id=panel_id,
+        )
+        cells.append(cell)
+        srf = create_cell_surface(corners)
+        if srf:
+            surfaces.append(srf)
+        type_labels.append("SC")
+    else:
+        sorted_openings = sorted(panel_openings, key=lambda o: o.get('u_start', 0))
+        current_u = panel_u_start
+
+        for opening in sorted_openings:
+            clipped = clip_opening_to_range(opening, panel_u_start, panel_u_end)
+            if not clipped:
+                continue
+
+            o_u_start = clipped.get('u_start', 0)
+            o_u_end = clipped.get('u_end', 0)
+            o_v_start = clipped.get('v_start', 0)
+            o_v_end = clipped.get('v_end', 0)
+            o_type = clipped.get('opening_type', 'window')
+            o_id = clipped.get('id', f'opening_{cell_idx}')
+
+            # Stud cell before opening
+            if current_u < o_u_start:
+                corners = CellCorners(
+                    bottom_left=world_point(current_u, 0),
+                    bottom_right=world_point(o_u_start, 0),
+                    top_right=world_point(o_u_start, wall_height),
+                    top_left=world_point(current_u, wall_height),
+                )
+                cell = CellInfo(
+                    id=generate_panel_cell_id(wall_id, panel_index, "SC", cell_idx),
+                    cell_type="SC",
+                    u_start=current_u,
+                    u_end=o_u_start,
+                    v_start=0,
+                    v_end=wall_height,
+                    corners=corners,
+                    panel_id=panel_id,
+                )
+                cells.append(cell)
+                srf = create_cell_surface(corners)
+                if srf:
+                    surfaces.append(srf)
+                type_labels.append("SC")
+                cell_idx += 1
+
+            # Header cripple cell (above opening)
+            if o_v_end < wall_height:
+                corners = CellCorners(
+                    bottom_left=world_point(o_u_start, o_v_end),
+                    bottom_right=world_point(o_u_end, o_v_end),
+                    top_right=world_point(o_u_end, wall_height),
+                    top_left=world_point(o_u_start, wall_height),
+                )
+                cell = CellInfo(
+                    id=generate_panel_cell_id(wall_id, panel_index, "HCC", cell_idx),
+                    cell_type="HCC",
+                    u_start=o_u_start,
+                    u_end=o_u_end,
+                    v_start=o_v_end,
+                    v_end=wall_height,
+                    corners=corners,
+                    opening_id=o_id,
+                    panel_id=panel_id,
+                )
+                cells.append(cell)
+                srf = create_cell_surface(corners)
+                if srf:
+                    surfaces.append(srf)
+                type_labels.append("HCC")
+                cell_idx += 1
+
+            # Opening cell
+            corners = CellCorners(
+                bottom_left=world_point(o_u_start, o_v_start),
+                bottom_right=world_point(o_u_end, o_v_start),
+                top_right=world_point(o_u_end, o_v_end),
+                top_left=world_point(o_u_start, o_v_end),
+            )
+            cell = CellInfo(
+                id=generate_panel_cell_id(wall_id, panel_index, "OC", cell_idx),
+                cell_type="OC",
+                u_start=o_u_start,
+                u_end=o_u_end,
+                v_start=o_v_start,
+                v_end=o_v_end,
+                corners=corners,
+                opening_id=o_id,
+                opening_type=o_type,
+                panel_id=panel_id,
+            )
+            cells.append(cell)
+            srf = create_cell_surface(corners)
+            if srf:
+                surfaces.append(srf)
+            type_labels.append("OC")
+            cell_idx += 1
+
+            # Sill cripple cell (below window)
+            if o_v_start > 0 and o_type == 'window':
+                corners = CellCorners(
+                    bottom_left=world_point(o_u_start, 0),
+                    bottom_right=world_point(o_u_end, 0),
+                    top_right=world_point(o_u_end, o_v_start),
+                    top_left=world_point(o_u_start, o_v_start),
+                )
+                cell = CellInfo(
+                    id=generate_panel_cell_id(wall_id, panel_index, "SCC", cell_idx),
+                    cell_type="SCC",
+                    u_start=o_u_start,
+                    u_end=o_u_end,
+                    v_start=0,
+                    v_end=o_v_start,
+                    corners=corners,
+                    opening_id=o_id,
+                    panel_id=panel_id,
+                )
+                cells.append(cell)
+                srf = create_cell_surface(corners)
+                if srf:
+                    surfaces.append(srf)
+                type_labels.append("SCC")
+                cell_idx += 1
+
+            current_u = o_u_end
+
+        # Final stud cell after last opening
+        if current_u < panel_u_end:
+            corners = CellCorners(
+                bottom_left=world_point(current_u, 0),
+                bottom_right=world_point(panel_u_end, 0),
+                top_right=world_point(panel_u_end, wall_height),
+                top_left=world_point(current_u, wall_height),
+            )
+            cell = CellInfo(
+                id=generate_panel_cell_id(wall_id, panel_index, "SC", cell_idx),
+                cell_type="SC",
+                u_start=current_u,
+                u_end=panel_u_end,
+                v_start=0,
+                v_end=wall_height,
+                corners=corners,
+                panel_id=panel_id,
+            )
+            cells.append(cell)
+            srf = create_cell_surface(corners)
+            if srf:
+                surfaces.append(srf)
+            type_labels.append("SC")
+
+    cell_data = CellData(
+        wall_id=wall_id,
+        cells=cells,
+        metadata={
+            'wall_length': wall_dict.get('wall_length', 0),
+            'wall_height': wall_height,
+            'panel_id': panel_id,
+            'panel_u_start': panel_u_start,
+            'panel_u_end': panel_u_end,
+        }
+    )
+
+    return cell_data, surfaces, type_labels
+
+
+def decompose_wall_json_to_cells(wall_dict, wall_index):
+    """Decompose a single wall from JSON to cells (legacy mode).
 
     Args:
         wall_dict: Wall data dictionary from JSON
@@ -107,43 +563,18 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
     wall_height = wall_dict.get('wall_height', 0)
     base_elevation = wall_dict.get('base_elevation', 0)
 
-    # Get base plane origin for positioning
     base_plane = wall_dict.get('base_plane', {})
     origin = base_plane.get('origin', {'x': 0, 'y': 0, 'z': 0})
     x_axis = base_plane.get('x_axis', {'x': 1, 'y': 0, 'z': 0})
-    y_axis = base_plane.get('y_axis', {'x': 0, 'y': 1, 'z': 0})
 
     cells = []
     surfaces = []
     type_labels = []
-
     openings = wall_dict.get('openings', [])
 
-    # Simple cell decomposition algorithm:
-    # 1. Create stud cells for regions without openings
-    # 2. Create opening cells, header cripple cells, sill cripple cells
-
-    # Debug: Print opening data with ALL relevant fields
-    print(f"\n=== CELL DECOMPOSER DEBUG for {wall_id} ===")
-    print(f"  Wall length: {wall_length}, height: {wall_height}")
-    print(f"  Openings count: {len(openings)}")
-    for idx, op in enumerate(openings):
-        # Show all fields to diagnose SCC creation issue
-        op_type = op.get('opening_type', 'MISSING')
-        v_start = op.get('v_start', 'MISSING')
-        v_end = op.get('v_end', 'MISSING')
-        sill_height = op.get('sill_height', 'MISSING')
-        print(f"    Opening {idx}:")
-        print(f"      opening_type = '{op_type}'")
-        print(f"      v_start = {v_start}")
-        print(f"      v_end = {v_end}")
-        print(f"      sill_height = {sill_height}")
-        print(f"      SCC condition: v_start > 0 = {v_start > 0 if isinstance(v_start, (int, float)) else 'N/A'}, "
-              f"type == 'window' = {op_type == 'window'}")
+    log_debug(f"Wall {wall_id}: L={wall_length:.2f}, H={wall_height:.2f}, {len(openings)} openings")
 
     if not openings:
-        # No openings - single stud cell spanning entire wall
-        print(f"  -> No openings, creating single SC cell")
         corners = CellCorners(
             bottom_left=Point3D(origin['x'], origin['y'], base_elevation),
             bottom_right=Point3D(
@@ -158,7 +589,6 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
             ),
             top_left=Point3D(origin['x'], origin['y'], base_elevation + wall_height),
         )
-
         cell = CellInfo(
             id=f"{wall_id}_SC_0",
             cell_type="SC",
@@ -169,15 +599,12 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
             corners=corners,
         )
         cells.append(cell)
-
         srf = create_cell_surface(corners)
         if srf:
             surfaces.append(srf)
         type_labels.append("SC")
     else:
-        # Sort openings by u_start
         sorted_openings = sorted(openings, key=lambda o: o.get('u_start', 0))
-
         current_u = 0
         cell_idx = 0
 
@@ -189,7 +616,7 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
             o_type = opening.get('opening_type', 'window')
             o_id = opening.get('id', f'opening_{cell_idx}')
 
-            # Stud cell before opening (if space exists)
+            # Stud cell before opening
             if current_u < o_u_start:
                 corners = CellCorners(
                     bottom_left=Point3D(
@@ -229,7 +656,7 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
                 type_labels.append("SC")
                 cell_idx += 1
 
-            # Header cripple cell (above opening) if not a door
+            # Header cripple cell (above opening)
             if o_v_end < wall_height:
                 corners = CellCorners(
                     bottom_left=Point3D(
@@ -311,9 +738,7 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
             type_labels.append("OC")
             cell_idx += 1
 
-            # Sill cripple cell (below opening) - windows only
-            print(f"  SCC Check: o_v_start={o_v_start}, o_type='{o_type}'")
-            print(f"    Condition: o_v_start > 0 = {o_v_start > 0}, o_type == 'window' = {o_type == 'window'}")
+            # Sill cripple cell (below window)
             if o_v_start > 0 and o_type == 'window':
                 corners = CellCorners(
                     bottom_left=Point3D(
@@ -404,85 +829,170 @@ def decompose_wall_json_to_cells(wall_dict: dict, wall_index: int) -> tuple:
     return cell_data, surfaces, type_labels
 
 
-# =============================================================================
-# Main Execution
-# =============================================================================
+def process_decomposition(wall_list, panels_data):
+    """Process all walls/panels through decomposition.
 
-# Initialize outputs
-cell_json = "[]"
-cell_srf = DataTree[object]()
-cell_types = DataTree[object]()
-debug_info = ""
+    Args:
+        wall_list: List of wall dictionaries
+        panels_data: List of panel result dictionaries or None
 
-if run and wall_json:
-    try:
-        # Handle Grasshopper wrapping string in list
-        json_input = wall_json
-        if isinstance(wall_json, (list, tuple)):
-            json_input = wall_json[0] if wall_json else ""
+    Returns:
+        Tuple of (all_cell_data, cell_srf_tree, cell_types_tree, log_lines)
+    """
+    all_cell_data = []
+    cell_srf = DataTree[object]()
+    cell_types = DataTree[object]()
+    log_lines = []
+    tree_idx = 0
 
-        # Parse wall JSON
-        wall_list = json.loads(json_input)
+    if panels_data:
+        log_lines.append("=== PANEL-AWARE MODE ===")
+        log_lines.append(f"Processing {len(wall_list)} walls with panel decomposition")
+    else:
+        log_lines.append("=== LEGACY MODE (no panels) ===")
+        log_lines.append(f"Processing {len(wall_list)} walls")
 
-        if not wall_list:
-            debug_info = "No walls in JSON input"
-        else:
-            all_cell_data = []
-            debug_lines = [f"Processing {len(wall_list)} walls..."]
+    for wall_idx, wall_dict in enumerate(wall_list):
+        wall_id = wall_dict.get('wall_id', f'wall_{wall_idx}')
 
-            for i, wall_dict in enumerate(wall_list):
-                try:
-                    cell_data, surfaces, type_labels = decompose_wall_json_to_cells(
-                        wall_dict, i
-                    )
+        try:
+            if panels_data:
+                wall_panels = get_panels_for_wall(panels_data, wall_id)
+
+                if not wall_panels:
+                    log_lines.append(f"Wall {wall_idx} ({wall_id}): No panels, using whole-wall mode")
+                    cell_data, surfaces, type_labels = decompose_wall_json_to_cells(wall_dict, wall_idx)
                     all_cell_data.append(cell_data)
 
-                    # Add surfaces and labels to DataTrees
-                    wall_path = GH_Path(i)
                     for j, srf in enumerate(surfaces):
-                        cell_srf.Add(srf, GH_Path(i, j))
+                        cell_srf.Add(srf, GH_Path(tree_idx, j))
                     for j, label in enumerate(type_labels):
-                        cell_types.Add(label, GH_Path(i, j))
+                        cell_types.Add(label, GH_Path(tree_idx, j))
 
-                    debug_lines.append(
-                        f"Wall {i}: {len(cell_data.cells)} cells "
-                        f"(SC:{type_labels.count('SC')}, OC:{type_labels.count('OC')}, "
-                        f"HCC:{type_labels.count('HCC')}, SCC:{type_labels.count('SCC')})"
-                    )
+                    log_lines.append(f"  Cells: {len(cell_data.cells)}")
+                    tree_idx += 1
+                else:
+                    log_lines.append(f"Wall {wall_idx} ({wall_id}): {len(wall_panels)} panels")
 
-                except Exception as e:
-                    debug_lines.append(f"Wall {i}: ERROR - {str(e)}")
+                    for panel_idx, panel in enumerate(wall_panels):
+                        panel_id = panel.get('id', f'{wall_id}_panel_{panel_idx}')
+                        cell_data, surfaces, type_labels = decompose_panel_to_cells(
+                            wall_dict, panel, wall_idx, panel_idx
+                        )
+                        all_cell_data.append(cell_data)
 
-            # Serialize all cells to JSON
-            if all_cell_data:
-                cell_dicts = [asdict(cd) for cd in all_cell_data]
-                cell_json = json.dumps(cell_dicts, cls=FramingJSONEncoder, indent=2)
-                debug_lines.append(f"\nSuccess: Serialized cells for {len(all_cell_data)} walls")
+                        for j, srf in enumerate(surfaces):
+                            cell_srf.Add(srf, GH_Path(tree_idx, j))
+                        for j, label in enumerate(type_labels):
+                            cell_types.Add(label, GH_Path(tree_idx, j))
 
-                # DEBUG: Verify serialized structure
-                print(f"\n{'='*60}")
-                print(f"CELL DECOMPOSER DEBUG - SERIALIZATION CHECK")
-                print(f"{'='*60}")
-                for i, cd in enumerate(cell_dicts):
-                    wall_id = cd.get('wall_id', 'UNKNOWN')
-                    cells_list = cd.get('cells', [])
-                    print(f"Wall {i} ({wall_id}): {len(cells_list)} cells in serialized dict")
-                    for cidx, c in enumerate(cells_list[:3]):  # Show first 3
-                        print(f"  Cell {cidx}: type={c.get('cell_type', 'N/A')}, id={c.get('id', 'N/A')}")
-                    if len(cells_list) > 3:
-                        print(f"  ... and {len(cells_list) - 3} more")
-                print(f"{'='*60}\n")
+                        log_lines.append(f"  Panel {panel_idx}: {len(cell_data.cells)} cells")
+                        tree_idx += 1
+            else:
+                cell_data, surfaces, type_labels = decompose_wall_json_to_cells(wall_dict, wall_idx)
+                all_cell_data.append(cell_data)
 
-            debug_info = "\n".join(debug_lines)
+                for j, srf in enumerate(surfaces):
+                    cell_srf.Add(srf, GH_Path(tree_idx, j))
+                for j, label in enumerate(type_labels):
+                    cell_types.Add(label, GH_Path(tree_idx, j))
 
-    except json.JSONDecodeError as e:
-        debug_info = f"JSON Parse Error: {str(e)}"
+                log_lines.append(f"Wall {wall_idx} ({wall_id}): {len(cell_data.cells)} cells")
+                tree_idx += 1
+
+        except Exception as e:
+            log_lines.append(f"Wall {wall_idx}: ERROR - {str(e)}")
+            log_lines.append(traceback.format_exc())
+
+    return all_cell_data, cell_srf, cell_types, log_lines
+
+# =============================================================================
+# Main Function
+# =============================================================================
+
+def main():
+    """Main entry point for the component.
+
+    Returns:
+        tuple: (cell_json, cell_srf, cell_types, debug_info)
+    """
+    setup_component()
+
+    # Initialize outputs
+    cell_json = "[]"
+    cell_srf = DataTree[object]()
+    cell_types = DataTree[object]()
+    log_lines = []
+
+    try:
+        # Unwrap Grasshopper list wrappers
+        wall_json_input = wall_json
+        if isinstance(wall_json, (list, tuple)):
+            wall_json_input = wall_json[0] if wall_json else None
+
+        panels_json_input = panels_json if panels_json else None
+        if isinstance(panels_json, (list, tuple)):
+            panels_json_input = panels_json[0] if panels_json else None
+
+        # Validate inputs
+        is_valid, error_msg = validate_inputs(wall_json_input, run)
+        if not is_valid:
+            if error_msg and "not running" not in error_msg.lower():
+                log_warning(error_msg)
+            return cell_json, cell_srf, cell_types, error_msg
+
+        # Parse inputs
+        wall_list = json.loads(wall_json_input)
+        panels_data = parse_panels_json(panels_json_input) if panels_json_input else None
+
+        log_lines.append(f"Cell Decomposer v1.1")
+        log_lines.append(f"Walls: {len(wall_list)}")
+        log_lines.append("")
+
+        # Process decomposition
+        all_cell_data, cell_srf, cell_types, process_log = process_decomposition(
+            wall_list, panels_data
+        )
+        log_lines.extend(process_log)
+
+        # Serialize to JSON
+        if all_cell_data:
+            cell_dicts = [asdict(cd) for cd in all_cell_data]
+            cell_json = json.dumps(cell_dicts, cls=FramingJSONEncoder, indent=2)
+
+            total_cells = sum(len(cd.cells) for cd in all_cell_data)
+            log_lines.append("")
+            log_lines.append(f"=== SUMMARY ===")
+            log_lines.append(f"Total entries: {len(all_cell_data)}")
+            log_lines.append(f"Total cells: {total_cells}")
+
     except Exception as e:
-        import traceback
-        debug_info = f"ERROR: {str(e)}\n{traceback.format_exc()}"
+        log_error(f"Unexpected error: {str(e)}")
+        log_lines.append(f"ERROR: {str(e)}")
+        log_lines.append(traceback.format_exc())
 
-elif not run:
-    debug_info = "Set 'run' to True to execute"
-elif not wall_json:
-    debug_info = "No wall_json input provided"
+    return cell_json, cell_srf, cell_types, "\n".join(log_lines)
 
+# =============================================================================
+# Execution
+# =============================================================================
+
+# Set default values for optional inputs
+try:
+    wall_json
+except NameError:
+    wall_json = None
+
+try:
+    panels_json
+except NameError:
+    panels_json = None
+
+try:
+    run
+except NameError:
+    run = False
+
+# Execute main
+if __name__ == "__main__":
+    cell_json, cell_srf, cell_types, debug_info = main()

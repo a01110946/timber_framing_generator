@@ -1,6 +1,6 @@
 # File: timber_framing_generator/cell_decomposition/cell_segmentation.py
 
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Optional, Tuple
 import Rhino.Geometry as rg
 from src.timber_framing_generator.cell_decomposition.cell_types import (
     create_wall_boundary_cell_data,
@@ -10,6 +10,132 @@ from src.timber_framing_generator.cell_decomposition.cell_types import (
     create_header_cripple_cell_data,
     CellDataDict,  # Import the type hint
 )
+
+
+# =============================================================================
+# Panel-Aware Helper Functions (JSON-compatible)
+# =============================================================================
+
+def get_openings_in_range(
+    openings: List[Dict],
+    u_start: float,
+    u_end: float,
+    tolerance: float = 1e-6
+) -> List[Dict]:
+    """Filter openings that fall within (or overlap with) a U-coordinate range.
+
+    Openings that partially overlap with the range are included and can be
+    clipped using clip_opening_to_range().
+
+    Args:
+        openings: List of opening dictionaries with u_start/u_end keys
+        u_start: Start of the U-range to filter by
+        u_end: End of the U-range to filter by
+        tolerance: Numeric tolerance for boundary checks
+
+    Returns:
+        List of opening dictionaries that overlap with the range
+    """
+    result = []
+    for opening in openings:
+        o_u_start = opening.get('u_start', 0)
+        o_u_end = opening.get('u_end', 0)
+
+        # Check for overlap: opening overlaps if not completely before or after range
+        if o_u_end > u_start + tolerance and o_u_start < u_end - tolerance:
+            result.append(opening)
+
+    return result
+
+
+def clip_opening_to_range(
+    opening: Dict,
+    u_start: float,
+    u_end: float
+) -> Optional[Dict]:
+    """Clip an opening to fit within a U-coordinate range.
+
+    If the opening is completely outside the range, returns None.
+    If partially inside, returns a modified copy with adjusted u_start/u_end.
+
+    Args:
+        opening: Opening dictionary with u_start/u_end keys
+        u_start: Start of the U-range to clip to
+        u_end: End of the U-range to clip to
+
+    Returns:
+        Clipped opening dictionary, or None if completely outside range
+    """
+    o_u_start = opening.get('u_start', 0)
+    o_u_end = opening.get('u_end', 0)
+
+    # Check if completely outside
+    if o_u_end <= u_start or o_u_start >= u_end:
+        return None
+
+    # Clip to range
+    clipped = dict(opening)  # Make a copy
+    clipped['u_start'] = max(o_u_start, u_start)
+    clipped['u_end'] = min(o_u_end, u_end)
+
+    return clipped
+
+
+def check_opening_spans_panel_joint(
+    opening: Dict,
+    joint_u_coord: float,
+    tolerance: float = 1e-6
+) -> bool:
+    """Check if an opening spans across a panel joint location.
+
+    This is typically an error condition - openings should not cross panel joints.
+
+    Args:
+        opening: Opening dictionary with u_start/u_end keys
+        joint_u_coord: U-coordinate of the panel joint
+        tolerance: Numeric tolerance for boundary checks
+
+    Returns:
+        True if the opening spans the joint, False otherwise
+    """
+    o_u_start = opening.get('u_start', 0)
+    o_u_end = opening.get('u_end', 0)
+
+    return o_u_start + tolerance < joint_u_coord < o_u_end - tolerance
+
+
+def get_panel_id_prefix(wall_id: str, panel_index: int) -> str:
+    """Generate a panel ID prefix for cell IDs.
+
+    Args:
+        wall_id: The wall's ID
+        panel_index: Index of the panel within the wall
+
+    Returns:
+        Panel ID string (e.g., "wall_1_panel_0")
+    """
+    return f"{wall_id}_panel_{panel_index}"
+
+
+def generate_panel_cell_id(
+    wall_id: str,
+    panel_index: int,
+    cell_type: str,
+    cell_index: int
+) -> str:
+    """Generate a cell ID that includes panel information.
+
+    Args:
+        wall_id: The wall's ID
+        panel_index: Index of the panel within the wall
+        cell_type: Cell type code (SC, OC, HCC, SCC)
+        cell_index: Index of the cell within the panel
+
+    Returns:
+        Cell ID string (e.g., "wall_1_panel_0_SC_0")
+    """
+    panel_prefix = get_panel_id_prefix(wall_id, panel_index)
+    return f"{panel_prefix}_{cell_type}_{cell_index}"
 
 
 def _calculate_corner_points(

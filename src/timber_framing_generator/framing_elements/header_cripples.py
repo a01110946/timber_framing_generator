@@ -119,15 +119,20 @@ class HeaderCrippleGenerator:
             logger.debug(f"  Minimum length: {min_cripple_length}")
 
             # Calculate vertical bounds
-            header_top_elevation = header_data.get("top_elevation")
+            # BUG FIX: Convert from absolute Z to relative (above base plane origin)
+            # These elevations are absolute, but PointAt/Add adds them to origin.Z
+            base_z = base_plane.Origin.Z if base_plane else 0.0
+            header_top_elevation_abs = header_data.get("top_elevation")
+            header_top_elevation = header_top_elevation_abs - base_z if header_top_elevation_abs is not None else None
 
             # Try different keys for bottom elevation
-            top_plate_bottom_elevation = top_plate_data.get(
+            top_plate_bottom_elevation_abs = top_plate_data.get(
                 "bottom_elevation"
             ) or top_plate_data.get("boundary_elevation")
+            top_plate_bottom_elevation = top_plate_bottom_elevation_abs - base_z if top_plate_bottom_elevation_abs is not None else None
 
-            logger.debug(f"Header top elevation: {header_top_elevation}")
-            logger.debug(f"Top plate bottom elevation: {top_plate_bottom_elevation}")
+            logger.debug(f"Header top elevation: {header_top_elevation} (relative), absolute was {header_top_elevation_abs}")
+            logger.debug(f"Top plate bottom elevation: {top_plate_bottom_elevation} (relative), absolute was {top_plate_bottom_elevation_abs}")
 
             if None in (header_top_elevation, top_plate_bottom_elevation):
                 logger.warning("Missing elevation data for header or top plate")

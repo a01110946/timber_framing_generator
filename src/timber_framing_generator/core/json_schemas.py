@@ -173,6 +173,9 @@ class CellCorners:
 class CellInfo:
     """
     Single cell from wall decomposition.
+
+    When cells are decomposed per-panel (panel-aware mode), the panel_id
+    field links back to the source panel for traceability.
     """
     id: str
     cell_type: str  # CellType enum value
@@ -183,6 +186,7 @@ class CellInfo:
     corners: CellCorners
     opening_id: Optional[str] = None  # For OC cells, links to OpeningData
     opening_type: Optional[str] = None  # "window" or "door" for OC cells
+    panel_id: Optional[str] = None  # For panel-aware decomposition, links to PanelData
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -349,6 +353,7 @@ def deserialize_cell_data(json_str: str) -> CellData:
             corners=corners,
             opening_id=c.get('opening_id'),
             opening_type=c.get('opening_type'),
+            panel_id=c.get('panel_id'),
             metadata=c.get('metadata', {}),
         )
         cells.append(cell)

@@ -220,6 +220,121 @@ def classify_element(element_type: str) -> str:
         return "unknown"
 
 
+def parse_cfs_profile_name(profile_name: str) -> dict:
+    """
+    Parse a CFS profile name into its components.
+
+    Examples:
+        "362S125-54" -> {"series": "362", "type": "S", "flange": "125", "gauge": "54"}
+        "600T125-54(50)" -> {"series": "600", "type": "T", "flange": "125", "gauge": "54"}
+
+    Returns:
+        Dict with profile components or None if not a CFS profile
+    """
+    import re
+    # Match patterns like 362S125-54 or 600T125-54(50)
+    pattern = r'^(\d{3})([ST])(\d{3})-(\d{2,3})(?:\(\d+\))?$'
+    match = re.match(pattern, profile_name.upper())
+    if match:
+        return {
+            "series": match.group(1),
+            "type": match.group(2),
+            "flange": match.group(3),
+            "gauge": match.group(4),
+        }
+    return None
+
+
+def find_similar_cfs_profile(profile_name: str, type_name_map: dict,
+                              debug: bool = False) -> tuple:
+    """
+    Find a similar CFS profile when exact match isn't available.
+
+    Matching priority:
+    1. Same profile type (S/T), same flange (125/162/250), same gauge - different series
+    2. Same profile type, different flange, same gauge
+    3. Any CFS profile of same type (S/T)
+
+    Args:
+        profile_name: Source profile (e.g., "362S125-54")
+        type_name_map: Dict of lowercase type names to Revit types
+        debug: Print debug info
+
+    Returns:
+        Tuple of (matched_type, match_quality) or (None, None)
+    """
+    if debug:
+        print(f"  [CFS MATCH] Starting CFS match for '{profile_name}'")
+
+    source = parse_cfs_profile_name(profile_name)
+    if not source:
+        if debug:
+            print(f"  [CFS MATCH] Source profile '{profile_name}' did not parse as CFS")
+        return None, None
+
+    if debug:
+        print(f"  [CFS MATCH] Source parsed: {source}")
+
+    # Parse all available CFS types
+    cfs_types = []
+    sample_type_names = []
+    for type_name, rt in type_name_map.items():
+        if len(sample_type_names) < 10:
+            sample_type_names.append(type_name)
+        parsed = parse_cfs_profile_name(type_name)
+        if parsed:
+            cfs_types.append((type_name, rt, parsed))
+
+    if debug:
+        print(f"  [CFS MATCH] Sample type names from map: {sample_type_names}")
+        print(f"  [CFS MATCH] Found {len(cfs_types)} CFS types out of {len(type_name_map)} total")
+        if cfs_types:
+            print(f"  [CFS MATCH] CFS types found: {[t[0] for t in cfs_types[:5]]}")
+
+    if not cfs_types:
+        if debug:
+            print(f"  [CFS MATCH] No CFS types found in available Revit types")
+        return None, None
+
+    if debug:
+        print(f"  Source profile parsed: {source}")
+        print(f"  Available CFS types: {len(cfs_types)}")
+
+    # Priority 1: Same type (S/T), same gauge, prefer similar series
+    candidates = []
+    for type_name, rt, parsed in cfs_types:
+        if parsed["type"] == source["type"] and parsed["gauge"] == source["gauge"]:
+            # Calculate series difference (closer = better)
+            series_diff = abs(int(parsed["series"]) - int(source["series"]))
+            flange_match = 1 if parsed["flange"] == source["flange"] else 0
+            # Score: prefer same flange, then closer series
+            score = (flange_match * 1000) + (1000 - series_diff)
+            candidates.append((score, type_name, rt))
+
+    if candidates:
+        candidates.sort(reverse=True)  # Highest score first
+        best = candidates[0]
+        if debug:
+            print(f"  CFS similar match: '{profile_name}' -> '{best[1]}' (score={best[0]})")
+        return best[2], 'cfs_similar'
+
+    # Priority 2: Same type (S/T), any gauge - for when gauge differs
+    for type_name, rt, parsed in cfs_types:
+        if parsed["type"] == source["type"]:
+            if debug:
+                print(f"  CFS type match: '{profile_name}' -> '{type_name}'")
+            return rt, 'cfs_type_match'
+
+    # Priority 3: Any CFS type at all (last resort within CFS family)
+    if cfs_types:
+        type_name, rt, _ = cfs_types[0]
+        if debug:
+            print(f"  CFS fallback: '{profile_name}' -> '{type_name}'")
+        return rt, 'cfs_fallback'
+
+    return None, None
+
+
 def find_matching_revit_type(profile_name: str, revit_types: list,
                               user_mapping: dict = None,
                               debug_first_n: int = 0) -> tuple:
@@ -231,7 +346,8 @@ def find_matching_revit_type(profile_name: str, revit_types: list,
     2. Exact match with Revit type name
     3. Profile name contained in Revit type name
     4. Default mapping
-    5. Fallback to first available type
+    5. Similar CFS profile (same type/gauge, different series)
+    6. Fallback to first available type
 
     Args:
         profile_name: Profile name from framing element (e.g., "2x4")
@@ -241,7 +357,7 @@ def find_matching_revit_type(profile_name: str, revit_types: list,
 
     Returns:
         Tuple of (matched_type, match_quality) where match_quality is:
-        'exact', 'contains', 'default', 'fallback', or None
+        'exact', 'contains', 'default', 'cfs_similar', 'fallback', or None
     """
     if not revit_types:
         return None, None
@@ -303,7 +419,15 @@ def find_matching_revit_type(profile_name: str, revit_types: list,
             if default_target in type_name:
                 return rt, 'default_contains'
 
-    # 5. Fallback to first available type
+    # 5. NEW: Find similar CFS profile when exact match fails
+    # This handles cases where generator uses 362-series but Revit has 350/600-series
+    cfs_match, cfs_quality = find_similar_cfs_profile(
+        profile_name, type_name_map, debug=(debug_first_n > 0)
+    )
+    if cfs_match:
+        return cfs_match, cfs_quality
+
+    # 6. Fallback to first available type
     if revit_types:
         return revit_types[0], 'fallback'
 
@@ -784,7 +908,7 @@ if run and elements_json:
         beam_count = 0
         skipped_count = 0
         unmapped = []
-        type_match_stats = {'exact': 0, 'contains': 0, 'default': 0, 'fallback': 0, 'user_mapping': 0, 'default_contains': 0}
+        type_match_stats = {'exact': 0, 'contains': 0, 'default': 0, 'fallback': 0, 'user_mapping': 0, 'default_contains': 0, 'cfs_similar': 0, 'cfs_type_match': 0, 'cfs_fallback': 0}
 
         # CSR statistics for debug output
         csr_stats = {}  # element_type -> {csr_angle -> count}

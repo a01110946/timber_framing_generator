@@ -13,9 +13,61 @@ This document describes the modular architecture that supports multiple material
 
 ## Architecture Diagram
 
+### Recommended Pipeline (Panelization Before Framing)
+
+For offsite/prefab construction, panelization should happen BEFORE cell decomposition:
+
 ```
 ┌────────────────────────────────────────────────────────────────────────────┐
-│                    GRASSHOPPER COMPONENT PIPELINE                          │
+│              GRASSHOPPER COMPONENT PIPELINE (PANELIZED)                    │
+└────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│ 1. Wall Analyzer │───>│ 2. Panel Decomp  │───>│ 3. Cell Decomp   │
+│  (GHPython #1)   │JSON│  (GHPython #2)   │JSON│  (GHPython #3)   │
+├──────────────────┤    ├──────────────────┤    ├──────────────────┤
+│ IN:              │    │ IN:              │    │ IN:              │
+│  - revit_walls   │    │  - walls_json    │    │  - wall_json     │
+│                  │    │  - max_length    │    │  - panels_json   │ <─ NEW
+│ OUT:             │    │  - stud_spacing  │    │                  │
+│  - wall_json     │    │ OUT:             │    │ OUT:             │
+│  - wall_viz      │    │  - panels_json   │    │  - cell_json     │
+│ (Material-Agnostic)   │  - panel_curves  │    │  - cell_viz      │
+└──────────────────┘    └──────────────────┘    └──────────────────┘
+                                                         │
+       ┌─────────────────────────────────────────────────┘
+       ▼
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│ 4. Framing Gen   │───>│ 5. Geo Converter │───>│ 6. Optional Bake │
+│  (GHPython #4)   │JSON│  (GHPython #5)   │Brep│  (GHPython #6)   │
+├──────────────────┤    ├──────────────────┤    ├──────────────────┤
+│ IN:              │    │ IN:              │    │ IN:              │
+│  - cell_json     │    │  - elements_json │    │  - geometry      │
+│  - wall_json     │    │  - filter_types  │    │  - layers        │
+│  - material_type │    │ OUT:             │    │ OUT:             │
+│ OUT:             │    │  - breps         │    │  - baked_ids     │
+│  - elements_json │    │  - curves        │    │                  │
+│  (panel_id in    │    │  - metadata      │    │                  │
+│   metadata)      │    │ (Material-Agnostic)   │                  │
+│ (Material-Specific)   └──────────────────┘    └──────────────────┘
+└──────────────────┘
+```
+
+**Key Changes in Panelized Pipeline:**
+- Panel Decomposer runs BEFORE Cell Decomposer
+- Cell Decomposer accepts optional `panels_json` input
+- Cells are decomposed per-panel (not per-wall)
+- Cell IDs include panel info: `wall_1_panel_0_SC_0`
+- Framing elements include `panel_id` in metadata
+- End studs automatically placed at panel boundaries
+
+### Legacy Pipeline (Whole-Wall Mode)
+
+For non-panelized workflows, leave Panel Decomposer disconnected:
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│              GRASSHOPPER COMPONENT PIPELINE (LEGACY)                       │
 └────────────────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
@@ -160,11 +212,12 @@ src/timber_framing_generator/
 └── utils/
     └── geometry_factory.py         # ✅ COMPLETE - RhinoCommonFactory
 
-scripts/                            # ✅ COMPLETE (Phase 3)
-├── gh_wall_analyzer.py             # Component 1: Revit → JSON
-├── gh_cell_decomposer.py           # Component 2: Cells → JSON
-├── gh_framing_generator.py         # Component 3: Elements → JSON
-└── gh_geometry_converter.py        # Component 4: JSON → RhinoCommon Breps
+scripts/                            # ✅ COMPLETE (Phase 3+)
+├── gh_wall_analyzer.py             # Component 1: Revit → walls_json
+├── gh_panel_decomposer.py          # Component 2: walls_json → panels_json (optional)
+├── gh_cell_decomposer.py           # Component 3: walls_json + panels_json → cell_json
+├── gh_framing_generator.py         # Component 4: cell_json → elements_json
+└── gh_geometry_converter.py        # Component 5: elements_json → RhinoCommon Breps
 ```
 
 ---
@@ -189,11 +242,35 @@ Logic:
   - Creates visualization geometry
 ```
 
-### Component 2: Cell Decomposer
+### Component 2: Panel Decomposer (Optional)
+**File**: `scripts/gh_panel_decomposer.py`
+```
+Inputs:
+  - walls_json (str) - JSON from Wall Analyzer
+  - elements_json (str) - Optional, for stud alignment
+  - max_length (float) - Maximum panel length in feet
+  - stud_space (float) - Stud spacing for joint alignment
+  - run (bool)
+
+Outputs:
+  - panels_json (str) - JSON with panel data and joints
+  - panel_curves (Curve[]) - Panel boundary curves
+  - joint_points (Point3d[]) - Joint location points
+  - debug_info (str)
+
+Logic:
+  - Decomposes walls into transportable panels
+  - Calculates optimal joint positions
+  - Handles corner adjustments for face-to-face dimensions
+```
+
+### Component 3: Cell Decomposer
 **File**: `scripts/gh_cell_decomposer.py`
 ```
 Inputs:
-  - wall_json (str)
+  - wall_json (str) - JSON from Wall Analyzer
+  - panels_json (str) - Optional, JSON from Panel Decomposer
+  - run (bool)
 
 Outputs:
   - cell_json (str) - JSON with all cell data
@@ -201,12 +278,13 @@ Outputs:
   - cell_types (str[]) - Cell type labels
 
 Logic:
-  - Calls existing cell_segmentation
-  - Serializes cells to JSON
-  - Creates cell visualization surfaces
+  - If panels_json provided: Decompose per-panel (panel-aware mode)
+  - If panels_json empty: Decompose per-wall (legacy mode)
+  - Panel-aware cell IDs: wall_1_panel_0_SC_0
+  - Legacy cell IDs: wall_1_SC_0
 ```
 
-### Component 3: Framing Generator
+### Component 4: Framing Generator
 **File**: `scripts/gh_framing_generator.py`
 ```
 Inputs:
@@ -223,10 +301,11 @@ Outputs:
 Logic:
   - Selects strategy based on material_type
   - Generates elements using strategy
+  - Passes panel_id to element metadata (if from panel-aware decomposition)
   - Serializes to JSON (no geometry yet!)
 ```
 
-### Component 4: Geometry Converter
+### Component 5: Geometry Converter
 **File**: `scripts/gh_geometry_converter.py`
 ```
 Inputs:
@@ -370,7 +449,20 @@ cfs_strategy = get_framing_strategy(MaterialSystem.CFS)
 elements = timber_strategy.generate_framing(wall_data, cell_data, config)
 ```
 
-### Grasshopper Pipeline
+### Grasshopper Pipeline (Panelized - Recommended)
+```
+[Revit Walls] → [Wall Analyzer] → walls_json
+                                      ↓
+              [Panel Decomposer] ← walls_json → panels_json
+                                                    ↓
+[Cell Decomposer] ← walls_json + panels_json → cell_json (per-panel cells)
+                                                    ↓
+[Framing Generator] ← cell_json + material_type → elements_json (with panel_id)
+                                                       ↓
+[Geometry Converter] ← elements_json → breps, centerlines
+```
+
+### Grasshopper Pipeline (Legacy - Without Panels)
 ```
 [Revit Walls] → [Wall Analyzer] → wall_json
                                       ↓

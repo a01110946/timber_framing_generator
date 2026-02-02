@@ -149,7 +149,12 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             top_offset = top_offset_param.AsDouble() if top_offset_param else 0.0
             # Calculate wall_top_elevation
             wall_top_elevation = top_level.Elevation + top_offset
-        
+
+        # NOTE: "Top is Attached" walls have geometry cut by floors/roofs
+        # but Revit's bounding box and solid geometry don't always reflect this accurately
+        # For now, we use level-based elevation. A future improvement could check
+        # the attached floor's bottom elevation directly.
+
         # 4. Determine if the wall is exterior.
         wall_type = revit_wall.WallType
         wall_function_param = wall_type.get_Parameter(DB.BuiltInParameter.FUNCTION_PARAM)
@@ -368,7 +373,15 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     }
                     print(f"DEBUG: Sill height value from Revit: {sill_height_value}")
                     print(f"Opening {insert_id} has opening data: {opening_data}")
-                    openings_data.append(opening_data)
+
+                    # NEW CODE: Validate opening is within wall bounds
+                    end_u_coordinate = start_u_coordinate + opening_width_value
+                    if start_u_coordinate >= 0 and end_u_coordinate <= wall_curve_length:
+                        openings_data.append(opening_data)
+                    else:
+                        print(f"WARNING: Skipping opening {insert_id} - outside wall bounds "
+                              f"(u={start_u_coordinate:.2f} to {end_u_coordinate:.2f}, "
+                              f"wall_length={wall_curve_length:.2f})")
                 else:
                     print(f"WARNING: Skipping opening {insert_id} - invalid dimensions (width={opening_width_value}, height={opening_height_value})")
 

@@ -95,8 +95,12 @@ class TrimmerGenerator:
             base_plane = self.wall_data.get("base_plane")
 
             # Get bottom elevation from plate boundary data
-            bottom_elevation = plate_data.get("boundary_elevation", 0.0)
-            logger.debug(f"Using bottom plate elevation: {bottom_elevation}")
+            # BUG FIX: Convert from absolute Z to relative (above base plane origin)
+            # boundary_elevation is absolute, but PointAt/Add adds it to origin.Z
+            base_z = base_plane.Origin.Z if base_plane else 0.0
+            bottom_elevation_absolute = plate_data.get("boundary_elevation", 0.0)
+            bottom_elevation = bottom_elevation_absolute - base_z
+            logger.debug(f"Using bottom plate elevation: {bottom_elevation} (relative), absolute was {bottom_elevation_absolute}")
 
             if base_plane is None:
                 logger.warning("No base plane available for trimmer generation")

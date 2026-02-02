@@ -115,15 +115,20 @@ class SillCrippleGenerator:
             logger.trace(f"Cripple dimensions - width: {cripple_width}, depth: {cripple_depth}, spacing: {cripple_spacing}")
 
             # Calculate vertical bounds
-            sill_bottom_elevation = sill_data.get("bottom_elevation")
+            # BUG FIX: Convert from absolute Z to relative (above base plane origin)
+            # These elevations are absolute, but PointAt/Add adds them to origin.Z
+            base_z = base_plane.Origin.Z if base_plane else 0.0
+            sill_bottom_elevation_abs = sill_data.get("bottom_elevation")
+            sill_bottom_elevation = sill_bottom_elevation_abs - base_z if sill_bottom_elevation_abs is not None else None
 
             # Try different keys for top elevation of bottom plate
-            bottom_plate_top_elevation = bottom_plate_data.get(
+            bottom_plate_top_elevation_abs = bottom_plate_data.get(
                 "top_elevation"
             ) or bottom_plate_data.get("boundary_elevation")
+            bottom_plate_top_elevation = bottom_plate_top_elevation_abs - base_z if bottom_plate_top_elevation_abs is not None else None
 
-            logger.trace(f"Sill bottom elevation: {sill_bottom_elevation}")
-            logger.trace(f"Bottom plate top elevation: {bottom_plate_top_elevation}")
+            logger.trace(f"Sill bottom elevation: {sill_bottom_elevation} (relative), absolute was {sill_bottom_elevation_abs}")
+            logger.trace(f"Bottom plate top elevation: {bottom_plate_top_elevation} (relative), absolute was {bottom_plate_top_elevation_abs}")
 
             if None in (sill_bottom_elevation, bottom_plate_top_elevation):
                 logger.warning("Missing elevation data for sill or bottom plate")

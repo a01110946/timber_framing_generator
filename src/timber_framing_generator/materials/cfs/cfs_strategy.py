@@ -85,6 +85,31 @@ class CFSFramingStrategy(FramingStrategy):
         ElementType.BOTTOM_PLATE
     """
 
+    def __init__(self):
+        """Initialize CFS strategy with wall thickness tracking."""
+        self._current_wall_thickness_inches = None
+
+    def set_wall_thickness(self, wall_data: Dict[str, Any]) -> None:
+        """
+        Set current wall thickness from wall data for profile selection.
+
+        Args:
+            wall_data: Wall data containing wall_thickness (in feet)
+        """
+        # wall_thickness is in feet, convert to inches
+        thickness_feet = wall_data.get("wall_thickness", 0)
+        if thickness_feet > 0:
+            self._current_wall_thickness_inches = thickness_feet * 12
+            logger.info(f"Set wall thickness for profile selection: {self._current_wall_thickness_inches:.2f} inches")
+        else:
+            # Try to infer from wall type name (e.g., "Basic Wall - W1 - 6\"")
+            wall_type = wall_data.get("wall_type", "")
+            import re
+            match = re.search(r'(\d+)"', wall_type)
+            if match:
+                self._current_wall_thickness_inches = float(match.group(1))
+                logger.info(f"Inferred wall thickness from type name: {self._current_wall_thickness_inches} inches")
+
     @property
     def material_system(self) -> MaterialSystem:
         """Return the material system this strategy handles."""
@@ -144,16 +169,20 @@ class CFSFramingStrategy(FramingStrategy):
     def get_profile(
         self,
         element_type: ElementType,
-        config: Dict[str, Any] = None
+        config: Dict[str, Any] = None,
+        wall_thickness_inches: float = None
     ) -> ElementProfile:
         """
         Get the profile for a specific element type.
 
         Checks config for profile overrides, otherwise uses default.
+        If wall_thickness_inches is provided, selects appropriate series
+        (e.g., 600-series for 6" walls instead of default 362-series).
 
         Args:
             element_type: The type of framing element
             config: Optional configuration with profile overrides
+            wall_thickness_inches: Optional wall thickness for series selection
 
         Returns:
             ElementProfile for the element type
@@ -166,7 +195,10 @@ class CFSFramingStrategy(FramingStrategy):
         if override_name:
             return get_cfs_profile(element_type, override_name)
 
-        return get_cfs_profile(element_type)
+        # Use wall thickness-aware selection
+        # If not explicitly provided, use the current wall thickness from instance
+        thickness = wall_thickness_inches or self._current_wall_thickness_inches
+        return get_cfs_profile(element_type, wall_thickness_inches=thickness)
 
     def _set_framing_config(
         self,
@@ -243,6 +275,9 @@ class CFSFramingStrategy(FramingStrategy):
         """
         logger.info("Creating horizontal members (CFS tracks)")
         elements = []
+
+        # Set wall thickness for profile selection
+        self.set_wall_thickness(wall_data)
 
         # Extract wall_id for element metadata
         wall_id = cell_data.get('wall_id', 'unknown')

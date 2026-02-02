@@ -180,10 +180,11 @@ src/timber_framing_generator/
 
 scripts/
 ├── gh-main.py              # Legacy monolithic Grasshopper script
-├── gh_wall_analyzer.py     # Component 1: Revit → wall_json
-├── gh_cell_decomposer.py   # Component 2: wall_json → cell_json
-├── gh_framing_generator.py # Component 3: cell_json → elements_json
-└── gh_geometry_converter.py# Component 4: elements_json → Breps
+├── gh_wall_analyzer.py     # Component 1: Revit → walls_json
+├── gh_panel_decomposer.py  # Component 2: walls_json → panels_json (optional)
+├── gh_cell_decomposer.py   # Component 3: walls_json + panels_json → cell_json
+├── gh_framing_generator.py # Component 4: cell_json → framing_json
+└── gh_geometry_converter.py# Component 5: framing_json → Breps
 
 docs/ai/                    # AI-friendly documentation (READ THESE)
 tests/                      # Unit and integration tests
@@ -230,16 +231,29 @@ mypy src/
 
 ### CRITICAL: Before Writing ANY GHPython Script
 
-**ALWAYS read the grasshopper-python-assistant skill first!**
+**YOU MUST read the grasshopper-python-assistant skill EVERY TIME before writing or modifying any GHPython script.**
+
 Location: `~/.claude/skills/grasshopper-python-assistant/`
 
-The skill contains:
-- **templates/ghpython_component.py** - Required structure for all components
-- **references/common_patterns.md** - Assembly checking, DataTrees, JSON patterns
+**Required reading before ANY GH work:**
+1. `SKILL.md` - Overview and quick reference
+2. `templates/ghpython_component.py` - **MANDATORY template structure**
+3. `templates/module_docstring.md` - **MANDATORY docstring format**
+4. `references/common_patterns.md` - DataTrees, JSON, assembly patterns
 
-**MANDATORY requirements for GHPython components:**
+**MANDATORY requirements for ALL GHPython components:**
 
-1. **Use RhinoCommonFactory for ALL geometry output** (points, vectors, curves, breps)
+1. **Follow the template structure exactly** - Every component MUST have:
+   - Module docstring following `templates/module_docstring.md` format
+   - `setup_component()` function that configures:
+     - Component metadata (Name, NickName, Message, Category, SubCategory)
+     - Input parameters with Name, NickName, Description, Access
+     - Output parameters with Name, NickName, Description (starting from index 1)
+   - `validate_inputs()` function
+   - `main()` function as entry point
+   - Execution block with `if __name__ == "__main__":`
+
+2. **Use RhinoCommonFactory for ALL geometry output** (points, vectors, curves, breps)
    ```python
    from src.timber_framing_generator.utils.geometry_factory import get_factory
    factory = get_factory()
@@ -248,9 +262,22 @@ The skill contains:
    curve = factory.create_polyline_curve(points)  # NOT rg.Polyline
    ```
 
-2. **Match input/output names with existing components** - Check existing component outputs before defining inputs
+3. **Match input/output names with existing components** - Check existing component outputs before defining inputs
 
-3. **Follow the template structure** - setup_component(), validate_inputs(), main(), etc.
+4. **Type Hints must be set via Grasshopper UI, NOT programmatically**:
+   - In Rhino 8, TypeHints CANNOT be set from within a GHPython script
+   - They must be configured manually: Right-click input → Type hint → Select type
+   - To read current type hint: `param.Converter.TypeName` (not `param.TypeHint`)
+   - Configure parameters in `setup_component()` (without TypeHint):
+   ```python
+   inputs = ghenv.Component.Params.Input
+   for i, (name, nick, desc, access) in enumerate(input_config):
+       if i < inputs.Count:
+           inputs[i].Name = name
+           inputs[i].NickName = nick
+           inputs[i].Description = desc
+           inputs[i].Access = access
+   ```
 
 When modifying GHPython scripts:
 
@@ -296,8 +323,14 @@ See `docs/ai/ai-grasshopper-rhino-patterns.md` for detailed patterns.
 
 Components communicate via JSON strings:
 ```
-Wall Analyzer → wall_json → Cell Decomposer → cell_json → Framing Generator → elements_json → Geometry Converter → Breps
+Wall Analyzer → walls_json → Panel Decomposer → panels_json → Cell Decomposer → cell_json → Framing Generator → framing_json → Geometry Converter → Breps
 ```
+
+**Standard JSON variable names** (use these consistently):
+- `walls_json` - Wall geometry from Wall Analyzer
+- `panels_json` - Panel decomposition from Panel Decomposer
+- `cell_json` - Cell decomposition from Cell Decomposer
+- `framing_json` - Framing elements from Framing Generator
 
 Benefits:
 - Inspect data between components (jSwan, Panel)

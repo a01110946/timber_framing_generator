@@ -326,6 +326,58 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
             "wall_type": "sill_track",
         }
     ),
+    # 362S162-68: Load-bearing stud with wider flange (1.62")
+    "362S162-68": ElementProfile(
+        name="362S162-68",
+        width=1.62 / 12,
+        depth=3.625 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.62,
+            "gauge": 68,
+            "thickness_mils": 68,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+            "fy_ksi": 50,
+            "wall_type": "load_bearing",
+        }
+    ),
+    # 362T125-68: Load-bearing bottom track (68 mil)
+    "362T125-68": ElementProfile(
+        name="362T125-68",
+        width=1.25 / 12,
+        depth=3.625 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "track",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 1.25,
+            "gauge": 68,
+            "thickness_mils": 68,
+            "has_lips": False,
+            "fy_ksi": 50,
+            "wall_type": "load_bearing",
+        }
+    ),
+    # 362T250-68: Load-bearing top track (68 mil, wider flange)
+    "362T250-68": ElementProfile(
+        name="362T250-68",
+        width=2.50 / 12,
+        depth=3.625 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "track",
+            "web_depth_inches": 3.625,
+            "flange_width_inches": 2.50,
+            "gauge": 68,
+            "thickness_mils": 68,
+            "has_lips": False,
+            "fy_ksi": 50,
+            "wall_type": "load_bearing",
+        }
+    ),
 
     # 4" web studs (400 series, S125 flange) - Non-bearing partitions
     "400S125-33": ElementProfile(
@@ -773,8 +825,8 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
 # Default Profile Assignments
 # =============================================================================
 
-# Maps element types to their default CFS profile
-# Uses 362 series (3 5/8") with S125 flange for standard wall studs
+# Maps element types to their default CFS profile for NON-BEARING walls
+# Uses 362 series (3 5/8") with S125 flange, 54 mil gauge
 DEFAULT_CFS_PROFILES: Dict[ElementType, str] = {
     # Tracks for horizontal members (plates)
     ElementType.BOTTOM_PLATE: "362T125-54",   # Bottom track (T125 = 1.25" flange)
@@ -793,6 +845,28 @@ DEFAULT_CFS_PROFILES: Dict[ElementType, str] = {
 
     # Bracing (bridging in CFS terminology)
     ElementType.ROW_BLOCKING: "362S125-54",
+}
+
+# Maps element types to their default CFS profile for LOAD-BEARING walls
+# Uses 362 series (3 5/8") with S162 flange, 68 mil gauge (thicker for structural)
+DEFAULT_CFS_PROFILES_LOAD_BEARING: Dict[ElementType, str] = {
+    # Tracks for horizontal members - thicker gauge for load transfer
+    ElementType.BOTTOM_PLATE: "362T125-68",   # Bottom track (68 mil gauge)
+    ElementType.TOP_PLATE: "362T250-68",      # Top track (68 mil gauge)
+
+    # Studs for vertical members - S162 flange for better load capacity
+    ElementType.STUD: "362S162-68",
+    ElementType.KING_STUD: "362S162-68",
+    ElementType.TRIMMER: "362S162-68",
+
+    # Opening components - structural grade
+    ElementType.HEADER: "600S162-68",         # Headers use deeper profiles, 68 mil
+    ElementType.SILL: "362S162-68",
+    ElementType.HEADER_CRIPPLE: "362S162-68",
+    ElementType.SILL_CRIPPLE: "362S162-68",
+
+    # Bracing (bridging in CFS terminology)
+    ElementType.ROW_BLOCKING: "362S162-68",
 }
 
 # =============================================================================
@@ -840,7 +914,8 @@ def get_series_for_wall_thickness(wall_thickness_inches: float) -> str:
 def get_cfs_profile(
     element_type: ElementType,
     profile_override: str = None,
-    wall_thickness_inches: float = None
+    wall_thickness_inches: float = None,
+    is_load_bearing: bool = False
 ) -> ElementProfile:
     """
     Get the CFS profile for a specific element type.
@@ -849,6 +924,7 @@ def get_cfs_profile(
         element_type: The type of framing element
         profile_override: Optional profile name to use instead of default
         wall_thickness_inches: Optional wall thickness to select appropriate series
+        is_load_bearing: Whether wall is load-bearing (uses thicker gauge profiles)
 
     Returns:
         ElementProfile for the requested element type
@@ -863,14 +939,19 @@ def get_cfs_profile(
         >>> profile = get_cfs_profile(ElementType.STUD, wall_thickness_inches=6.0)
         >>> print(profile.name)
         '600S125-54'
+        >>> profile = get_cfs_profile(ElementType.STUD, is_load_bearing=True)
+        >>> print(profile.name)
+        '362S162-68'
     """
     if profile_override:
         if profile_override not in CFS_PROFILES:
             raise KeyError(f"Unknown CFS profile: {profile_override}")
         return CFS_PROFILES[profile_override]
 
-    # Get default profile for this element type
-    default_profile_name = DEFAULT_CFS_PROFILES.get(element_type, "362S125-54")
+    # Get default profile for this element type based on load-bearing status
+    # Load-bearing walls use thicker gauges (68 mil vs 54 mil) and wider flanges
+    defaults_table = DEFAULT_CFS_PROFILES_LOAD_BEARING if is_load_bearing else DEFAULT_CFS_PROFILES
+    default_profile_name = defaults_table.get(element_type, "362S125-54")
 
     # If wall thickness provided, adjust the series
     if wall_thickness_inches is not None:

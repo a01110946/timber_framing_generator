@@ -159,7 +159,16 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         wall_type = revit_wall.WallType
         wall_function_param = wall_type.get_Parameter(DB.BuiltInParameter.FUNCTION_PARAM)
         is_exterior_wall = wall_function_param and (wall_function_param.AsInteger() == 1)
-        print(f"Wall {revit_wall.Id} is exterior: {is_exterior_wall}")
+
+        # 4b. Determine if the wall is load-bearing.
+        # WALL_STRUCTURAL_USAGE_PARAM values:
+        # 0 = Non-bearing, 1 = Bearing, 2 = Shear, 3 = Structural Combined
+        structural_usage_param = revit_wall.get_Parameter(DB.BuiltInParameter.WALL_STRUCTURAL_USAGE_PARAM)
+        is_load_bearing = False
+        if structural_usage_param and structural_usage_param.HasValue:
+            usage_value = structural_usage_param.AsInteger()
+            # Values 1 (Bearing), 2 (Shear), 3 (Combined) are structural/load-bearing
+            is_load_bearing = usage_value >= 1
 
         # 5. Get openings.
         openings_data: List[Dict[str, Union[str, float]]] = []
@@ -387,6 +396,7 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             "wall_top_elevation": wall_top_elevation,
             "wall_height": wall_height,
             "is_exterior_wall": is_exterior_wall,
+            "is_load_bearing": is_load_bearing,
             "openings": openings_data,
             "cells": cells_list,
         }

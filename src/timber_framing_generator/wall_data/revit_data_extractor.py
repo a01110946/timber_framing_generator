@@ -246,26 +246,12 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                 # Only process if we have valid dimensions
                 if opening_width_value > 0 and opening_height_value > 0:
 
-                    # DEBUG: Trace sill height values
-                    print(f"\n{'='*50}")
-                    print(f"DEBUG SILL HEIGHT TRACE - Opening {insert_id}")
-                    print(f"{'='*50}")
-                    print(f"  sill_height_param.AsDouble() RAW = {sill_height_value_raw}")
-                    print(f"  wall_base_elevation = {wall_base_elevation}")
-                    print(f"  wall_top_elevation = {wall_top_elevation}")
-                    print(f"  wall height (top-base) = {wall_top_elevation - wall_base_elevation}")
-                    print(f"  opening_type = {opening_type}")
-                    print(f"  rough_width = {opening_width_value}")
-                    print(f"  rough_height = {opening_height_value}")
-
                     opening_location_point = insert_element.Location.Point
                     opening_location_point_rhino = rg.Point3d(
                         opening_location_point.X,
                         opening_location_point.Y,
                         opening_location_point.Z,
                     )
-                    print(f"Opening {insert_id} has opening location point: {opening_location_point_rhino}")
-                    print(f"  Opening location Z = {opening_location_point.Z}")
 
                     # FIX: Use built-in parameter as primary source, it's more reliable
                     # The INSTANCE_SILL_HEIGHT_PARAM is specifically designed for this purpose
@@ -273,10 +259,8 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
 
                     if sill_height_builtin and sill_height_builtin.HasValue:
                         sill_height_value = sill_height_builtin.AsDouble()
-                        print(f"  Using INSTANCE_SILL_HEIGHT_PARAM = {sill_height_value:.4f}")
                     elif sill_height_param and sill_height_param.HasValue:
                         sill_height_value = sill_height_value_raw
-                        print(f"  Using LookupParameter('Sill Height') = {sill_height_value:.4f}")
 
                     # If parameter values are negative or None, calculate from geometry
                     # Calculate sill as: opening_bottom_Z - wall_base_elevation
@@ -289,42 +273,30 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     # Calculate what sill would be if location point is at SILL
                     sill_from_sill_point = opening_location_point.Z - wall_base_elevation
 
-                    print(f"  If location is CENTER: sill = {sill_from_center:.4f}")
-                    print(f"  If location is SILL: sill = {sill_from_sill_point:.4f}")
-
                     # If we got a parameter value, use it but validate
                     if sill_height_value is not None and sill_height_value >= 0:
                         # Check if calculated values are close to parameter
                         # This helps verify the parameter is correct
                         diff_from_center = abs(sill_height_value - sill_from_center)
                         diff_from_sill = abs(sill_height_value - sill_from_sill_point)
-                        print(f"  Param diff from CENTER calc: {diff_from_center:.4f}")
-                        print(f"  Param diff from SILL calc: {diff_from_sill:.4f}")
 
                         # If parameter doesn't match either calculation within tolerance,
                         # prefer the sill-point calculation (more common in Revit families)
                         if diff_from_center > 1.0 and diff_from_sill > 1.0:
-                            print(f"  WARNING: Parameter doesn't match geometry! Using sill-point calculation.")
                             sill_height_value = sill_from_sill_point
                     else:
                         # No valid parameter, use sill-point calculation
                         # (assumes location point is at sill, which is common)
-                        print(f"  No valid parameter, using sill-point calculation")
                         sill_height_value = sill_from_sill_point
 
                     # Final sanity check: sill should be >= 0 and < wall_height
                     wall_height = wall_top_elevation - wall_base_elevation
                     if sill_height_value < 0:
-                        print(f"  WARNING: Negative sill height ({sill_height_value:.4f}), clamping to 0")
                         sill_height_value = 0.0
                     elif sill_height_value >= wall_height:
-                        print(f"  WARNING: Sill height ({sill_height_value:.4f}) >= wall height, clamping")
                         sill_height_value = wall_height - opening_height_value
 
-                    print(f"  FINAL sill_height_value = {sill_height_value:.4f}")
-                    print(f"{'='*50}\n")
                     try:
-                        print(f"Opening {insert_id} has wall base curve: {wall_base_curve_rhino} and opening location point: {opening_location_point_rhino}")
                         # Try to use ClosestPoint directly if available
                         success, t = safe_closest_point(wall_base_curve_rhino, opening_location_point_rhino)
                     except AttributeError:
@@ -356,9 +328,7 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     print(f"Opening {insert_id} - wall_curve_length: {wall_curve_length}, opening_center_u: {opening_center_u}")
 
                     rough_width_half = opening_width_value / 2.0
-                    print(f"Opening {insert_id} has rough width half: {rough_width_half}")
                     start_u_coordinate = opening_center_u - rough_width_half if success else 0.0
-                    print(f"Opening {insert_id} has start u coordinate: {start_u_coordinate}")
 
                     # Note: Revit's "Sill Height" parameter is the height above the floor level,
                     # which is the same as relative to wall base (since wall is on that level).
@@ -371,8 +341,6 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                         "rough_height": opening_height_value,
                         "base_elevation_relative_to_wall_base": sill_height_value,
                     }
-                    print(f"DEBUG: Sill height value from Revit: {sill_height_value}")
-                    print(f"Opening {insert_id} has opening data: {opening_data}")
 
                     # NEW CODE: Validate opening is within wall bounds
                     end_u_coordinate = start_u_coordinate + opening_width_value
@@ -389,16 +357,12 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         wall_base_plane = get_wall_base_plane(
             revit_wall, wall_base_curve_rhino, wall_base_elevation
         )
-        print(f"Wall {revit_wall.Id} has base curve: {wall_base_curve_rhino} of type {type(wall_base_curve_rhino)}")
-        print(f"Wall {revit_wall.Id} has base plane: {wall_base_plane}")
         if wall_base_plane is None:
-            print(f"Failed to extract wall base plane from Revit wall: {revit_wall.Id}")
             return None
 
         # 7. Compute wall length and height.
         wall_length = curve_length(wall_base_curve_rhino)
         wall_height = wall_top_elevation - wall_base_elevation
-        print(f"Wall {revit_wall.Id} has length: {wall_length} and height: {wall_height}")
 
         # 8. Decompose the wall into cells.
         cell_data_dict = decompose_wall_to_cells(
@@ -408,7 +372,6 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             base_plane=wall_base_plane,
         )
         cells_list = deconstruct_all_cells(cell_data_dict)
-        print(f"Wall {revit_wall.Id} has cells: {cells_list}")
 
         # 9. Build and return the final wall data dictionary.
         wall_input_data_final: WallInputData = {
@@ -427,7 +390,6 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             "openings": openings_data,
             "cells": cells_list,
         }
-        print(f"Wall {revit_wall.Id} has final data: {wall_input_data_final}")
         return wall_input_data_final
     except Exception as e:
         print(f"Failed to extract wall data from Revit wall: {revit_wall.Id}")

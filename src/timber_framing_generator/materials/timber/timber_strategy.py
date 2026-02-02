@@ -355,23 +355,6 @@ class TimberFramingStrategy(FramingStrategy):
         # Extract wall_id for element metadata
         wall_id = cell_data.get('wall_id', 'unknown')
 
-        # DEBUG: Print full cell_data structure on entry
-        print(f"\n{'='*60}")
-        print(f"TIMBER STRATEGY DEBUG - create_vertical_members entry")
-        print(f"{'='*60}")
-        print(f"cell_data type: {type(cell_data)}")
-        print(f"cell_data keys: {list(cell_data.keys()) if isinstance(cell_data, dict) else 'NOT A DICT'}")
-        cells_list = cell_data.get("cells", []) if isinstance(cell_data, dict) else []
-        print(f"cells_list length: {len(cells_list)}")
-        for i, c in enumerate(cells_list[:5]):  # Show first 5
-            if isinstance(c, dict):
-                print(f"  Cell {i}: type={c.get('type', 'N/A')}, cell_type={c.get('cell_type', 'N/A')}, id={c.get('id', 'N/A')}")
-            else:
-                print(f"  Cell {i}: NOT A DICT - {type(c)}")
-        if len(cells_list) > 5:
-            print(f"  ... and {len(cells_list) - 5} more")
-        print(f"{'='*60}\n")
-
         # Check if Rhino is available
         if not RHINO_AVAILABLE:
             logger.warning("Rhino not available - returning empty list.")
@@ -451,18 +434,6 @@ class TimberFramingStrategy(FramingStrategy):
             cells = cell_data.get("cells", [])
             normalized = normalize_cells(cells)
             rhino_wall_data["cells"] = normalized
-
-            # Debug: Print cell info to understand what's being passed
-            print(f"\n=== STUD GENERATOR DEBUG ===")
-            print(f"Original cells count: {len(cells)}")
-            print(f"Normalized cells count: {len(normalized)}")
-            for i, cell in enumerate(normalized):
-                cell_type = cell.get("type", "MISSING")
-                cell_id = cell.get("id", "unknown")
-                u_start = cell.get("u_start", "N/A")
-                u_end = cell.get("u_end", "N/A")
-                print(f"  Cell {i}: type={cell_type}, id={cell_id}, u_start={u_start}, u_end={u_end}")
-            print(f"=== END STUD GENERATOR DEBUG ===\n")
 
             # Generate standard studs
             logger.debug("Creating standard studs")

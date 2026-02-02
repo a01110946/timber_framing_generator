@@ -184,11 +184,6 @@ def decompose_wall_to_cells(
         including corner points in world coordinates (computed using base_plane).
     """
     try:
-            # Original code with added debug statements
-        print(f"DEBUG: Decomposing wall: length={wall_length}, height={wall_height}")
-        print(f"DEBUG: Number of openings: {len(opening_data_list)}")
-        print(f"DEBUG: Base plane valid: {base_plane is not None}")
-
         # 1. Create the wall boundary cell (covers the entire wall)
         wall_boundary_cell_data = create_wall_boundary_cell_data(
             u_range=[0.0, wall_length], v_range=[0.0, wall_height]
@@ -308,8 +303,8 @@ def decompose_wall_to_cells(
 
         return cell_data_dict
     except Exception as e:
-        print(f"DEBUG: Error in decompose_wall_to_cells: {str(e)}")
-    import traceback
-    print(traceback.format_exc())
-    raise
+        import traceback
+        print(f"Error in decompose_wall_to_cells: {str(e)}")
+        print(traceback.format_exc())
+        raise
 

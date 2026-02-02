@@ -414,32 +414,19 @@ def normalize_cells(cells: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     Returns:
         List of normalized cell dictionaries with both "type" and "cell_type" keys
     """
-    print(f"\n=== normalize_cells DEBUG ===")
-    print(f"Input cells count: {len(cells)}")
-
     normalized_cells = []
-    for i, cell in enumerate(cells):
-        print(f"  Cell {i}: type={type(cell).__name__}")
+    for cell in cells:
         if isinstance(cell, dict):
             normalized_cell = dict(cell)
-            original_cell_type = normalized_cell.get("cell_type", "N/A")
-            original_type = normalized_cell.get("type", "N/A")
-            print(f"    Before: cell_type='{original_cell_type}', type='{original_type}'")
 
             # Map "cell_type" to "type" for backward compatibility with generators
             if "cell_type" in normalized_cell and "type" not in normalized_cell:
                 normalized_cell["type"] = normalized_cell["cell_type"]
-                print(f"    After: Added type='{normalized_cell['type']}'")
-            else:
-                print(f"    After: No change needed (already has 'type' or no 'cell_type')")
 
             normalized_cells.append(normalized_cell)
         else:
-            print(f"    WARNING: Cell is not a dict, skipping normalization")
             normalized_cells.append(cell)
 
-    print(f"Output cells count: {len(normalized_cells)}")
-    print(f"=== END normalize_cells DEBUG ===\n")
     return normalized_cells
 
 

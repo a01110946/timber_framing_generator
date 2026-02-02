@@ -440,7 +440,6 @@ class StudGenerator:
                     # Use bbox.Min.Z for the bottom of the plate
                     elevation = bbox.Min.Z
                     logger.debug(f"Top elevation from plate bounding box: {elevation}")
-                    print(f"    DEBUG _get_top_elevation: bbox.Min.Z = {elevation}, bbox.Max.Z = {bbox.Max.Z}")
                     return elevation
 
             # Fallback to wall data if available
@@ -453,7 +452,6 @@ class StudGenerator:
                 wall_top = wall_base_elevation + wall_height
                 elevation = wall_top - plate_thickness
                 logger.debug(f"Top elevation from wall data (wall_top - thickness): {elevation}")
-                print(f"    DEBUG _get_top_elevation fallback: wall_top={wall_top}, thickness={plate_thickness}, result={elevation}")
                 return elevation
 
             logger.warning("Could not determine top elevation")
@@ -676,12 +674,6 @@ class StudGenerator:
 
             logger.debug(f"Centerline start point: ({start_point.X}, {start_point.Y}, {start_point.Z})")
             logger.debug(f"Centerline end point: ({end_point.X}, {end_point.Y}, {end_point.Z})")
-            print(f"      Stud centerline: start=({start_point.X:.2f}, {start_point.Y:.2f}, {start_point.Z:.2f}) end=({end_point.X:.2f}, {end_point.Y:.2f}, {end_point.Z:.2f})")
-
-            # DEBUG: Show base_plane origin and wall normal for alignment verification
-            print(f"      DEBUG ALIGNMENT: base_plane.Origin=({base_plane.Origin.X:.4f}, {base_plane.Origin.Y:.4f}, {base_plane.Origin.Z:.4f})")
-            print(f"      DEBUG ALIGNMENT: wall_normal (ZAxis)=({base_plane.ZAxis.X:.4f}, {base_plane.ZAxis.Y:.4f}, {base_plane.ZAxis.Z:.4f})")
-            print(f"      DEBUG ALIGNMENT: stud at u={u_coordinate:.4f}, XY=({start_point.X:.4f}, {start_point.Y:.4f})")
 
             # Create the centerline as a curve
             # Convert to NurbsCurve to ensure proper type for SweepOneRail.PerformSweep()
@@ -694,7 +686,6 @@ class StudGenerator:
             # Since centerline is vertical (Z direction), profile plane must be horizontal
             # Use a simple horizontal plane with normal pointing UP
             profile_plane = rg.Plane(start_point, rg.Vector3d.ZAxis)
-            print(f"      Profile plane normal: ({profile_plane.Normal.X:.2f}, {profile_plane.Normal.Y:.2f}, {profile_plane.Normal.Z:.2f})")
             self.debug_geometry["planes"].append(profile_plane)
             logger.debug("Created horizontal profile plane for stud cross-section")
 

@@ -19,47 +19,29 @@ def compute_wall_base_elevation(revit_wall, doc) -> float:
         ValueError: If base level cannot be determined
     """
     try:
-        print(f"DEBUG: compute_wall_base_elevation for wall ID: {revit_wall.Id}")
-        
-        # Get base constraint parameter and log what we find
+        # Get base constraint parameter
         base_level_param = revit_wall.get_Parameter(
             DB.BuiltInParameter.WALL_BASE_CONSTRAINT
         )
-        print(f"DEBUG: base_level_param exists: {base_level_param is not None}")
-        
+
         if base_level_param:
             base_level_id = base_level_param.AsElementId()
-            print(f"DEBUG: base_level_id: {base_level_id}")
-            print(f"DEBUG: base_level_id is valid: {base_level_id != DB.ElementId.InvalidElementId}")
-            
             base_level = (
                 doc.GetElement(base_level_id)
                 if base_level_id != DB.ElementId.InvalidElementId
                 else None
             )
-            print(f"DEBUG: base_level exists: {base_level is not None}")
         else:
             base_level = None
-            print("DEBUG: base_level_param is None, trying alternative methods")
-            
             # Try to get level from LevelId
             if hasattr(revit_wall, "LevelId"):
-                print(f"DEBUG: revit_wall has LevelId: {revit_wall.LevelId}")
                 base_level = doc.GetElement(revit_wall.LevelId)
-                print(f"DEBUG: base_level from LevelId exists: {base_level is not None}")
-            else:
-                print("DEBUG: revit_wall has no LevelId attribute")
-        
+
         # Get base offset parameter
         base_offset_param = revit_wall.get_Parameter(DB.BuiltInParameter.WALL_BASE_OFFSET)
-        print(f"DEBUG: base_offset_param exists: {base_offset_param is not None}")
-        
         base_offset = base_offset_param.AsDouble() if base_offset_param else 0.0
-        print(f"DEBUG: base_offset: {base_offset}")
-        
+
         base_elevation = (base_level.Elevation if base_level else 0.0) + base_offset
-        print(f"DEBUG: calculated base_elevation: {base_elevation}")
-        
         return base_elevation
         
     except Exception as e:
@@ -126,7 +108,6 @@ def get_wall_base_plane(
     # Previously we were adding start_point.Z + base_elevation, which could
     # double-count the elevation if start_point.Z was already at the level Z.
     origin = rg.Point3d(start_point.X, start_point.Y, base_elevation)
-    print(f"DEBUG get_wall_base_plane: start_point.Z={start_point.Z}, base_elevation={base_elevation}, origin.Z={origin.Z}")
     x_dir = rg.Vector3d(
         end_point.X - start_point.X,
         end_point.Y - start_point.Y,

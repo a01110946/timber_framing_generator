@@ -538,27 +538,17 @@ class RowBlockingGenerator:
             
             # Create vector from plane origin to the point
             vector_to_point = rg.Vector3d(point - base_plane.Origin)
-            
+
             # Project this vector onto the X-axis of the base plane
             # The dot product gives us the scalar projection
             u_coordinate = vector_to_point * base_plane.XAxis
-            
-            # Print debug information
-            print(f"DEBUG: Point({point.X:.4f}, {point.Y:.4f}, {point.Z:.4f})")
-            print(f"DEBUG: Plane Origin({base_plane.Origin.X:.4f}, {base_plane.Origin.Y:.4f}, {base_plane.Origin.Z:.4f})")
-            print(f"DEBUG: Plane X-Axis({base_plane.XAxis.X:.4f}, {base_plane.XAxis.Y:.4f}, {base_plane.XAxis.Z:.4f})")
-            print(f"DEBUG: Vector to point({vector_to_point.X:.4f}, {vector_to_point.Y:.4f}, {vector_to_point.Z:.4f})")
-            print(f"DEBUG: Projected u-coordinate: {u_coordinate:.4f}")
-            
+
             return u_coordinate
-            
+
         except Exception as e:
-            print(f"Error in _project_point_to_u_coordinate: {str(e)}")
-            
             # Use direct coordinate extraction as fallback
             try:
                 # Just extract X coordinate (assumes wall is aligned with world X axis)
-                print(f"Using fallback coordinate extraction, point X: {point.X}")
                 return point.X
             except Exception as e2:
                 print(f"Fallback also failed: {str(e2)}")

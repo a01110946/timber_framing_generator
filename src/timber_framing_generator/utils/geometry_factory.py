@@ -554,13 +554,10 @@ class RhinoCommonFactory:
                 # Profile depth (3.5") = through-wall thickness = wall Z-axis (normal)
                 perp1 = wall_x_axis  # width direction = along wall (U)
                 perp2 = wall_z_axis  # depth direction = wall normal (W)
-                # Debug: print that we're using wall direction
-                print(f"DEBUG geometry_factory: Using wall direction - perp1(width)=x_axis={wall_x_axis}, perp2(depth)=z_axis={wall_z_axis}")
             else:
                 # Fall back to hardcoded World axes (legacy behavior)
                 perp1 = (1.0, 0.0, 0.0)  # Width perpendicular in X
                 perp2 = (0.0, 1.0, 0.0)  # Depth perpendicular in Y
-                print(f"DEBUG geometry_factory: No wall direction - using World axes (wall_x_axis={wall_x_axis}, wall_z_axis={wall_z_axis})")
         else:
             # Horizontal members: perp1 = wall normal (in XY plane), perp2 = vertical
             p1x = -dy

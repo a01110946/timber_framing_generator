@@ -369,15 +369,21 @@ def process_walls(walls_json, config):
 # Main Function
 # =============================================================================
 
-def main():
-    """Main entry point for the component."""
+def main(walls_json_in, config_json_in, run_in):
+    """Main entry point for the component.
+
+    Args:
+        walls_json_in: JSON string from Wall Analyzer
+        config_json_in: Optional configuration JSON
+        run_in: Boolean to trigger execution
+    """
     setup_component()
 
     try:
-        # Get inputs
-        walls_json_input = walls_json if 'walls_json' in dir() else None
-        config_json_input = config_json if 'config_json' in dir() else None
-        run_input = run if 'run' in dir() else False
+        # Use inputs passed as arguments
+        walls_json_input = walls_json_in
+        config_json_input = config_json_in
+        run_input = run_in
 
         # Validate inputs
         is_valid, error_msg = validate_inputs(walls_json_input, run_input)
@@ -408,5 +414,28 @@ def main():
 # Execution
 # =============================================================================
 
-if __name__ == "__main__":
-    sheathing_json, summary, log = main()
+# In GHPython, input variables are injected as globals based on NickName.
+# We access them directly here and pass to main() for clarity.
+# NOTE: After pasting this script, you may need to:
+#   1. Set the correct number of inputs (3) and outputs (4)
+#   2. Right-click each input and rename the NickName to match:
+#      Input 0: walls_json
+#      Input 1: config_json
+#      Input 2: run
+
+try:
+    _walls_json = walls_json
+except NameError:
+    _walls_json = None
+
+try:
+    _config_json = config_json
+except NameError:
+    _config_json = None
+
+try:
+    _run = run
+except NameError:
+    _run = False
+
+sheathing_json, summary, log = main(_walls_json, _config_json, _run)

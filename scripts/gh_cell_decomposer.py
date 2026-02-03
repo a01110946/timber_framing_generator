@@ -246,28 +246,45 @@ def setup_component():
 # Helper Functions
 # =============================================================================
 
-def validate_inputs(wall_json, run):
+def validate_inputs(wall_json, panels_json, run):
     """Validate component inputs.
 
     Args:
         wall_json: JSON string with wall data
+        panels_json: JSON string with panel data (optional)
         run: Boolean trigger
 
     Returns:
-        tuple: (is_valid, error_message)
+        tuple: (is_valid, panels_valid, error_message)
     """
     if not run:
-        return False, "Component not running. Set 'run' to True."
+        return False, False, "Component not running. Set 'run' to True."
 
     if not wall_json:
-        return False, "No wall_json input provided"
+        return False, False, "No wall_json input provided"
 
     try:
         json.loads(wall_json)
     except json.JSONDecodeError as e:
-        return False, f"Invalid JSON in wall_json: {e}"
+        return False, False, f"Invalid JSON in wall_json: {e}"
 
-    return True, None
+    # Validate panels_json (optional input)
+    panels_valid = False
+    if panels_json:
+        log_info(f"panels_json received: type={type(panels_json).__name__}, len={len(panels_json)}")
+        try:
+            parsed = json.loads(panels_json)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                panels_valid = True
+                log_info(f"panels_json parsed: {len(parsed)} wall entries")
+            else:
+                log_warning(f"panels_json parsed but empty or not a list: {type(parsed)}")
+        except json.JSONDecodeError as e:
+            log_warning(f"Invalid JSON in panels_json: {e}")
+    else:
+        log_info(f"panels_json not provided or empty: {repr(panels_json)}")
+
+    return True, panels_valid, None
 
 
 def create_cell_surface(corners):
@@ -317,8 +334,10 @@ def get_panels_for_wall(panels_data, wall_id):
     Returns:
         List of panel dictionaries for this wall
     """
+    # Convert to string for comparison (handles int vs str mismatch)
+    wall_id_str = str(wall_id)
     for result in panels_data:
-        if result.get('wall_id') == wall_id:
+        if str(result.get('wall_id', '')) == wall_id_str:
             return result.get('panels', [])
     return []
 
@@ -935,11 +954,13 @@ def main():
             panels_json_input = panels_json[0] if panels_json else None
 
         # Validate inputs
-        is_valid, error_msg = validate_inputs(wall_json_input, run)
+        is_valid, panels_valid, error_msg = validate_inputs(wall_json_input, panels_json_input, run)
         if not is_valid:
             if error_msg and "not running" not in error_msg.lower():
                 log_warning(error_msg)
             return cell_json, cell_srf, cell_types, error_msg
+
+        log_info(f"Validation complete: walls_valid={is_valid}, panels_valid={panels_valid}")
 
         # Parse inputs
         wall_list = json.loads(wall_json_input)
@@ -947,6 +968,16 @@ def main():
 
         log_lines.append(f"Cell Decomposer v1.1")
         log_lines.append(f"Walls: {len(wall_list)}")
+
+        # Debug: Show what panels_json contains
+        log_lines.append(f"DEBUG panels_json type: {type(panels_json)}")
+        log_lines.append(f"DEBUG panels_json_input type: {type(panels_json_input)}")
+        if panels_json_input:
+            log_lines.append(f"DEBUG panels_json_input length: {len(panels_json_input)}")
+            log_lines.append(f"DEBUG panels_json_input first 200 chars: {str(panels_json_input)[:200]}")
+        else:
+            log_lines.append(f"DEBUG panels_json_input is None or empty")
+        log_lines.append(f"DEBUG panels_data: {type(panels_data)}, len={len(panels_data) if panels_data else 0}")
         log_lines.append("")
 
         # Process decomposition
@@ -977,21 +1008,66 @@ def main():
 # Execution
 # =============================================================================
 
+# Debug: Print actual input NickNames
+print("[PARAM DEBUG] Input parameter NickNames:")
+for i, param in enumerate(ghenv.Component.Params.Input):
+    print(f"  Input {i}: NickName='{param.NickName}', Name='{param.Name}'")
+
+# Debug: Check globals vs locals for panels_json
+print("[SCOPE DEBUG] Checking globals() for input variables:")
+print(f"  'panels_json' in globals(): {'panels_json' in globals()}")
+print(f"  'wall_json' in globals(): {'wall_json' in globals()}")
+print(f"  'run' in globals(): {'run' in globals()}")
+if 'panels_json' in globals():
+    print(f"  globals()['panels_json'] type: {type(globals()['panels_json'])}")
+    print(f"  globals()['panels_json'] value: {repr(globals()['panels_json'])[:200]}")
+
 # Set default values for optional inputs
+# Track whether variables were defined by GH or set by fallback
+_panels_json_from_gh = False
+
 try:
     wall_json
 except NameError:
     wall_json = None
 
+# WORKAROUND: panels_json not being injected into globals - read directly from component
 try:
     panels_json
+    _panels_json_from_gh = True
 except NameError:
     panels_json = None
+    _panels_json_from_gh = False
+
+# If panels_json is still None, try reading directly from the component parameter
+if panels_json is None:
+    try:
+        panels_param = ghenv.Component.Params.Input[1]  # Index 1 = panels_json
+        if panels_param.VolatileDataCount > 0:
+            # Get the first item from the volatile data
+            branch = panels_param.VolatileData.Branch(0)
+            if branch and len(branch) > 0:
+                raw_value = branch[0]
+                # Extract the actual value (might be wrapped in GH_String or similar)
+                if hasattr(raw_value, 'Value'):
+                    panels_json = raw_value.Value
+                else:
+                    panels_json = str(raw_value)
+                print(f"[WORKAROUND] Read panels_json directly from param: {type(panels_json)}, len={len(panels_json) if panels_json else 0}")
+    except Exception as e:
+        print(f"[WORKAROUND] Failed to read panels_json from param: {e}")
 
 try:
     run
 except NameError:
     run = False
+
+# Debug: Print immediately to see what GH passed
+print(f"[INIT DEBUG] panels_json defined by GH: {_panels_json_from_gh}")
+print(f"[INIT DEBUG] panels_json value type: {type(panels_json)}")
+print(f"[INIT DEBUG] panels_json is None: {panels_json is None}")
+if panels_json is not None:
+    print(f"[INIT DEBUG] panels_json length: {len(panels_json) if hasattr(panels_json, '__len__') else 'N/A'}")
 
 # Execute main
 if __name__ == "__main__":

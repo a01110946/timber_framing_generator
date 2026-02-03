@@ -138,12 +138,12 @@ from src.timber_framing_generator.framing_elements.holddowns import (
     HolddownPosition,
 )
 
-# Try to import geometry factory for RhinoCommon points
-try:
-    from src.timber_framing_generator.utils.geometry_factory import get_factory
-    FACTORY_AVAILABLE = True
-except ImportError:
-    FACTORY_AVAILABLE = False
+# Import geometry factory for RhinoCommon points (required for GH output)
+from src.timber_framing_generator.utils.geometry_factory import get_factory
+
+# Get factory instance for creating RhinoCommon geometry
+# This is REQUIRED to avoid "Data conversion failed from Goo to Point" errors
+RC_FACTORY = get_factory()
 
 # =============================================================================
 # Constants
@@ -277,11 +277,42 @@ def parse_config(config_json):
     return config
 
 
+def _extract_xyz(data, default=(0, 0, 0)):
+    """Extract x, y, z coordinates from various formats.
+
+    Supports:
+    - Dict format: {"x": 1, "y": 2, "z": 3}
+    - List/tuple format: [1, 2, 3]
+
+    Args:
+        data: Coordinate data in dict or list format
+        default: Default value if extraction fails
+
+    Returns:
+        Tuple (x, y, z) as floats
+    """
+    if data is None:
+        return default
+
+    try:
+        if isinstance(data, dict):
+            # Dict format: {"x": ..., "y": ..., "z": ...}
+            return (float(data.get("x", 0)), float(data.get("y", 0)), float(data.get("z", 0)))
+        elif isinstance(data, (list, tuple)) and len(data) >= 3:
+            # List/tuple format: [x, y, z]
+            return (float(data[0]), float(data[1]), float(data[2]))
+    except (TypeError, ValueError, KeyError):
+        pass
+
+    return default
+
+
 def reconstruct_base_plane(plane_data):
     """Reconstruct Rhino Plane from JSON data.
 
     Args:
-        plane_data: Dict with origin, x_axis, y_axis or None
+        plane_data: Dict with origin, x_axis, y_axis (each can be dict or list),
+                    or Plane object, or None
 
     Returns:
         rg.Plane or None
@@ -289,11 +320,22 @@ def reconstruct_base_plane(plane_data):
     if plane_data is None:
         return None
 
+    # Skip non-dict, non-plane values (e.g., 0, empty string, etc.)
+    if not isinstance(plane_data, dict) and not hasattr(plane_data, 'Origin'):
+        log_info(f"Skipping non-plane data: {type(plane_data).__name__}")
+        return None
+
     try:
         if isinstance(plane_data, dict):
-            origin = plane_data.get("origin", [0, 0, 0])
-            x_axis = plane_data.get("x_axis", [1, 0, 0])
-            y_axis = plane_data.get("y_axis", [0, 0, 1])
+            # Validate required keys
+            if "origin" not in plane_data:
+                log_info("Plane data missing 'origin' key, skipping")
+                return None
+
+            # Extract coordinates - supports both dict and list formats
+            origin = _extract_xyz(plane_data.get("origin"), (0, 0, 0))
+            x_axis = _extract_xyz(plane_data.get("x_axis"), (1, 0, 0))
+            y_axis = _extract_xyz(plane_data.get("y_axis"), (0, 0, 1))
 
             return rg.Plane(
                 rg.Point3d(origin[0], origin[1], origin[2]),
@@ -310,13 +352,17 @@ def reconstruct_base_plane(plane_data):
 
 
 def holddown_to_point(holddown):
-    """Convert HolddownLocation to Rhino Point3d.
+    """Convert HolddownLocation to Rhino Point3d using RhinoCommonFactory.
+
+    Uses RhinoCommonFactory to create points from the correct assembly
+    (RhinoCommon, not Rhino3dmIO) to avoid "Data conversion failed from
+    Goo to Point" errors in Grasshopper.
 
     Args:
         holddown: HolddownLocation object
 
     Returns:
-        rg.Point3d or None
+        rg.Point3d from RhinoCommon assembly, or None
     """
     point = holddown.point
 
@@ -324,12 +370,18 @@ def holddown_to_point(holddown):
         return None
 
     try:
+        # Extract coordinates as floats (launders through assembly boundary)
         if hasattr(point, 'X'):
-            # Already a Point3d
-            return rg.Point3d(float(point.X), float(point.Y), float(point.Z))
+            x, y, z = float(point.X), float(point.Y), float(point.Z)
         elif isinstance(point, (list, tuple)) and len(point) >= 3:
-            # Tuple coordinates
-            return rg.Point3d(float(point[0]), float(point[1]), float(point[2]))
+            x, y, z = float(point[0]), float(point[1]), float(point[2])
+        else:
+            log_warning(f"Unknown point format: {type(point)}")
+            return None
+
+        # Use RhinoCommonFactory to create point from correct assembly
+        return RC_FACTORY.create_point3d(x, y, z)
+
     except Exception as e:
         log_warning(f"Failed to convert holddown point: {e}")
 
@@ -368,18 +420,22 @@ def process_walls(walls_json, panels_json, config):
         return [], [], "Error: Invalid format", ["Invalid walls_json format"]
 
     # Parse panels JSON if provided
+    # panels_json structure: [{wall_id, panels: [{id, u_start, u_end, ...}], joints, ...}, ...]
     panels_by_wall = {}
+    total_panels = 0
     if panels_json and panels_json.strip():
         try:
             panels_data = json.loads(panels_json)
-            # Index panels by wall_id
+            # Each item is a wall object containing a 'panels' array
             if isinstance(panels_data, list):
-                for panel in panels_data:
-                    wall_id = panel.get("wall_id", "unknown")
-                    if wall_id not in panels_by_wall:
-                        panels_by_wall[wall_id] = []
-                    panels_by_wall[wall_id].append(panel)
-            log_info(f"Loaded panels for {len(panels_by_wall)} walls")
+                for wall_panel_data in panels_data:
+                    wall_id = str(wall_panel_data.get("wall_id", "unknown"))
+                    # Extract the panels array from the wall object
+                    panels_list = wall_panel_data.get("panels", [])
+                    if panels_list:
+                        panels_by_wall[wall_id] = panels_list
+                        total_panels += len(panels_list)
+            log_info(f"Loaded {total_panels} panels for {len(panels_by_wall)} walls")
         except json.JSONDecodeError as e:
             log_warning(f"Invalid panels_json, ignoring: {e}")
 

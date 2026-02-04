@@ -280,7 +280,9 @@ def brep_to_framing_element(
     base_plane: rg.Plane,
     is_vertical: bool = True,
     cell_id: str = None,
-    wall_id: str = None
+    wall_id: str = None,
+    panel_u_start: float = None,
+    panel_u_end: float = None
 ) -> Optional[FramingElement]:
     """
     Convert a Brep geometry to a FramingElement by extracting centerline.
@@ -293,6 +295,9 @@ def brep_to_framing_element(
         base_plane: Wall's base plane for coordinate calculations
         is_vertical: True for studs (vertical), False for horizontal members
         cell_id: Optional cell identifier
+        wall_id: Optional wall identifier
+        panel_u_start: Optional panel start u-coordinate (for panelized walls)
+        panel_u_end: Optional panel end u-coordinate (for panelized walls)
 
     Returns:
         FramingElement with centerline data, or None if extraction fails
@@ -387,6 +392,13 @@ def brep_to_framing_element(
         v_start = center_z - profile.width / 2
         v_end = center_z + profile.width / 2
 
+    # Build metadata with optional panel boundaries
+    metadata = {"wall_id": wall_id}
+    if panel_u_start is not None:
+        metadata["panel_u_start"] = panel_u_start
+    if panel_u_end is not None:
+        metadata["panel_u_end"] = panel_u_end
+
     return FramingElement(
         id=element_id,
         element_type=element_type,
@@ -397,7 +409,7 @@ def brep_to_framing_element(
         v_start=v_start,
         v_end=v_end,
         cell_id=cell_id,
-        metadata={"wall_id": wall_id}
+        metadata=metadata
     )
 
 

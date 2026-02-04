@@ -522,6 +522,10 @@ class CFSFramingStrategy(FramingStrategy):
             )
             stud_breps = stud_gen.generate_studs()
 
+            # Get panel boundaries for element metadata (for stud orientation in Revit)
+            panel_u_start = rhino_wall_data.get("panel_u_start")
+            panel_u_end = rhino_wall_data.get("panel_u_end")
+
             for i, brep in enumerate(stud_breps):
                 elem = brep_to_framing_element(
                     brep=brep,
@@ -531,6 +535,8 @@ class CFSFramingStrategy(FramingStrategy):
                     base_plane=base_plane,
                     wall_id=wall_id,
                     is_vertical=True,
+                    panel_u_start=panel_u_start,
+                    panel_u_end=panel_u_end,
                 )
                 if elem:
                     elements.append(elem)

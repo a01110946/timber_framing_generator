@@ -1039,17 +1039,35 @@ if run and elements_json:
                         elif isinstance(axis, (list, tuple)):
                             wall_x_axis = tuple(axis)
 
-                # Detect if this is the end stud (last stud at wall end)
+                # Detect if this is the end stud (last stud at panel/wall end)
+                # For panelized walls, each panel has its own first/last studs
+                # First stud = normal orientation, Last stud = flipped (facing inward)
                 is_end_stud = False
+                is_panel_end_stud = False
                 if elem_type == "stud":
                     wall_length = wall_level_info.get('wall_length', 0)
                     u_coord = getattr(element, 'u_coord', None)
-                    if wall_length > 0 and u_coord is not None:
-                        # End stud is near wall_length (within stud width tolerance)
-                        stud_width = 0.125  # 1.5" in feet (approximate)
-                        tolerance = stud_width * 1.5
-                        if u_coord > wall_length - tolerance:
-                            is_end_stud = True
+                    stud_width = 0.125  # 1.5" in feet (approximate)
+                    tolerance = stud_width * 1.5
+
+                    # Check for panel boundaries in element metadata
+                    panel_u_start = None
+                    panel_u_end = None
+                    if element.metadata:
+                        panel_u_start = element.metadata.get('panel_u_start')
+                        panel_u_end = element.metadata.get('panel_u_end')
+
+                    if u_coord is not None:
+                        # Check if at panel end (for panelized walls)
+                        if panel_u_end is not None:
+                            if abs(u_coord - (panel_u_end - stud_width / 2)) < tolerance:
+                                is_panel_end_stud = True
+                                is_end_stud = True
+                        # Check if at wall end (for non-panelized or last panel)
+                        elif wall_length > 0:
+                            if u_coord > wall_length - tolerance:
+                                is_end_stud = True
+
                     # DEBUG: Track end stud detection for first wall
                     if wall_id == list(wall_elements.keys())[0] and elem_type == "stud":
                         if 'end_stud_debug' not in vector_debug:
@@ -1058,7 +1076,10 @@ if run and elements_json:
                             'id': element.id,
                             'u_coord': u_coord,
                             'wall_length': wall_length,
-                            'is_end_stud': is_end_stud
+                            'panel_u_start': panel_u_start,
+                            'panel_u_end': panel_u_end,
+                            'is_end_stud': is_end_stud,
+                            'is_panel_end_stud': is_panel_end_stud
                         })
 
                 csr_angle = compute_csr_angle(
@@ -1092,7 +1113,8 @@ if run and elements_json:
                     # Determine if column orientation should be flipped
                     should_flip = False
 
-                    # End stud (last stud at wall end) - always flip
+                    # End stud (last stud at panel/wall end) - always flip
+                    # For panelized walls, each panel's last stud faces inward
                     if is_end_stud and elem_type == "stud":
                         should_flip = True
 
@@ -1307,12 +1329,17 @@ if run and elements_json:
                         # Show Z coordinate to identify upper vs lower row
                         z_height = start[2] if len(start) > 2 else 0
                         debug_lines.append(f"      [{i}] {sample['id']}: X({start[0]:.1f}->{end[0]:.1f}) Y({start[1]:.1f}) Z={z_height:.1f} dir={direction} CSR={csr}° idx={gidx}")
-            # Show end stud detection debug
+            # Show end stud detection debug (with panel info)
             if 'end_stud_debug' in vector_debug:
                 debug_lines.append("")
-                debug_lines.append("  End Stud Detection (first wall):")
+                debug_lines.append("  End Stud Detection (first wall, with panel info):")
                 for stud in vector_debug['end_stud_debug']:
-                    debug_lines.append(f"    {stud['id']}: u_coord={stud['u_coord']}, wall_length={stud['wall_length']}, is_end={stud['is_end_stud']}")
+                    panel_info = ""
+                    if stud.get('panel_u_start') is not None or stud.get('panel_u_end') is not None:
+                        panel_info = f" panel=[{stud.get('panel_u_start', '?'):.2f}-{stud.get('panel_u_end', '?'):.2f}]"
+                    is_panel_end = stud.get('is_panel_end_stud', False)
+                    end_type = "PANEL_END" if is_panel_end else ("WALL_END" if stud['is_end_stud'] else "")
+                    debug_lines.append(f"    {stud['id']}: u={stud['u_coord']:.2f}{panel_info} {end_type}")
 
             # Show detailed king stud and trimmer CSR values for mirror debug
             debug_lines.append("")

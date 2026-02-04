@@ -45,6 +45,9 @@ from src.timber_framing_generator.materials.timber.element_adapters import (
     RHINO_AVAILABLE,
 )
 
+# Import panel-aware helper for filtering openings
+from src.timber_framing_generator.cell_decomposition import get_openings_in_range
+
 # Import our custom logging module
 try:
     from src.timber_framing_generator.utils.logging_config import get_logger
@@ -333,8 +336,20 @@ class CFSFramingStrategy(FramingStrategy):
             top_plate_layers = config.get("top_plate_layers", 1)  # CFS typically uses single track
             representation_type = config.get("representation_type", "schematic")
 
+            # Get panel boundaries from cell metadata for filtering
+            cell_metadata = cell_data.get("metadata", {})
+            panel_u_start = cell_metadata.get("panel_u_start")
+            panel_u_end = cell_metadata.get("panel_u_end")
+
+            # Filter openings to only those within this panel's range
+            all_openings = rhino_wall_data.get("openings", [])
+            if panel_u_start is not None and panel_u_end is not None:
+                openings = get_openings_in_range(all_openings, panel_u_start, panel_u_end)
+                logger.debug(f"Panel [{panel_u_start:.2f}-{panel_u_end:.2f}]: {len(openings)}/{len(all_openings)} openings")
+            else:
+                openings = all_openings
+
             # Generate bottom tracks (pass openings to skip door locations)
-            openings = rhino_wall_data.get("openings", [])
             logger.debug(f"Creating bottom tracks (layers={bottom_plate_layers}, openings={len(openings)})")
             bottom_plates = create_plates(
                 rhino_wall_data,
@@ -459,7 +474,19 @@ class CFSFramingStrategy(FramingStrategy):
                 )
 
             base_plane = rhino_wall_data.get("base_plane")
-            openings = rhino_wall_data.get("openings", [])
+
+            # Get panel boundaries from cell metadata for filtering
+            cell_metadata = cell_data.get("metadata", {})
+            panel_u_start = cell_metadata.get("panel_u_start")
+            panel_u_end = cell_metadata.get("panel_u_end")
+
+            # Filter openings to only those within this panel's range
+            all_openings = rhino_wall_data.get("openings", [])
+            if panel_u_start is not None and panel_u_end is not None:
+                openings = get_openings_in_range(all_openings, panel_u_start, panel_u_end)
+                logger.debug(f"Panel [{panel_u_start:.2f}-{panel_u_end:.2f}]: {len(openings)}/{len(all_openings)} openings for vertical members")
+            else:
+                openings = all_openings
 
             # Use first bottom plate and FIRST top plate (not cap plate)
             bottom_plate = bottom_plates[0] if bottom_plates else None
@@ -636,10 +663,22 @@ class CFSFramingStrategy(FramingStrategy):
                 bottom_plates = []
 
             base_plane = rhino_wall_data.get("base_plane")
-            openings = rhino_wall_data.get("openings", [])
+
+            # Get panel boundaries from cell metadata for filtering
+            cell_metadata = cell_data.get("metadata", {})
+            panel_u_start = cell_metadata.get("panel_u_start")
+            panel_u_end = cell_metadata.get("panel_u_end")
+
+            # Filter openings to only those within this panel's range
+            all_openings = rhino_wall_data.get("openings", [])
+            if panel_u_start is not None and panel_u_end is not None:
+                openings = get_openings_in_range(all_openings, panel_u_start, panel_u_end)
+                logger.debug(f"Panel [{panel_u_start:.2f}-{panel_u_end:.2f}]: {len(openings)}/{len(all_openings)} openings for opening members")
+            else:
+                openings = all_openings
 
             if not openings:
-                logger.debug("No openings to process")
+                logger.debug("No openings to process in this panel")
                 return elements
 
             # Headers - use same profile as blocking (350S162-54 for CFS)

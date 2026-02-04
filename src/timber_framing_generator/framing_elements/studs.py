@@ -467,13 +467,13 @@ class StudGenerator:
         """
         Calculate stud positions within a cell based on spacing.
 
-        CRITICAL: Every wall MUST have studs at both ends, regardless of wall length.
-        For short walls, we place end studs even if the wall is narrower than stud spacing.
+        CRITICAL: Every PANEL MUST have studs at both ends, regardless of length.
+        For short panels, we place end studs even if the panel is narrower than stud spacing.
 
-        End studs at wall boundaries (u=0 or u=wall_length) are offset inward
-        by half the stud width so the stud edge aligns with the wall edge.
+        End studs at panel boundaries are offset inward by half the stud width
+        so the stud edge aligns with the panel edge.
 
-        Studs at SC/OC boundaries are removed since those are king stud positions.
+        Studs at SC/OC boundaries (opening edges) are removed since those are king stud positions.
 
         Args:
             u_start: Starting u-coordinate of the cell
@@ -490,44 +490,66 @@ class StudGenerator:
             stud_width = get_framing_param("stud_width", self.wall_data, 1.5 / 12)
             half_stud_width = stud_width / 2
 
+            # Get panel boundaries if available (for panelized walls)
+            # Each panel needs its own end studs at panel boundaries
+            panel_u_start = self.wall_data.get("panel_u_start", 0.0)
+            panel_u_end = self.wall_data.get("panel_u_end", wall_length)
+
             # Calculate the width of the cell
             cell_width = u_end - u_start
             logger.debug(f"Cell width: {cell_width}")
+            logger.debug(f"Panel bounds: u_start={panel_u_start}, u_end={panel_u_end}")
 
             # Tolerance for boundary detection
             tol = 0.01
 
-            # Determine if this cell is at wall boundaries
+            # Determine if this cell is at PANEL boundaries (not just wall boundaries)
+            # For panelized walls, each panel needs end studs at its edges
+            is_at_panel_start = abs(u_start - panel_u_start) < tol
+            is_at_panel_end = abs(u_end - panel_u_end) < tol
+
+            # Also check wall boundaries for non-panelized walls
             is_at_wall_start = abs(u_start) < tol
             is_at_wall_end = wall_length > 0 and abs(u_end - wall_length) < tol
 
-            # CRITICAL: Always start with end studs at wall boundaries
-            # Every wall MUST have studs at both ends
+            # Cell needs end studs if at panel OR wall boundary
+            needs_start_stud = is_at_panel_start or is_at_wall_start
+            needs_end_stud = is_at_panel_end or is_at_wall_end
+
+            logger.debug(f"Panel boundary check: start={is_at_panel_start}, end={is_at_panel_end}")
+            logger.debug(f"Wall boundary check: start={is_at_wall_start}, end={is_at_wall_end}")
+            print(f"    Panel bounds: {panel_u_start:.4f} to {panel_u_end:.4f}")
+            print(f"    Cell at panel start: {is_at_panel_start}, at panel end: {is_at_panel_end}")
+
+            # CRITICAL: Always add end studs at panel/wall boundaries
+            # Every panel MUST have studs at both ends
             positions = []
 
-            # If cell starts at wall start, add end stud (offset inward)
-            if is_at_wall_start:
-                end_stud_pos = half_stud_width
+            # If cell starts at panel/wall start, add end stud (offset inward from panel edge)
+            if needs_start_stud:
+                # End stud position is offset inward from the panel/cell start
+                end_stud_pos = u_start + half_stud_width
                 positions.append(end_stud_pos)
-                logger.debug(f"Added wall start stud at u={end_stud_pos}")
-                print(f"    Added wall START stud at u={end_stud_pos:.4f}")
+                logger.debug(f"Added panel/wall start stud at u={end_stud_pos}")
+                print(f"    Added panel START stud at u={end_stud_pos:.4f}")
 
-            # If cell ends at wall end, add end stud (offset inward)
-            if is_at_wall_end:
-                end_stud_pos = wall_length - half_stud_width
+            # If cell ends at panel/wall end, add end stud (offset inward from panel edge)
+            if needs_end_stud:
+                # End stud position is offset inward from the panel/cell end
+                end_stud_pos = u_end - half_stud_width
                 # Only add if it's not too close to the start stud
                 if not positions or abs(end_stud_pos - positions[0]) > stud_width:
                     positions.append(end_stud_pos)
-                    logger.debug(f"Added wall end stud at u={end_stud_pos}")
-                    print(f"    Added wall END stud at u={end_stud_pos:.4f}")
+                    logger.debug(f"Added panel/wall end stud at u={end_stud_pos}")
+                    print(f"    Added panel END stud at u={end_stud_pos:.4f}")
                 else:
-                    logger.debug(f"Wall too short for separate end stud (would overlap start stud)")
-                    print(f"    Wall too short - end stud would overlap start stud")
+                    logger.debug(f"Panel too short for separate end stud (would overlap start stud)")
+                    print(f"    Panel too short - end stud would overlap start stud")
 
             # Now calculate intermediate studs based on spacing
             # Only if there's enough room for at least one intermediate stud
-            internal_start = u_start if not is_at_wall_start else half_stud_width + stud_width
-            internal_end = u_end if not is_at_wall_end else wall_length - half_stud_width - stud_width
+            internal_start = u_start + half_stud_width + stud_width if needs_start_stud else u_start
+            internal_end = u_end - half_stud_width - stud_width if needs_end_stud else u_end
 
             internal_width = internal_end - internal_start
 
@@ -546,9 +568,9 @@ class StudGenerator:
                         logger.debug(f"Added intermediate stud at u={pos}")
                         print(f"    Added intermediate stud at u={pos:.4f}")
 
-            # Handle cells that are NOT at wall boundaries (bounded by openings)
+            # Handle cells that are NOT at panel/wall boundaries (bounded by openings)
             # These cells have king studs at their edges, so we don't add studs at u_start/u_end
-            if not is_at_wall_start and not is_at_wall_end:
+            if not needs_start_stud and not needs_end_stud:
                 # This cell is between openings - only add intermediate studs
                 if cell_width > stud_spacing:
                     num_studs = int(cell_width / stud_spacing)
@@ -566,12 +588,12 @@ class StudGenerator:
             positions = sorted(set(positions))
 
             # Filter out positions at SC/OC boundaries (king stud positions)
-            # These are at u_start or u_end when NOT at wall boundaries
+            # These are at u_start or u_end when NOT at panel/wall boundaries
             filtered_positions = []
             for pos in positions:
-                # Check if at cell boundary (not wall boundary) - these are king stud positions
-                is_near_cell_start = abs(pos - u_start) < tol and not is_at_wall_start
-                is_near_cell_end = abs(pos - u_end) < tol and not is_at_wall_end
+                # Check if at cell boundary (not panel boundary) - these are king stud positions
+                is_near_cell_start = abs(pos - u_start) < tol and not needs_start_stud
+                is_near_cell_end = abs(pos - u_end) < tol and not needs_end_stud
 
                 if is_near_cell_start or is_near_cell_end:
                     logger.debug(f"Removing stud at {pos} (king stud position)")

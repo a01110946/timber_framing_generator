@@ -502,6 +502,15 @@ class CFSFramingStrategy(FramingStrategy):
             normalized = normalize_cells(cells)
             rhino_wall_data["cells"] = normalized
 
+            # Add panel boundaries for end stud placement at panel joints
+            # Each panel needs its own end studs, not just at wall boundaries
+            cell_metadata = cell_data.get("metadata", {})
+            if "panel_u_start" in cell_metadata:
+                rhino_wall_data["panel_u_start"] = cell_metadata["panel_u_start"]
+            if "panel_u_end" in cell_metadata:
+                rhino_wall_data["panel_u_end"] = cell_metadata["panel_u_end"]
+            logger.debug(f"Panel bounds: u_start={rhino_wall_data.get('panel_u_start')}, u_end={rhino_wall_data.get('panel_u_end')}")
+
             # Generate standard studs
             logger.debug("Creating standard CFS studs")
             stud_profile = self.get_profile(ElementType.STUD, config)

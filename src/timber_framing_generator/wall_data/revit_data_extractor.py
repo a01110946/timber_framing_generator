@@ -373,6 +373,10 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         wall_length = curve_length(wall_base_curve_rhino)
         wall_height = wall_top_elevation - wall_base_elevation
 
+        # 7b. Get wall thickness from wall type
+        wall_thickness = wall_type.Width  # In Revit internal units (feet)
+        print(f"Wall thickness from WallType.Width: {wall_thickness} ft ({wall_thickness * 12:.2f} inches)")
+
         # 8. Decompose the wall into cells.
         cell_data_dict = decompose_wall_to_cells(
             wall_length=wall_length,
@@ -387,6 +391,7 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             "wall_type": wall_type.Name,
             "wall_base_curve": wall_base_curve_rhino,
             "wall_length": wall_length,
+            "wall_thickness": wall_thickness,  # For CFS profile selection
             "base_plane": wall_base_plane,
             "base_level": base_level,
             "base_offset": base_offset,

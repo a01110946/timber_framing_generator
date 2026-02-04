@@ -1426,6 +1426,11 @@ class FramingGenerator:
         stud_count = len(all_studs) if all_studs else 0
         logger.info(f"\n===== ROW BLOCKING SETUP =====")
         logger.info(f"Total studs available: {stud_count}")
+
+        # Tolerance for cell matching - cripples at trimmer positions can be
+        # slightly outside cell bounds by up to trimmer_width/2 (≈0.0625 ft for timber)
+        # Use a tolerance that accounts for this offset plus a small margin
+        cell_match_tolerance = 0.1  # ~1.2 inches, covers trimmer offset + margin
         
         # Group king studs by cell
         king_stud_count = len(self.king_studs) if hasattr(self, "king_studs") else 0
@@ -1464,26 +1469,27 @@ class FramingGenerator:
                             u_start = cell.get("u_start", 0)
                             u_end = cell.get("u_end", 0)
                             cell_type = cell.get("cell_type", "unknown")
-                            
-                            # Check if cripple is in this cell
-                            if u_start <= u_coord <= u_end:
+
+                            # Check if cripple is in this cell (with tolerance for trimmer offset)
+                            # Cripples at trimmer positions can be slightly outside cell bounds
+                            if (u_start - cell_match_tolerance) <= u_coord <= (u_end + cell_match_tolerance):
                                 cell_id = f"{cell_type}_{u_start}_{u_end}"
                                 logger.info(f"    Belongs to cell: {cell_id}")
                                 cell_found = True
-                                
+
                                 # Add to stud positions for this cell
                                 if cell_id not in stud_positions_by_cell:
                                     stud_positions_by_cell[cell_id] = []
-                                
+
                                 # Add the u-coordinate to the list if not already there
                                 if u_coord not in stud_positions_by_cell[cell_id]:
                                     stud_positions_by_cell[cell_id].append(u_coord)
                                     logger.info(f"    Added to cell {cell_id} for blocking")
-                                    
+
                                 # For header cripples, we especially care about HCC cells
                                 if cell_type == "HCC":
                                     logger.info(f"    This is a header cripple in an HCC cell - perfect match!")
-                        
+
                         if not cell_found:
                             logger.warning(f"    WARNING: Could not find a cell for header cripple at u={u_coord:.4f}")
                     except Exception as e:
@@ -1518,26 +1524,27 @@ class FramingGenerator:
                             u_start = cell.get("u_start", 0)
                             u_end = cell.get("u_end", 0)
                             cell_type = cell.get("cell_type", "unknown")
-                            
-                            # Check if cripple is in this cell
-                            if u_start <= u_coord <= u_end:
+
+                            # Check if cripple is in this cell (with tolerance for trimmer offset)
+                            # Cripples at trimmer positions can be slightly outside cell bounds
+                            if (u_start - cell_match_tolerance) <= u_coord <= (u_end + cell_match_tolerance):
                                 cell_id = f"{cell_type}_{u_start}_{u_end}"
                                 logger.info(f"    Belongs to cell: {cell_id}")
                                 cell_found = True
-                                
+
                                 # Add to stud positions for this cell
                                 if cell_id not in stud_positions_by_cell:
                                     stud_positions_by_cell[cell_id] = []
-                                
+
                                 # Add the u-coordinate to the list if not already there
                                 if u_coord not in stud_positions_by_cell[cell_id]:
                                     stud_positions_by_cell[cell_id].append(u_coord)
                                     logger.info(f"    Added to cell {cell_id} for blocking")
-                                    
+
                                 # For sill cripples, we especially care about SCC cells
                                 if cell_type == "SCC":
                                     logger.info(f"    This is a sill cripple in an SCC cell - perfect match!")
-                        
+
                         if not cell_found:
                             logger.warning(f"    WARNING: Could not find a cell for sill cripple at u={u_coord:.4f}")
                     except Exception as e:
@@ -1552,30 +1559,30 @@ class FramingGenerator:
                 bbox = safe_get_bounding_box(stud, True)
                 min_pt = bbox.Min
                 max_pt = bbox.Max
-                
+
                 # Get the u-coordinate (position along wall length)
                 u_coord = self._project_point_to_u_coordinate(min_pt, self.wall_data.get("base_plane"))
-                
+
                 # Find which cell this stud belongs to
                 for cell in self.cells:
                     u_start = cell.get("u_start", 0)
                     u_end = cell.get("u_end", 0)
                     cell_type = cell.get("cell_type", "unknown")
-                    
-                    # Check if stud is in this cell
-                    if u_start <= u_coord <= u_end:
+
+                    # Check if stud is in this cell (with tolerance for boundary elements)
+                    if (u_start - cell_match_tolerance) <= u_coord <= (u_end + cell_match_tolerance):
                         cell_id = f"{cell_type}_{u_start}_{u_end}"
-                        
+
                         # Add to stud positions for this cell
                         if cell_id not in stud_positions_by_cell:
                             stud_positions_by_cell[cell_id] = []
-                        
+
                         # Add the u-coordinate to the list
                         if u_coord not in stud_positions_by_cell[cell_id]:
                             stud_positions_by_cell[cell_id].append(u_coord)
             except Exception as e:
                 logger.error(f"Error processing stud {i}: {str(e)}")
-        
+
         # Process king studs (if any)
         if hasattr(self, "king_studs") and self.king_studs:
             for i, stud in enumerate(self.king_studs):
@@ -1584,24 +1591,24 @@ class FramingGenerator:
                     bbox = safe_get_bounding_box(stud, True)
                     min_pt = bbox.Min
                     max_pt = bbox.Max
-                    
+
                     # Get the u-coordinate (position along wall length)
                     u_coord = self._project_point_to_u_coordinate(min_pt, self.wall_data.get("base_plane"))
-                    
+
                     # Find which cell this king stud belongs to
                     for cell in self.cells:
                         u_start = cell.get("u_start", 0)
                         u_end = cell.get("u_end", 0)
                         cell_type = cell.get("cell_type", "unknown")
-                        
-                        # Check if king stud is in this cell or at a boundary
-                        if u_start <= u_coord <= u_end or abs(u_coord - u_start) < 0.001 or abs(u_coord - u_end) < 0.001:
+
+                        # Check if king stud is in this cell (with tolerance for boundary elements)
+                        if (u_start - cell_match_tolerance) <= u_coord <= (u_end + cell_match_tolerance):
                             cell_id = f"{cell_type}_{u_start}_{u_end}"
-                            
+
                             # Add to stud positions for this cell
                             if cell_id not in stud_positions_by_cell:
                                 stud_positions_by_cell[cell_id] = []
-                            
+
                             # Add the u-coordinate to the list
                             if u_coord not in stud_positions_by_cell[cell_id]:
                                 stud_positions_by_cell[cell_id].append(u_coord)

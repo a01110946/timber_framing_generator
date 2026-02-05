@@ -135,6 +135,7 @@ class Route:
         total_cost: Sum of all segment costs
         total_length: Sum of all segment lengths
         domains_crossed: List of domain IDs traversed
+        metadata: Additional route metadata
     """
     id: str
     system_type: str
@@ -144,6 +145,7 @@ class Route:
     total_cost: float = 0.0
     total_length: float = 0.0
     domains_crossed: list = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """Calculate totals from segments."""
@@ -176,7 +178,8 @@ class Route:
             "target": list(self.target) if self.target else None,
             "total_cost": self.total_cost,
             "total_length": self.total_length,
-            "domains_crossed": self.domains_crossed
+            "domains_crossed": self.domains_crossed,
+            "metadata": self.metadata
         }
 
     @classmethod
@@ -191,5 +194,6 @@ class Route:
             target=tuple(data["target"]) if data.get("target") else None,
             total_cost=data.get("total_cost", 0.0),
             total_length=data.get("total_length", 0.0),
-            domains_crossed=data.get("domains_crossed", [])
+            domains_crossed=data.get("domains_crossed", []),
+            metadata=data.get("metadata", {})
         )

@@ -86,6 +86,15 @@ from .orchestrator import (
     create_orchestrator,
     create_single_zone_orchestrator,
 )
+from .postprocess import (
+    SlopeCalculator,
+    ElbowOptimizer,
+    FlowDirectionAssigner,
+    SanitaryPostProcessor,
+    PostProcessResult,
+    SlopeInfo,
+    apply_sanitary_postprocess,
+)
 
 __all__ = [
     # Occupancy
@@ -167,4 +176,12 @@ __all__ = [
     "OrchestrationStatistics",
     "create_orchestrator",
     "create_single_zone_orchestrator",
+    # Post-Processing
+    "SlopeCalculator",
+    "ElbowOptimizer",
+    "FlowDirectionAssigner",
+    "SanitaryPostProcessor",
+    "PostProcessResult",
+    "SlopeInfo",
+    "apply_sanitary_postprocess",
 ]

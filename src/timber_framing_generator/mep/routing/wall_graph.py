@@ -271,6 +271,12 @@ class WallGraphBuilder:
                 if check_plates and not obstacle.is_penetrable:
                     cost_multiplier = self.PLATE_BLOCKED_COST
                     crosses_plate = True
+            else:
+                # Unknown obstacle types (openings, etc.): block if non-penetrable
+                if not obstacle.is_penetrable:
+                    cost_multiplier = self.PLATE_BLOCKED_COST
+                elif obstacle.is_penetrable:
+                    cost_multiplier = max(cost_multiplier, self.STUD_PENETRATION_COST)
 
         if cost_multiplier == float('inf'):
             return  # Don't add blocked edges

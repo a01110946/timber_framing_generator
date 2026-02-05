@@ -418,6 +418,44 @@ def create_wall_domain(
     return domain
 
 
+def add_opening_obstacles(
+    domain: RoutingDomain,
+    openings: List[Dict[str, Any]],
+) -> None:
+    """Add door/window openings as non-penetrable obstacles to a routing domain.
+
+    Doors become full-height no-go zones (nothing can route through a door opening).
+    Windows become no-go zones within their opening bounds only, allowing
+    routing above or below the window.
+
+    Args:
+        domain: Existing RoutingDomain to add obstacles to.
+        openings: List of OpeningData-style dicts with keys:
+            id, opening_type, u_start, u_end, v_start, v_end.
+    """
+    for opening in openings:
+        opening_id = opening.get("id", "unknown")
+        opening_type = opening.get("opening_type", "window")
+        u_start = float(opening["u_start"])
+        u_end = float(opening["u_end"])
+        v_start = float(opening["v_start"])
+        v_end = float(opening["v_end"])
+
+        if opening_type == "door":
+            # Doors: full height no-go zone from bottom to top of domain
+            bounds = (u_start, domain.min_v, u_end, domain.max_v)
+        else:
+            # Windows: only the opening zone is blocked
+            bounds = (u_start, v_start, u_end, v_end)
+
+        domain.add_obstacle(Obstacle(
+            id=f"{domain.id}_opening_{opening_id}",
+            obstacle_type="opening",
+            bounds=bounds,
+            is_penetrable=False,
+        ))
+
+
 def create_floor_domain(
     floor_id: str,
     width: float,

@@ -6,7 +6,9 @@ Builds 2D grid graphs for routing in wall cavities, with proper
 obstacle marking for studs and other framing members.
 """
 
-from typing import Dict, List, Optional, Tuple, Any
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 import logging
 
 try:
@@ -15,6 +17,9 @@ try:
 except ImportError:
     HAS_NETWORKX = False
     nx = None
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 from .domains import RoutingDomain, RoutingDomainType, Obstacle, Point2D
 from .occupancy import OccupancyMap

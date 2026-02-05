@@ -6,8 +6,10 @@ Provides a unified graph representation spanning multiple routing domains
 (walls, floors, shafts) with transition edges between domains.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Any, Set
+from typing import Dict, List, Optional, Tuple, Any, Set, TYPE_CHECKING
 from enum import Enum
 
 try:
@@ -16,6 +18,9 @@ try:
 except ImportError:
     HAS_NETWORKX = False
     nx = None
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 from .domains import RoutingDomain, RoutingDomainType, Point2D
 from .occupancy import OccupancyMap

@@ -6,7 +6,9 @@ Assembles multi-domain routing graphs from wall and floor data,
 including transition edges between domains.
 """
 
-from typing import Dict, List, Optional, Tuple, Any
+from __future__ import annotations
+
+from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
 import json
 import logging
 import math
@@ -17,6 +19,9 @@ try:
 except ImportError:
     HAS_NETWORKX = False
     nx = None
+
+if TYPE_CHECKING:
+    import networkx as nx
 
 from .domains import RoutingDomain, RoutingDomainType, Point2D
 from .graph import MultiDomainGraph, TransitionEdge, TransitionType

@@ -484,6 +484,243 @@ class RhinoCommonFactory:
         return None
 
     # =========================================================================
+    # Sheathing/Surface Geometry Creation
+    # =========================================================================
+
+    def create_planar_brep_from_corners(
+        self,
+        corners: List[Point3DLike]
+    ) -> Optional[Any]:
+        """
+        Create a planar Brep from 4 corner points.
+
+        Args:
+            corners: List of 4 (x, y, z) tuples in order (counter-clockwise)
+
+        Returns:
+            RhinoCommon Brep or None if creation fails
+        """
+        if len(corners) != 4:
+            return None
+
+        # Create NurbsSurface from corners
+        surface = self.create_surface_from_corners(
+            corners[0], corners[1], corners[2], corners[3]
+        )
+
+        if surface is None:
+            return None
+
+        # Convert to Brep
+        try:
+            return surface.ToBrep()
+        except Exception as e:
+            print(f"create_planar_brep_from_corners error: {e}")
+            return None
+
+    def extrude_brep(
+        self,
+        brep: Any,
+        direction: Tuple[float, float, float]
+    ) -> Optional[Any]:
+        """
+        Extrude a planar Brep along a direction vector to create a solid.
+
+        Args:
+            brep: RhinoCommon Brep (planar surface)
+            direction: (x, y, z) extrusion vector
+
+        Returns:
+            RhinoCommon Brep (solid) or None if extrusion fails
+        """
+        if brep is None:
+            return None
+
+        from System.Reflection import BindingFlags
+
+        try:
+            # Get first face of brep
+            if not hasattr(brep, 'Faces') or brep.Faces.Count == 0:
+                return None
+
+            face = brep.Faces[0]
+
+            # Create direction vector
+            vec = self.create_vector3d(*direction)
+
+            # Try to create extrusion from face
+            # Use Surface.CreateExtrusion(direction, capped)
+            RC_Brep = self._get_type("Brep")
+
+            # Get the underlying surface
+            srf = face.UnderlyingSurface()
+            if srf is None:
+                return None
+
+            # Use Brep.CreateFromSurface and then extrusion approach
+            # Alternative: Create box from bounding box of extruded corners
+
+            # Get corner points of face
+            corners = []
+            edge_curves = []
+            for i in range(brep.Edges.Count):
+                edge = brep.Edges[i]
+                start_pt = edge.PointAtStart
+                corners.append((float(start_pt.X), float(start_pt.Y), float(start_pt.Z)))
+
+            if len(corners) < 4:
+                return None
+
+            # Create extruded corners
+            dx, dy, dz = direction
+            extruded_corners = []
+            for cx, cy, cz in corners[:4]:
+                extruded_corners.append((cx + dx, cy + dy, cz + dz))
+
+            # Create solid from 8 corners using bounding box approach
+            all_corners = corners[:4] + extruded_corners
+            min_x = min(c[0] for c in all_corners)
+            min_y = min(c[1] for c in all_corners)
+            min_z = min(c[2] for c in all_corners)
+            max_x = max(c[0] for c in all_corners)
+            max_y = max(c[1] for c in all_corners)
+            max_z = max(c[2] for c in all_corners)
+
+            # This is a simplified approach - creates axis-aligned box
+            # For angled extrusions, we'd need more complex logic
+            bbox = self.create_bounding_box(
+                (min_x, min_y, min_z),
+                (max_x, max_y, max_z)
+            )
+            box = self.create_box(bbox)
+            return box.ToBrep()
+
+        except Exception as e:
+            print(f"extrude_brep error: {e}")
+            return None
+
+    def create_box_from_corners_and_thickness(
+        self,
+        corners: List[Tuple[float, float, float]],
+        extrusion_vector: Tuple[float, float, float]
+    ) -> Optional[Any]:
+        """
+        Create a box Brep from 4 corner points and an extrusion vector.
+
+        This is more reliable than extrude_brep for creating sheathing panels.
+
+        Args:
+            corners: 4 corner points of the base face
+            extrusion_vector: Vector defining thickness direction and magnitude
+
+        Returns:
+            RhinoCommon Brep or None
+        """
+        if len(corners) != 4:
+            return None
+
+        dx, dy, dz = extrusion_vector
+
+        # Create all 8 corners
+        all_corners = list(corners)
+        for cx, cy, cz in corners:
+            all_corners.append((cx + dx, cy + dy, cz + dz))
+
+        # Find bounding box
+        min_x = min(c[0] for c in all_corners)
+        min_y = min(c[1] for c in all_corners)
+        min_z = min(c[2] for c in all_corners)
+        max_x = max(c[0] for c in all_corners)
+        max_y = max(c[1] for c in all_corners)
+        max_z = max(c[2] for c in all_corners)
+
+        bbox = self.create_bounding_box(
+            (min_x, min_y, min_z),
+            (max_x, max_y, max_z)
+        )
+        box = self.create_box(bbox)
+        return box.ToBrep()
+
+    def boolean_difference(
+        self,
+        brep_a: Any,
+        brep_b: Any,
+        tolerance: float = 0.001
+    ) -> Optional[Any]:
+        """
+        Boolean difference: brep_a - brep_b.
+
+        Args:
+            brep_a: Base Brep
+            brep_b: Brep to subtract
+            tolerance: Boolean operation tolerance
+
+        Returns:
+            Result Brep or None if operation fails
+        """
+        if brep_a is None or brep_b is None:
+            return brep_a
+
+        from System.Reflection import BindingFlags
+        from System import Array
+
+        try:
+            RC_Brep = self._get_type("Brep")
+            if RC_Brep is None:
+                return brep_a
+
+            # Get static CreateBooleanDifference method
+            # Signature: CreateBooleanDifference(Brep, Brep, double)
+            methods = RC_Brep.GetMethods(BindingFlags.Public | BindingFlags.Static)
+
+            for method in methods:
+                if method.Name == "CreateBooleanDifference":
+                    params = method.GetParameters()
+                    # Looking for (Brep, Brep, double) overload
+                    if len(params) == 3:
+                        param_types = [p.ParameterType.Name for p in params]
+                        if param_types == ["Brep", "Brep", "Double"]:
+                            results = method.Invoke(None, [brep_a, brep_b, float(tolerance)])
+                            if results is not None and len(results) > 0:
+                                return results[0]
+                            break
+
+            # If method not found or failed, return original
+            return brep_a
+
+        except Exception as e:
+            print(f"boolean_difference error: {e}")
+            return brep_a
+
+    def boolean_difference_multiple(
+        self,
+        brep_base: Any,
+        breps_to_subtract: List[Any],
+        tolerance: float = 0.001
+    ) -> Optional[Any]:
+        """
+        Boolean difference with multiple subtraction breps.
+
+        Args:
+            brep_base: Base Brep
+            breps_to_subtract: List of Breps to subtract
+            tolerance: Boolean operation tolerance
+
+        Returns:
+            Result Brep or original if operation fails
+        """
+        result = brep_base
+
+        for brep_sub in breps_to_subtract:
+            if brep_sub is None:
+                continue
+            new_result = self.boolean_difference(result, brep_sub, tolerance)
+            if new_result is not None:
+                result = new_result
+
+        return result
+
+    # =========================================================================
     # Framing-Specific Geometry Creation
     # =========================================================================
 

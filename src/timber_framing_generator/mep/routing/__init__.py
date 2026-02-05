@@ -48,6 +48,14 @@ from .hanan_grid import (
     SteinerTreeBuilder,
     compute_hanan_mst,
 )
+from .pathfinding import (
+    AStarPathfinder,
+    PathReconstructor,
+    PathResult,
+    find_shortest_path,
+    find_path_as_route,
+)
+from .multi_domain_pathfinder import MultiDomainPathfinder
 
 __all__ = [
     # Occupancy
@@ -96,4 +104,11 @@ __all__ = [
     "HananMST",
     "SteinerTreeBuilder",
     "compute_hanan_mst",
+    # Pathfinding
+    "AStarPathfinder",
+    "PathReconstructor",
+    "PathResult",
+    "find_shortest_path",
+    "find_path_as_route",
+    "MultiDomainPathfinder",
 ]

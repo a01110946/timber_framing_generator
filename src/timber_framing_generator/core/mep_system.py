@@ -82,6 +82,9 @@ class MEPConnector:
         flow_direction: Flow direction ("In", "Out", "Bidirectional")
         width: Connector width in feet (for rectangular connectors)
         height: Connector height in feet (for rectangular connectors)
+        fixture_type: Normalized fixture type ("toilet", "sink", "bathtub",
+            "shower", "floor_drain", "unknown", or None if not classified)
+        fixture_family: Raw Revit family name for debugging/diagnostics
     """
     id: str
     origin: Tuple[float, float, float]
@@ -93,6 +96,8 @@ class MEPConnector:
     flow_direction: Optional[str] = None
     width: Optional[float] = None
     height: Optional[float] = None
+    fixture_type: Optional[str] = None
+    fixture_family: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -101,7 +106,7 @@ class MEPConnector:
         Returns:
             Dictionary representation of the connector
         """
-        return {
+        result = {
             "id": self.id,
             "origin": {
                 "x": self.origin[0],
@@ -121,6 +126,11 @@ class MEPConnector:
             "width": self.width,
             "height": self.height,
         }
+        if self.fixture_type is not None:
+            result["fixture_type"] = self.fixture_type
+        if self.fixture_family is not None:
+            result["fixture_family"] = self.fixture_family
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MEPConnector":
@@ -147,6 +157,8 @@ class MEPConnector:
             flow_direction=data.get("flow_direction"),
             width=data.get("width"),
             height=data.get("height"),
+            fixture_type=data.get("fixture_type"),
+            fixture_family=data.get("fixture_family"),
         )
 
 

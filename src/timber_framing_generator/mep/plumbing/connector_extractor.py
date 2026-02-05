@@ -24,6 +24,83 @@ from src.timber_framing_generator.core.mep_system import (
 logger = logging.getLogger(__name__)
 
 
+# Priority-ordered keyword rules for fixture type classification.
+# First match wins, so more specific keywords come first.
+FIXTURE_TYPE_RULES: List[Tuple[str, str]] = [
+    ("water closet", "toilet"),
+    ("water_closet", "toilet"),
+    ("toilet", "toilet"),
+    ("wc", "toilet"),
+    ("urinal", "urinal"),
+    ("lavatory", "sink"),
+    ("sink", "sink"),
+    ("basin", "sink"),
+    ("vanity", "sink"),
+    ("bathtub", "bathtub"),
+    ("bath tub", "bathtub"),
+    ("bath_tub", "bathtub"),
+    ("tub", "bathtub"),
+    ("shower", "shower"),
+    ("floor_drain", "floor_drain"),
+    ("floor drain", "floor_drain"),
+    ("drain", "floor_drain"),
+    ("dishwasher", "dishwasher"),
+    ("washing machine", "washing_machine"),
+    ("washing_machine", "washing_machine"),
+    ("washer", "washing_machine"),
+    ("hose_bib", "hose_bib"),
+    ("hose bib", "hose_bib"),
+]
+
+
+def _classify_fixture_type(family_name: str) -> str:
+    """Classify fixture type from Revit family name using keyword matching.
+
+    Performs case-insensitive matching against FIXTURE_TYPE_RULES.
+    First match wins (rules are priority-ordered).
+
+    Args:
+        family_name: Revit family name string.
+
+    Returns:
+        Normalized fixture type string, or "unknown" if no match.
+    """
+    name_lower = family_name.lower()
+    for keyword, fixture_type in FIXTURE_TYPE_RULES:
+        if keyword in name_lower:
+            return fixture_type
+    return "unknown"
+
+
+def _get_fixture_info(element: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Extract fixture type and family name from a Revit element.
+
+    Traverses element.Symbol.Family.Name safely using getattr chains.
+    Pattern from scripts/gh_connector_diagnostics.py.
+
+    Args:
+        element: Revit FamilyInstance.
+
+    Returns:
+        Tuple of (fixture_type, fixture_family). Both None if extraction fails.
+    """
+    symbol = getattr(element, 'Symbol', None)
+    if symbol is None:
+        return (None, None)
+
+    family = getattr(symbol, 'Family', None)
+    if family is None:
+        return (None, None)
+
+    family_name = getattr(family, 'Name', None)
+    if family_name is None:
+        return (None, None)
+
+    family_name_str = str(family_name)
+    fixture_type = _classify_fixture_type(family_name_str)
+    return (fixture_type, family_name_str)
+
+
 def extract_plumbing_connectors(
     elements: List[Any],
     filter_config: Optional[Dict[str, Any]] = None
@@ -100,6 +177,9 @@ def _extract_connectors_from_element(
     connectors = []
     element_id = _get_element_id(element)
 
+    # Extract fixture info once per element (shared across all connectors)
+    fixture_type, fixture_family = _get_fixture_info(element)
+
     # Get MEPModel - may be None for non-MEP families
     mep_model = getattr(element, 'MEPModel', None)
     if mep_model is None:
@@ -125,7 +205,9 @@ def _extract_connectors_from_element(
                 conn,
                 element_id,
                 system_types,
-                exclude_connected
+                exclude_connected,
+                fixture_type=fixture_type,
+                fixture_family=fixture_family,
             )
             if mep_connector is not None:
                 connectors.append(mep_connector)
@@ -139,7 +221,9 @@ def _process_connector(
     conn: Any,
     element_id: int,
     system_types: Optional[List[str]],
-    exclude_connected: bool
+    exclude_connected: bool,
+    fixture_type: Optional[str] = None,
+    fixture_family: Optional[str] = None,
 ) -> Optional[MEPConnector]:
     """
     Process a single Revit connector and create MEPConnector.
@@ -149,6 +233,8 @@ def _process_connector(
         element_id: ID of the owning element
         system_types: List of system types to include
         exclude_connected: Skip already-connected connectors
+        fixture_type: Normalized fixture type from parent element
+        fixture_family: Raw Revit family name from parent element
 
     Returns:
         MEPConnector if connector passes filters, None otherwise
@@ -218,6 +304,8 @@ def _process_connector(
         owner_element_id=element_id,
         radius=radius,
         flow_direction=flow_direction_str,
+        fixture_type=fixture_type,
+        fixture_family=fixture_family,
     )
 
 

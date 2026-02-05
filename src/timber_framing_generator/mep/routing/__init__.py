@@ -68,6 +68,24 @@ from .oahs_router import (
     ConflictResolver,
     create_oahs_router,
 )
+from .trade_config import (
+    Trade,
+    TradeConfig,
+    RoutingZone,
+    create_default_trade_config,
+    create_plumbing_only_config,
+    create_electrical_only_config,
+)
+from .orchestrator import (
+    SequentialOrchestrator,
+    ZonePartitionStrategy,
+    DefaultZoneStrategy,
+    SingleZoneStrategy,
+    OrchestrationResult,
+    OrchestrationStatistics,
+    create_orchestrator,
+    create_single_zone_orchestrator,
+)
 
 __all__ = [
     # Occupancy
@@ -133,4 +151,20 @@ __all__ = [
     "ConnectorSequencer",
     "ConflictResolver",
     "create_oahs_router",
+    # Trade Configuration
+    "Trade",
+    "TradeConfig",
+    "RoutingZone",
+    "create_default_trade_config",
+    "create_plumbing_only_config",
+    "create_electrical_only_config",
+    # Orchestrator
+    "SequentialOrchestrator",
+    "ZonePartitionStrategy",
+    "DefaultZoneStrategy",
+    "SingleZoneStrategy",
+    "OrchestrationResult",
+    "OrchestrationStatistics",
+    "create_orchestrator",
+    "create_single_zone_orchestrator",
 ]

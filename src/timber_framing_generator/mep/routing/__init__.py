@@ -56,6 +56,18 @@ from .pathfinding import (
     find_path_as_route,
 )
 from .multi_domain_pathfinder import MultiDomainPathfinder
+from .routing_result import (
+    RoutingResult,
+    RoutingStatistics,
+    FailedConnector,
+    RoutingRequest,
+)
+from .oahs_router import (
+    OAHSRouter,
+    ConnectorSequencer,
+    ConflictResolver,
+    create_oahs_router,
+)
 
 __all__ = [
     # Occupancy
@@ -111,4 +123,14 @@ __all__ = [
     "find_shortest_path",
     "find_path_as_route",
     "MultiDomainPathfinder",
+    # Routing Results
+    "RoutingResult",
+    "RoutingStatistics",
+    "FailedConnector",
+    "RoutingRequest",
+    # OAHS Router
+    "OAHSRouter",
+    "ConnectorSequencer",
+    "ConflictResolver",
+    "create_oahs_router",
 ]

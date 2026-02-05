@@ -12,12 +12,13 @@ Components:
 - MultiDomainGraph: Unified graph spanning all domains
 - TargetCandidateGenerator: Finds targets using pluggable heuristics
 - Heuristics: System-specific target selection strategies
+- Graph Builders: Wall, floor, and unified graph construction
 """
 
 from .occupancy import OccupancyMap, OccupiedSegment
 from .domains import RoutingDomainType, RoutingDomain, Obstacle, Point2D
 from .targets import RoutingTarget, TargetType, TargetCandidate
-from .graph import MultiDomainGraph, TransitionEdge
+from .graph import MultiDomainGraph, TransitionEdge, TransitionType
 from .target_generator import (
     TargetCandidateGenerator,
     detect_wet_walls,
@@ -33,6 +34,13 @@ from .heuristics import (
     DataHeuristic,
 )
 from .heuristics.base import ConnectorInfo
+from .wall_graph import WallGraphBuilder, build_wall_graph_from_data
+from .floor_graph import FloorGraphBuilder, build_floor_graph_from_bounds
+from .graph_builder import (
+    UnifiedGraphBuilder,
+    TransitionGenerator,
+    build_routing_graph,
+)
 
 __all__ = [
     # Occupancy
@@ -63,4 +71,13 @@ __all__ = [
     # Graph
     "MultiDomainGraph",
     "TransitionEdge",
+    "TransitionType",
+    # Graph Builders
+    "WallGraphBuilder",
+    "FloorGraphBuilder",
+    "UnifiedGraphBuilder",
+    "TransitionGenerator",
+    "build_wall_graph_from_data",
+    "build_floor_graph_from_bounds",
+    "build_routing_graph",
 ]

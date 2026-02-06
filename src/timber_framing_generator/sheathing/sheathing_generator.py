@@ -166,7 +166,9 @@ class SheathingGenerator:
     def __init__(
         self,
         wall_data: Dict[str, Any],
-        config: Dict[str, Any] = None
+        config: Dict[str, Any] = None,
+        u_start_bound: Optional[float] = None,
+        u_end_bound: Optional[float] = None,
     ):
         """
         Initialize the sheathing generator.
@@ -184,6 +186,10 @@ class SheathingGenerator:
                 - material: Sheathing material name
                 - sheathing_type: Type of sheathing application
                 - min_piece_width: Minimum acceptable piece width (feet)
+            u_start_bound: Minimum U position for panels (feet). Negative values
+                extend before wall start. Default: 0.0.
+            u_end_bound: Maximum U position for panels (feet). Values beyond
+                wall_length extend past wall end. Default: wall_length.
         """
         self.wall_data = wall_data
         self.config = config or {}
@@ -193,6 +199,10 @@ class SheathingGenerator:
         self.wall_height = wall_data.get("wall_height", 0)
         self.wall_id = str(wall_data.get("wall_id", "unknown"))
         self.panel_id = wall_data.get("panel_id")
+
+        # Junction-adjusted panel bounds
+        self.u_start_bound = u_start_bound if u_start_bound is not None else 0.0
+        self.u_end_bound = u_end_bound if u_end_bound is not None else self.wall_length
 
         # Get configuration
         panel_size_name = self.config.get("panel_size", "4x8")
@@ -311,14 +321,18 @@ class SheathingGenerator:
         # Apply stagger offset for alternating rows
         stagger = (row % 2) * self.stagger_offset
 
-        # Start position (may be negative due to stagger)
-        u_position = -stagger if stagger > 0 else 0
+        # Panel layout bounds (may differ from wall length due to junction adjustments)
+        u_min = self.u_start_bound
+        u_max = self.u_end_bound
+
+        # Start position (may be before u_min due to stagger)
+        u_position = u_min - stagger if stagger > 0 else u_min
         column = 0
 
-        while u_position < self.wall_length:
-            # Calculate panel bounds
-            u_start = max(0, u_position)
-            u_end = min(u_position + panel_width, self.wall_length)
+        while u_position < u_max:
+            # Calculate panel bounds, clipped to layout region
+            u_start = max(u_min, u_position)
+            u_end = min(u_position + panel_width, u_max)
 
             # Skip if panel would be too narrow
             if u_end - u_start < self.min_piece_width:
@@ -355,6 +369,22 @@ class SheathingGenerator:
 
             u_position += panel_width
             column += 1
+
+        # Extend last panel to cover any remaining gap smaller than min_piece_width.
+        # This happens when junction bounds extend past the last panel grid position
+        # by an amount too small for a standalone panel (e.g., 0.2 ft wall extension).
+        if panels and panels[-1].u_end < u_max:
+            gap = u_max - panels[-1].u_end
+            if gap < self.min_piece_width:
+                panels[-1].u_end = u_max
+                panels[-1].is_full_sheet = False
+
+        # Similarly, extend first panel backward if the start gap was too small.
+        if panels and panels[0].u_start > u_min:
+            gap = panels[0].u_start - u_min
+            if gap < self.min_piece_width:
+                panels[0].u_start = u_min
+                panels[0].is_full_sheet = False
 
         return panels
 
@@ -444,7 +474,9 @@ class SheathingGenerator:
 def generate_wall_sheathing(
     wall_data: Dict[str, Any],
     config: Dict[str, Any] = None,
-    faces: List[str] = None
+    faces: List[str] = None,
+    u_start_bound: Optional[float] = None,
+    u_end_bound: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to generate sheathing for a wall.
@@ -453,6 +485,10 @@ def generate_wall_sheathing(
         wall_data: Wall geometry and opening data
         config: Sheathing configuration
         faces: List of faces to sheathe (default: ["exterior"])
+        u_start_bound: Minimum U position for panels. Negative = extend before
+            wall start. None = use 0.0.
+        u_end_bound: Maximum U position for panels. > wall_length = extend past
+            wall end. None = use wall_length.
 
     Returns:
         Dictionary with sheathing panels and summary
@@ -460,7 +496,11 @@ def generate_wall_sheathing(
     if faces is None:
         faces = ["exterior"]
 
-    generator = SheathingGenerator(wall_data, config)
+    generator = SheathingGenerator(
+        wall_data, config,
+        u_start_bound=u_start_bound,
+        u_end_bound=u_end_bound,
+    )
     all_panels = []
 
     for face in faces:

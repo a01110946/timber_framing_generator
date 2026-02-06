@@ -145,6 +145,7 @@ class WallData:
     base_curve_end: Point3D
     openings: List[OpeningData] = field(default_factory=list)
     is_exterior: bool = False
+    is_flipped: bool = False
     wall_type: Optional[str] = None
     # Revit level IDs for RiR baking (Add Structural Column/Beam)
     base_level_id: Optional[int] = None

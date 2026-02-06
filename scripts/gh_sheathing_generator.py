@@ -50,6 +50,13 @@ Input Requirements:
         Required: Yes
         Access: Item
 
+    Junctions JSON (junctions_json) - str:
+        Optional JSON from Junction Analyzer with per-layer adjustments.
+        When connected, sheathing panels are extended or trimmed at wall
+        ends to account for wall intersections (L-corners, T-junctions).
+        Required: No
+        Access: Item
+
     Config JSON (config_json) - str:
         Optional JSON configuration with:
         - panel_size: "4x8", "4x9", "4x10", "4x12" (default "4x8")
@@ -199,6 +206,9 @@ def setup_component():
     input_config = [
         ("Walls JSON", "walls_json", "JSON string from Wall Analyzer",
          Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Junctions JSON", "junctions_json",
+         "Optional JSON from Junction Analyzer for per-layer adjustments",
+         Grasshopper.Kernel.GH_ParamAccess.item),
         ("Config JSON", "config_json", "Optional configuration JSON",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Run", "run", "Boolean to trigger execution",
@@ -284,12 +294,62 @@ def parse_config(config_json):
     return config
 
 
-def process_walls(walls_json, config):
+def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
+    """Compute U-axis panel bounds from junction adjustments.
+
+    Looks up the junction adjustments for a specific wall and face,
+    and returns the adjusted u_start_bound and u_end_bound.
+
+    Args:
+        wall_id: Wall identifier.
+        wall_length: Original wall length in feet.
+        face: "exterior" or "interior" — determines which layer to use.
+        junctions_data: Parsed junctions_json dict, or None.
+
+    Returns:
+        tuple: (u_start_bound, u_end_bound) in feet.
+    """
+    u_start_bound = 0.0
+    u_end_bound = wall_length
+
+    if not junctions_data:
+        return u_start_bound, u_end_bound
+
+    # Map face to layer name
+    layer_name = "exterior" if face == "exterior" else "interior"
+
+    # Get adjustments for this wall
+    wall_adjustments = junctions_data.get("wall_adjustments", {}).get(wall_id, [])
+
+    for adj in wall_adjustments:
+        if adj.get("layer_name") != layer_name:
+            continue
+
+        end = adj.get("end")
+        adj_type = adj.get("adjustment_type")
+        amount = adj.get("amount", 0.0)
+
+        if end == "start":
+            if adj_type == "extend":
+                u_start_bound = -amount  # Extend before wall start
+            elif adj_type == "trim":
+                u_start_bound = amount   # Trim after wall start
+        elif end == "end":
+            if adj_type == "extend":
+                u_end_bound = wall_length + amount  # Extend past wall end
+            elif adj_type == "trim":
+                u_end_bound = wall_length - amount  # Trim before wall end
+
+    return u_start_bound, u_end_bound
+
+
+def process_walls(walls_json, config, junctions_data=None):
     """Process walls and generate sheathing panels.
 
     Args:
         walls_json: JSON string with wall data
         config: Configuration dictionary
+        junctions_data: Optional parsed junctions_json dict
 
     Returns:
         tuple: (all_results, summary_text, log_lines)
@@ -325,11 +385,46 @@ def process_walls(walls_json, config):
         log_info(f"Processing wall {wall_id}")
 
         try:
+            # Determine actual face labels, accounting for wall flip state.
+            # When is_flipped=True, the wall's Z-axis (positive normal) points
+            # to the interior instead of the exterior. We swap face labels so
+            # "exterior" sheathing is placed on the actual building exterior.
+            faces = config.get("faces", ["exterior"])
+            is_flipped = wall_data.get("is_flipped", False)
+            if is_flipped:
+                faces = [
+                    "interior" if f == "exterior" else "exterior"
+                    for f in faces
+                ]
+                log_info(f"  Wall {wall_id} is flipped - swapped faces to {faces}")
+
+            wall_length = wall_data.get("wall_length", 0)
+            face_bounds = {}
+            for face in faces:
+                u_start, u_end = compute_sheathing_bounds(
+                    wall_id, wall_length, face, junctions_data
+                )
+                face_bounds[face] = (u_start, u_end)
+                if u_start != 0.0 or u_end != wall_length:
+                    log_info(
+                        f"  {face} bounds: u=[{u_start:.4f}, {u_end:.4f}] "
+                        f"(wall_length={wall_length:.4f})"
+                    )
+
             # Generate sheathing for this wall
+            # Use first face bounds for the generator (each face will be
+            # generated separately if bounds differ per face)
+            first_face = faces[0] if faces else "exterior"
+            u_start_bound, u_end_bound = face_bounds.get(
+                first_face, (0.0, wall_length)
+            )
+
             result = generate_wall_sheathing(
                 wall_data,
                 config=config,
-                faces=config.get("faces", ["exterior"])
+                faces=faces,
+                u_start_bound=u_start_bound,
+                u_end_bound=u_end_bound,
             )
 
             all_results.append(result)
@@ -369,19 +464,22 @@ def process_walls(walls_json, config):
 # Main Function
 # =============================================================================
 
-def main(walls_json_in, config_json_in, run_in):
+def main(walls_json_in, junctions_json_in, config_json_in, run_in):
     """Main entry point for the component.
 
     Args:
         walls_json_in: JSON string from Wall Analyzer
+        junctions_json_in: Optional JSON from Junction Analyzer
         config_json_in: Optional configuration JSON
         run_in: Boolean to trigger execution
     """
+    # Set component metadata and NickNames (for display, after inputs are read)
     setup_component()
 
     try:
         # Use inputs passed as arguments
         walls_json_input = walls_json_in
+        junctions_json_input = junctions_json_in
         config_json_input = config_json_in
         run_input = run_in
 
@@ -394,8 +492,27 @@ def main(walls_json_in, config_json_in, run_in):
         # Parse configuration
         config = parse_config(config_json_input)
 
+        # Parse junctions data (optional)
+        junctions_data = None
+        if junctions_json_input and str(junctions_json_input).strip():
+            try:
+                junctions_data = json.loads(junctions_json_input)
+                junc_count = junctions_data.get("junction_count", 0)
+                adj_count = sum(
+                    len(adjs)
+                    for adjs in junctions_data.get("wall_adjustments", {}).values()
+                )
+                log_info(
+                    f"Loaded junction data: {junc_count} junctions, "
+                    f"{adj_count} adjustments"
+                )
+            except (json.JSONDecodeError, TypeError) as e:
+                log_warning(f"Invalid junctions_json, ignoring: {e}")
+
         # Process walls
-        results, summary_text, log_lines = process_walls(walls_json_input, config)
+        results, summary_text, log_lines = process_walls(
+            walls_json_input, config, junctions_data
+        )
 
         # Serialize results to JSON
         sheathing_json_output = json.dumps(results, indent=2)
@@ -414,28 +531,47 @@ def main(walls_json_in, config_json_in, run_in):
 # Execution
 # =============================================================================
 
-# In GHPython, input variables are injected as globals based on NickName.
-# We access them directly here and pass to main() for clarity.
-# NOTE: After pasting this script, you may need to:
-#   1. Set the correct number of inputs (3) and outputs (4)
-#   2. Right-click each input and rename the NickName to match:
-#      Input 0: walls_json
-#      Input 1: config_json
-#      Input 2: run
+# Read inputs by parameter index via VolatileData.AllData(True).
+# NickName-based global injection is unreliable in Rhino 8 CPython --
+# setup_component() renames NickNames but GH injects globals based on the
+# NickName at solve-start, causing mismatches. AllData(True) always works.
 
-try:
-    _walls_json = walls_json
-except NameError:
-    _walls_json = None
+def _read_input(index, default=None):
+    """Read a GH input value by parameter index via VolatileData."""
+    inputs = ghenv.Component.Params.Input
+    if index >= inputs.Count:
+        return default
+    param = inputs[index]
+    if param.VolatileDataCount == 0:
+        return default
+    all_data = list(param.VolatileData.AllData(True))
+    if not all_data:
+        return default
+    goo = all_data[0]
+    if hasattr(goo, "Value"):
+        return goo.Value
+    if hasattr(goo, "ScriptVariable"):
+        return goo.ScriptVariable()
+    return default
 
-try:
-    _config_json = config_json
-except NameError:
-    _config_json = None
+_input_count = ghenv.Component.Params.Input.Count
+if _input_count < 4:
+    _msg = (
+        "ERROR: Component has %d inputs but needs 4. "
+        "Right-click component zoomable UI (ZUI) -> add input until you have 4, "
+        "then reconnect: walls_json, junctions_json, config_json, run"
+        % _input_count
+    )
+    print(_msg)
+    sheathing_json = ""
+    summary = _msg
+    log = _msg
+else:
+    _walls_json = _read_input(0)       # walls_json
+    _junctions_json = _read_input(1)   # junctions_json
+    _config_json = _read_input(2)      # config_json
+    _run = bool(_read_input(3, False)) # run
 
-try:
-    _run = run
-except NameError:
-    _run = False
-
-sheathing_json, summary, log = main(_walls_json, _config_json, _run)
+    sheathing_json, summary, log = main(
+        _walls_json, _junctions_json, _config_json, _run
+    )

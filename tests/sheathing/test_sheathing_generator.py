@@ -280,3 +280,167 @@ class TestGenerateWallSheathing:
         assert "u_end" in panel_dict
         assert "material" in panel_dict
         assert "thickness_inches" in panel_dict
+
+
+# =============================================================================
+# Junction Bounds Integration Tests
+# =============================================================================
+
+
+class TestSheathingWithJunctionBounds:
+    """Tests for sheathing generation with junction-adjusted panel bounds.
+
+    When walls meet at junctions, sheathing panels need to extend or trim
+    beyond the wall's own length to properly cover (or avoid) the junction area.
+    The u_start_bound and u_end_bound parameters control this.
+    """
+
+    @pytest.fixture
+    def standard_wall(self):
+        """12 ft wall, 8 ft tall, no openings."""
+        return {
+            "wall_id": "wall_A",
+            "wall_length": 12.0,
+            "wall_height": 8.0,
+            "openings": [],
+        }
+
+    def test_extend_at_start(self, standard_wall):
+        """Panels should start before u=0 when u_start_bound is negative."""
+        generator = SheathingGenerator(
+            standard_wall, u_start_bound=-0.2, u_end_bound=12.0
+        )
+        panels = generator.generate_sheathing()
+
+        min_u = min(p.u_start for p in panels)
+        assert min_u == pytest.approx(-0.2, abs=0.01)
+
+    def test_extend_at_end(self, standard_wall):
+        """Panels should extend past wall_length when u_end_bound exceeds it."""
+        generator = SheathingGenerator(
+            standard_wall, u_start_bound=0.0, u_end_bound=12.2
+        )
+        panels = generator.generate_sheathing()
+
+        max_u = max(p.u_end for p in panels)
+        assert max_u == pytest.approx(12.2, abs=0.01)
+
+    def test_trim_at_start(self, standard_wall):
+        """Panels should not start before u_start_bound when it's positive."""
+        generator = SheathingGenerator(
+            standard_wall, u_start_bound=0.15, u_end_bound=12.0
+        )
+        panels = generator.generate_sheathing()
+
+        min_u = min(p.u_start for p in panels)
+        assert min_u == pytest.approx(0.15, abs=0.01)
+
+    def test_trim_at_end(self, standard_wall):
+        """Panels should stop before wall_length when u_end_bound is less."""
+        generator = SheathingGenerator(
+            standard_wall, u_start_bound=0.0, u_end_bound=11.85
+        )
+        panels = generator.generate_sheathing()
+
+        max_u = max(p.u_end for p in panels)
+        assert max_u == pytest.approx(11.85, abs=0.01)
+
+    def test_default_bounds_match_wall_length(self, standard_wall):
+        """Without bounds, panels should span exactly 0 to wall_length."""
+        generator = SheathingGenerator(standard_wall)
+        panels = generator.generate_sheathing()
+
+        min_u = min(p.u_start for p in panels)
+        max_u = max(p.u_end for p in panels)
+        assert min_u == pytest.approx(0.0, abs=0.01)
+        assert max_u == pytest.approx(12.0, abs=0.01)
+
+    def test_bounds_via_convenience_function(self, standard_wall):
+        """generate_wall_sheathing should pass bounds through correctly."""
+        result = generate_wall_sheathing(
+            standard_wall,
+            u_start_bound=-0.15,
+            u_end_bound=12.3,
+        )
+        panels = result["sheathing_panels"]
+
+        min_u = min(p["u_start"] for p in panels)
+        max_u = max(p["u_end"] for p in panels)
+        assert min_u == pytest.approx(-0.15, abs=0.01)
+        assert max_u == pytest.approx(12.3, abs=0.01)
+
+    def test_both_ends_extended(self, standard_wall):
+        """Extending both ends should widen the total panel coverage."""
+        result_default = generate_wall_sheathing(standard_wall)
+        result_extended = generate_wall_sheathing(
+            standard_wall,
+            u_start_bound=-0.2,
+            u_end_bound=12.2,
+        )
+
+        default_area = result_default["summary"]["gross_area_sqft"]
+        extended_area = result_extended["summary"]["gross_area_sqft"]
+
+        # Extended coverage should be larger
+        assert extended_area > default_area
+
+    def test_both_ends_trimmed(self, standard_wall):
+        """Trimming both ends should reduce total panel coverage."""
+        result_default = generate_wall_sheathing(standard_wall)
+        result_trimmed = generate_wall_sheathing(
+            standard_wall,
+            u_start_bound=0.15,
+            u_end_bound=11.85,
+        )
+
+        default_area = result_default["summary"]["gross_area_sqft"]
+        trimmed_area = result_trimmed["summary"]["gross_area_sqft"]
+
+        # Trimmed coverage should be smaller
+        assert trimmed_area < default_area
+
+    def test_stagger_respects_bounds(self, standard_wall):
+        """Staggered rows should clip to bounds, not extend past them."""
+        standard_wall["wall_height"] = 16.0  # Force 2 rows
+        generator = SheathingGenerator(
+            standard_wall,
+            config={"stagger_offset": 2.0},
+            u_start_bound=-0.2,
+            u_end_bound=12.2,
+        )
+        panels = generator.generate_sheathing()
+
+        for p in panels:
+            assert p.u_start >= -0.2 - 0.01
+            assert p.u_end <= 12.2 + 0.01
+
+    def test_extend_with_opening(self):
+        """Bounds extension should work correctly with openings."""
+        wall_data = {
+            "wall_id": "wall_with_win",
+            "wall_length": 12.0,
+            "wall_height": 8.0,
+            "openings": [
+                {
+                    "opening_type": "window",
+                    "start_u_coordinate": 4.0,
+                    "rough_width": 3.0,
+                    "base_elevation_relative_to_wall_base": 3.0,
+                    "rough_height": 4.0,
+                }
+            ],
+        }
+        result = generate_wall_sheathing(
+            wall_data, u_start_bound=-0.15, u_end_bound=12.15
+        )
+        panels = result["sheathing_panels"]
+
+        # Panels should still have cutouts for the window
+        panels_with_cutouts = [p for p in panels if p.get("cutouts")]
+        assert len(panels_with_cutouts) > 0
+
+        # And coverage should extend past wall length
+        min_u = min(p["u_start"] for p in panels)
+        max_u = max(p["u_end"] for p in panels)
+        assert min_u == pytest.approx(-0.15, abs=0.01)
+        assert max_u == pytest.approx(12.15, abs=0.01)

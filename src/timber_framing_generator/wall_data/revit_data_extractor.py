@@ -160,6 +160,11 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         wall_function_param = wall_type.get_Parameter(DB.BuiltInParameter.FUNCTION_PARAM)
         is_exterior_wall = wall_function_param and (wall_function_param.AsInteger() == 1)
 
+        # 4a. Get wall flip state.
+        # When Flipped=True, the exterior face is on the negative Z-axis side
+        # (opposite to the default cross(curve_direction, world_Z) direction).
+        is_flipped = bool(revit_wall.Flipped)
+
         # 4b. Determine if the wall is load-bearing.
         # WALL_STRUCTURAL_USAGE_PARAM values:
         # 0 = Non-bearing, 1 = Bearing, 2 = Shear, 3 = Structural Combined
@@ -401,6 +406,7 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             "wall_top_elevation": wall_top_elevation,
             "wall_height": wall_height,
             "is_exterior_wall": is_exterior_wall,
+            "is_flipped": is_flipped,
             "is_load_bearing": is_load_bearing,
             "openings": openings_data,
             "cells": cells_list,

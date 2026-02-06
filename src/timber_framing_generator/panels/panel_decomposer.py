@@ -153,6 +153,12 @@ def decompose_all_walls(
     Returns:
         List of PanelResults dictionaries, one per wall
     """
+    # Guard: if caller passed (walls_data, config) without framing_results,
+    # framing_results ends up as PanelConfig. Detect and fix argument shift.
+    if isinstance(framing_results, PanelConfig):
+        config = framing_results
+        framing_results = None
+
     if config is None:
         config = PanelConfig()
 

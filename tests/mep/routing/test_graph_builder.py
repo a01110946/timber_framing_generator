@@ -169,12 +169,34 @@ class TestWallGraphBuilder:
         terminal_ids = builder.add_terminal_nodes(graph, terminals, is_source=True)
 
         assert len(terminal_ids) == 2
-        assert graph.number_of_nodes() == initial_nodes + 2
+        # At least 2 new nodes (terminals) plus possible intermediate nodes
+        # for L-shaped rectilinear connections
+        assert graph.number_of_nodes() >= initial_nodes + 2
 
         # Terminals should be connected to grid
         for tid in terminal_ids:
             assert graph.degree(tid) > 0
             assert graph.nodes[tid]['is_terminal'] is True
+
+    def test_terminal_connections_are_rectilinear(self, simple_wall_domain):
+        """Test that terminal connections produce only axis-aligned edges."""
+        builder = WallGraphBuilder(simple_wall_domain, resolution_u=1.0)
+        graph = builder.build_grid_graph()
+
+        # Add off-grid terminals that would produce diagonals with old code
+        terminals = [(2.5, 3.7), (7.3, 5.2)]
+        terminal_ids = builder.add_terminal_nodes(graph, terminals, is_source=True)
+
+        # Every edge in the graph must be axis-aligned
+        for u, v in graph.edges():
+            loc_u = graph.nodes[u]['location']
+            loc_v = graph.nodes[v]['location']
+            du = abs(loc_u[0] - loc_v[0])
+            dv = abs(loc_u[1] - loc_v[1])
+            assert du < 1e-9 or dv < 1e-9, (
+                f"Diagonal edge found: ({loc_u}) -> ({loc_v}), "
+                f"du={du:.6f}, dv={dv:.6f}"
+            )
 
     def test_grid_bounds(self, simple_wall_domain):
         """Test that grid stays within domain bounds."""

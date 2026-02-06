@@ -314,33 +314,80 @@ class WallGraphBuilder:
         terminal_id: int,
         location: Tuple[float, float]
     ) -> None:
-        """Connect a terminal node to nearby grid nodes."""
+        """Connect a terminal node to nearby grid nodes via rectilinear paths.
+
+        Creates L-shaped connections through intermediate nodes so that
+        all edges remain strictly horizontal or vertical. This prevents
+        diagonal route segments in the output.
+        """
         min_u, max_u, min_v, max_v = self.domain.bounds
+        tu, tv = location
 
         # Find the grid cell containing this point
-        i = int((location[0] - min_u) / self.resolution_u)
-        j = int((location[1] - min_v) / self.resolution_v)
+        i = int((tu - min_u) / self.resolution_u)
+        j = int((tv - min_v) / self.resolution_v)
 
-        # Connect to surrounding grid nodes (up to 4)
+        # Connect to surrounding grid nodes (up to 4) via L-shaped paths
         for di in range(2):
             for dj in range(2):
                 grid_idx = (i + di, j + dj)
-                if grid_idx in self._node_lookup:
-                    grid_node = self._node_lookup[grid_idx]
-                    grid_loc = graph.nodes[grid_node]['location']
+                if grid_idx not in self._node_lookup:
+                    continue
 
-                    # Calculate cost
-                    distance = (
-                        abs(location[0] - grid_loc[0]) +
-                        abs(location[1] - grid_loc[1])
-                    )
+                grid_node = self._node_lookup[grid_idx]
+                gu, gv = graph.nodes[grid_node]['location']
 
-                    graph.add_edge(
-                        terminal_id, grid_node,
-                        weight=distance,
-                        base_cost=distance,
-                        direction='terminal_connection'
-                    )
+                du = abs(tu - gu)
+                dv = abs(tv - gv)
+
+                # If already axis-aligned, connect directly
+                if du < 1e-9 or dv < 1e-9:
+                    distance = du + dv
+                    if distance < 1e-9:
+                        # Terminal is exactly on grid node
+                        graph.add_edge(
+                            terminal_id, grid_node,
+                            weight=0.0,
+                            base_cost=0.0,
+                            direction='terminal_connection'
+                        )
+                    else:
+                        direction = 'horizontal' if du > dv else 'vertical'
+                        self._add_edge(
+                            graph, terminal_id, grid_node,
+                            location, (gu, gv),
+                            direction, True
+                        )
+                    continue
+
+                # Not axis-aligned: create intermediate node for L-shaped path
+                # Route: terminal -> (tu, gv) -> grid_node
+                # (go vertical first to grid row, then horizontal to grid node)
+                mid_loc = (tu, gv)
+                mid_id = self._node_counter
+                self._node_counter += 1
+
+                graph.add_node(
+                    mid_id,
+                    domain_id=self.domain.id,
+                    location=mid_loc,
+                    pos=mid_loc,
+                    is_terminal=False,
+                    is_transition=False
+                )
+
+                # Vertical leg: terminal -> intermediate
+                self._add_edge(
+                    graph, terminal_id, mid_id,
+                    location, mid_loc,
+                    'vertical', True
+                )
+                # Horizontal leg: intermediate -> grid node
+                self._add_edge(
+                    graph, mid_id, grid_node,
+                    mid_loc, (gu, gv),
+                    'horizontal', True
+                )
 
     def _check_node_available(
         self,

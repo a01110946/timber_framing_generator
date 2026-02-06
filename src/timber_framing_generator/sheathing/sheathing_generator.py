@@ -471,6 +471,80 @@ class SheathingGenerator:
         }
 
 
+def _apply_layer_rules_to_config(
+    config: Optional[Dict[str, Any]],
+    face: str,
+    wall_assembly: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Merge layer placement rules into sheathing config.
+
+    When a wall assembly is available, looks up the placement rules for the
+    outermost panelized layer on the given face and merges stagger_offset
+    and min_piece_width into the config. Explicit config values take priority.
+
+    Args:
+        config: Existing sheathing config (may be None).
+        face: Wall face ("exterior" or "interior").
+        wall_assembly: Optional assembly dict with "layers" list.
+
+    Returns:
+        Config dict with layer rules applied (original values preserved).
+    """
+    merged = dict(config) if config else {}
+
+    if not wall_assembly:
+        return merged
+
+    try:
+        from src.timber_framing_generator.materials.layer_rules import (
+            get_rules_for_assembly,
+        )
+
+        rules_by_name = get_rules_for_assembly(wall_assembly)
+
+        # Find the layer matching the face's panelized material.
+        # For exterior face: look for substrate/exterior first, then finish/exterior.
+        # For interior face: look for finish/interior first.
+        target_layer_name = None
+        layers = wall_assembly.get("layers", [])
+        side = "exterior" if face == "exterior" else "interior"
+
+        # Priority order for exterior: substrate > finish
+        # Priority order for interior: finish > substrate
+        priority = (
+            ["substrate", "finish", "membrane", "thermal"]
+            if face == "exterior"
+            else ["finish", "substrate", "membrane", "thermal"]
+        )
+
+        for target_func in priority:
+            for layer in layers:
+                if (
+                    layer.get("side") == side
+                    and layer.get("function") == target_func
+                    and layer.get("name") in rules_by_name
+                ):
+                    target_layer_name = layer["name"]
+                    break
+            if target_layer_name:
+                break
+
+        if target_layer_name and target_layer_name in rules_by_name:
+            rules = rules_by_name[target_layer_name]
+            rules_config = rules.to_sheathing_config()
+
+            # Only apply rule values that weren't explicitly set in config
+            for key, value in rules_config.items():
+                if key not in merged:
+                    merged[key] = value
+
+    except Exception:
+        pass  # If rules lookup fails, use config as-is
+
+    return merged
+
+
 def generate_wall_sheathing(
     wall_data: Dict[str, Any],
     config: Dict[str, Any] = None,
@@ -481,9 +555,14 @@ def generate_wall_sheathing(
     """
     Convenience function to generate sheathing for a wall.
 
+    When wall_data contains a "wall_assembly", layer placement rules are
+    automatically applied to fill in missing config values (stagger_offset,
+    min_piece_width) based on the assembly's layer composition.
+
     Args:
         wall_data: Wall geometry and opening data
-        config: Sheathing configuration
+        config: Sheathing configuration. Explicit values take priority
+            over layer rules.
         faces: List of faces to sheathe (default: ["exterior"])
         u_start_bound: Minimum U position for panels. Negative = extend before
             wall start. None = use 0.0.
@@ -496,16 +575,28 @@ def generate_wall_sheathing(
     if faces is None:
         faces = ["exterior"]
 
-    generator = SheathingGenerator(
-        wall_data, config,
-        u_start_bound=u_start_bound,
-        u_end_bound=u_end_bound,
-    )
+    wall_assembly = wall_data.get("wall_assembly")
     all_panels = []
 
     for face in faces:
+        # Apply layer rules per face (exterior substrate vs interior finish)
+        face_config = _apply_layer_rules_to_config(config, face, wall_assembly)
+
+        generator = SheathingGenerator(
+            wall_data, face_config,
+            u_start_bound=u_start_bound,
+            u_end_bound=u_end_bound,
+        )
         panels = generator.generate_sheathing(face=face)
         all_panels.extend(panels)
+
+    # Use last generator for summary (or create one with base config)
+    if not all_panels:
+        generator = SheathingGenerator(
+            wall_data, config,
+            u_start_bound=u_start_bound,
+            u_end_bound=u_end_bound,
+        )
 
     summary = generator.get_material_summary(all_panels)
 

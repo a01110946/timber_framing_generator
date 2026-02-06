@@ -1,12 +1,18 @@
 # File: src/timber_framing_generator/mep/routing/wall_router.py
-"""Phase 2: In-Wall MEP Router.
+"""Phase 2: In-Wall MEP Router (cavity-based).
 
 Routes MEP pipes/conduits through wall cavities from penetration points
 (Phase 1 output) to wall exit points (top plate, bottom plate, or side edge).
 
+Uses cavity decomposition instead of grid-based A*:
+- Each pipe is assigned to a cavity (rectangular void between studs/plates)
+- Pipes edge-pack against cavity walls (nearest edge + radius + gap)
+- Routes are trivially vertical within a cavity (zero stud crossings)
+- Cross-cavity routes (rare, stud-snap cases) use 2-segment L-shapes
+
 Supports progressive refinement:
-- walls_json alone: derives studs at 16" OC
-- walls_json + framing_json: uses exact framing element positions
+- walls_json alone: derives studs at configured spacing
+- walls_json + framing_json + cell_json: uses exact framing element positions
 
 Follows the user-in-the-loop design philosophy (Issue #37):
 - Reports unrouted penetrations with actionable guidance
@@ -17,38 +23,18 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .domains import (
-    Obstacle,
-    RoutingDomain,
-    RoutingDomainType,
-    add_opening_obstacles,
-    create_wall_domain,
+from .occupancy import OccupancyMap, OccupiedSegment
+from .route_segment import Route, RouteSegment, SegmentDirection
+
+from ...cavity import (
+    Cavity,
+    CavityConfig,
+    decompose_wall_cavities,
+    find_cavity_for_uv,
+    find_nearest_cavity,
 )
-from .pathfinding import AStarPathfinder, PathReconstructor
-from .route_segment import Route
-from .wall_graph import WallGraphBuilder
 
 logger = logging.getLogger(__name__)
-
-
-# --- Framing element type classification ---
-
-# Penetrable elements: (element_type -> max_penetration_ratio)
-PENETRABLE_ELEMENT_TYPES: Dict[str, float] = {
-    "stud": 0.4,
-    "king_stud": 0.4,
-    "trimmer": 0.4,
-    "sill_cripple": 0.4,
-    "header_cripple": 0.4,
-    "header": 0.25,
-    "sill_plate": 0.25,
-}
-
-NON_PENETRABLE_ELEMENT_TYPES = {"top_plate", "bottom_plate"}
-
-VERTICAL_ELEMENT_TYPES = {
-    "stud", "king_stud", "trimmer", "sill_cripple", "header_cripple",
-}
 
 
 # --- Exit point rules ---
@@ -137,6 +123,7 @@ class WallRoute:
     route: Route
     stud_crossings: int
     fixture_type: Optional[str] = None
+    world_segments: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to JSON-compatible dict."""
@@ -152,6 +139,8 @@ class WallRoute:
         }
         if self.fixture_type is not None:
             result["fixture_type"] = self.fixture_type
+        if self.world_segments:
+            result["world_segments"] = self.world_segments
         return result
 
     @classmethod
@@ -167,6 +156,7 @@ class WallRoute:
             route=Route.from_dict(data["route"]),
             stud_crossings=data["stud_crossings"],
             fixture_type=data.get("fixture_type"),
+            world_segments=data.get("world_segments", []),
         )
 
 
@@ -221,7 +211,8 @@ class WallRoutingResult:
         floor_passthroughs: Floor penetrations passed through unchanged.
         status: "ready" if all routed, "needs_input" if some failed.
         needs: Actionable guidance for unrouted penetrations.
-        obstacle_source: "derived" (16" OC), "framing" (exact), or "mixed".
+        obstacle_source: "derived" (configured spacing), "framing" (exact),
+            or "mixed".
     """
 
     wall_routes: List[WallRoute] = field(default_factory=list)
@@ -265,188 +256,39 @@ class WallRoutingResult:
         )
 
 
-# --- Obstacle creation ---
-
-
-def _create_framing_obstacles(
-    framing_elements: List[Dict[str, Any]],
-    wall_id: str,
-    wall_length: float,
-) -> List[Obstacle]:
-    """Convert framing element dicts to Obstacle objects.
-
-    Vertical elements (studs, king studs, trimmers, cripples): penetrable
-    with 40% max penetration ratio per structural code.
-    Headers: penetrable but limited (25%).
-    Plates: non-penetrable (routing exits through plate zone via exit points).
-
-    Args:
-        framing_elements: List of FramingElementData-style dicts.
-        wall_id: Wall identifier for obstacle naming.
-        wall_length: Wall length for plate U bounds.
-
-    Returns:
-        List of Obstacle objects.
-    """
-    obstacles = []
-
-    for elem in framing_elements:
-        elem_id = elem.get("id", "unknown")
-        elem_type = elem.get("element_type", "")
-        profile = elem.get("profile", {})
-        profile_width = float(profile.get("width", 0.125))
-        u_coord = float(elem.get("u_coord", 0))
-        v_start = float(elem.get("v_start", 0))
-        v_end = float(elem.get("v_end", 0))
-
-        # Skip zero-height elements
-        if abs(v_end - v_start) < 1e-6:
-            continue
-
-        # Determine penetrability
-        if elem_type in NON_PENETRABLE_ELEMENT_TYPES:
-            is_penetrable = False
-            max_pen = 0.0
-        elif elem_type in PENETRABLE_ELEMENT_TYPES:
-            is_penetrable = True
-            max_pen = PENETRABLE_ELEMENT_TYPES[elem_type]
-        else:
-            # Unknown element type: treat as penetrable stud-like
-            is_penetrable = True
-            max_pen = 0.4
-
-        # Compute U bounds based on element orientation
-        if elem_type in NON_PENETRABLE_ELEMENT_TYPES:
-            # Plates span full wall length
-            u_min = 0.0
-            u_max = wall_length
-        else:
-            # Vertical elements and others: u_coord +/- half width
-            u_min = u_coord - profile_width / 2
-            u_max = u_coord + profile_width / 2
-
-        obstacle_type = (
-            "plate" if elem_type in NON_PENETRABLE_ELEMENT_TYPES else "stud"
-        )
-
-        obstacles.append(Obstacle(
-            id=f"{wall_id}_frame_{elem_id}",
-            obstacle_type=obstacle_type,
-            bounds=(u_min, v_start, u_max, v_end),
-            is_penetrable=is_penetrable,
-            max_penetration_ratio=max_pen,
-        ))
-
-    return obstacles
-
-
-def create_wall_routing_domain(
-    wall: Dict[str, Any],
-    framing: Optional[Dict[str, Any]] = None,
-) -> Tuple[RoutingDomain, str]:
-    """Create routing domain for a wall with progressive refinement.
-
-    Without framing: calls create_wall_domain() for derived studs at 16" OC,
-    then adds opening obstacles from wall data.
-
-    With framing: creates empty domain, adds exact framing elements as
-    obstacles, then adds opening obstacles.
-
-    Args:
-        wall: Wall data dict (from walls_json).
-        framing: Optional framing data dict (from framing_json).
-
-    Returns:
-        Tuple of (RoutingDomain, obstacle_source) where obstacle_source
-        is "derived" or "framing".
-    """
-    wall_id = wall["wall_id"]
-    wall_length = float(wall["wall_length"])
-    wall_height = float(wall.get("wall_height", wall.get("height", 8.0)))
-    wall_thickness = float(wall.get("wall_thickness", 0.292))
-    openings = wall.get("openings", [])
-
-    if framing is not None:
-        # Framing mode: exact obstacles from framing data
-        domain = RoutingDomain(
-            id=wall_id,
-            domain_type=RoutingDomainType.WALL_CAVITY,
-            bounds=(0, wall_length, 0, wall_height),
-            thickness=wall_thickness,
-        )
-
-        elements = framing.get("elements", [])
-        framing_obstacles = _create_framing_obstacles(
-            elements, wall_id, wall_length,
-        )
-        for obs in framing_obstacles:
-            domain.add_obstacle(obs)
-
-        obstacle_source = "framing"
-    else:
-        # Derived mode: 16" OC studs + standard plates
-        domain = create_wall_domain(
-            wall_id=wall_id,
-            length=wall_length,
-            height=wall_height,
-            thickness=wall_thickness,
-        )
-        obstacle_source = "derived"
-
-    # Add opening obstacles (applies in both modes)
-    if openings:
-        add_opening_obstacles(domain, openings)
-
-    return domain, obstacle_source
-
-
 # --- Exit point selection ---
 
 
 def _select_exit_point(
     penetration: Dict[str, Any],
     wall: Dict[str, Any],
-    domain: RoutingDomain,
     plate_thickness: float = 0.125,
-) -> Tuple[Tuple[float, float], str]:
-    """Select wall exit point (U, V) for a penetration.
+) -> Tuple[str, float]:
+    """Select exit edge and exit V for a penetration.
 
     Uses system_type to determine preferred exit edge (top/bottom).
     Exit V is placed just inside the plate zone with clearance.
-    Exit U matches the penetration U for a vertical drop/rise.
 
     Args:
         penetration: Penetration dict from Phase 1.
         wall: Wall data dict.
-        domain: The routing domain for UV bounds.
         plate_thickness: Plate thickness in feet.
 
     Returns:
-        Tuple of ((exit_u, exit_v), exit_edge).
+        Tuple of (exit_edge, exit_v).
     """
     system_type = penetration.get("system_type", "")
-    wall_uv = penetration.get("wall_uv", [0, 0])
-    entry_u = float(wall_uv[0])
+    wall_height = float(wall.get("wall_height", wall.get("height", 8.0)))
 
-    # Determine exit edge from system type
     exit_edge = EXIT_POINT_RULES.get(system_type, DEFAULT_EXIT_EDGE)
 
-    # Compute exit V position (just inside the plate zone)
-    clearance = 0.042  # ~0.5 inch clearance from plate edge
+    clearance = 0.042  # ~0.5 inch from plate edge
     if exit_edge == "top":
-        exit_v = domain.max_v - plate_thickness - clearance
-    else:  # "bottom"
-        exit_v = domain.min_v + plate_thickness + clearance
+        exit_v = wall_height - plate_thickness - clearance
+    else:
+        exit_v = plate_thickness + clearance
 
-    # Exit U: same as entry U (vertical drop preferred)
-    exit_u = entry_u
-
-    # Clamp to domain bounds with margin
-    margin = 0.05
-    exit_u = max(domain.min_u + margin, min(domain.max_u - margin, exit_u))
-    exit_v = max(domain.min_v + margin, min(domain.max_v - margin, exit_v))
-
-    return (exit_u, exit_v), exit_edge
+    return exit_edge, exit_v
 
 
 def _uv_to_world(
@@ -483,6 +325,151 @@ def _count_stud_crossings(route: Route) -> int:
     return sum(1 for seg in route.segments if seg.crosses_obstacle)
 
 
+# --- Cavity-based routing helpers ---
+
+
+def _edge_pack_u(
+    cavity: Cavity,
+    entry_u: float,
+    pipe_radius: float,
+    tolerance_gap: float,
+    occupancy: OccupancyMap,
+    wall_id: str,
+) -> float:
+    """Find the best U position within a cavity for a pipe.
+
+    Strategy: prefer straight vertical drop at entry_u. Only shift
+    when entry_u collides with an existing pipe or is outside the cavity.
+    When shifting is needed, scan outward from entry_u in both directions
+    to minimize horizontal jog distance.
+
+    Args:
+        cavity: Target cavity.
+        entry_u: Original U-coordinate of the penetration.
+        pipe_radius: Pipe outer radius in feet.
+        tolerance_gap: Minimum clearance from cavity edge and other pipes.
+        occupancy: OccupancyMap tracking reserved pipe space.
+        wall_id: Wall ID for occupancy lookup.
+
+    Returns:
+        U-coordinate for the pipe within the cavity.
+    """
+    pipe_diameter = pipe_radius * 2.0
+    min_u = cavity.u_min + pipe_radius + tolerance_gap
+    max_u = cavity.u_max - pipe_radius - tolerance_gap
+
+    # Clamp entry_u into the valid cavity range
+    clamped_u = max(min_u, min(entry_u, max_u))
+
+    # Try the clamped entry position first (straight vertical drop)
+    available, _ = occupancy.is_available(
+        wall_id,
+        ((clamped_u, cavity.v_min), (clamped_u, cavity.v_max)),
+        pipe_diameter,
+        tolerance_gap,
+    )
+    if available:
+        return clamped_u
+
+    # Collision detected -- scan outward from clamped_u in both directions
+    step = pipe_diameter + tolerance_gap
+    left_u = clamped_u - step
+    right_u = clamped_u + step
+
+    while left_u >= min_u or right_u <= max_u:
+        # Try left
+        if left_u >= min_u:
+            available, _ = occupancy.is_available(
+                wall_id,
+                ((left_u, cavity.v_min), (left_u, cavity.v_max)),
+                pipe_diameter,
+                tolerance_gap,
+            )
+            if available:
+                return left_u
+            left_u -= step
+
+        # Try right
+        if right_u <= max_u:
+            available, _ = occupancy.is_available(
+                wall_id,
+                ((right_u, cavity.v_min), (right_u, cavity.v_max)),
+                pipe_diameter,
+                tolerance_gap,
+            )
+            if available:
+                return right_u
+            right_u += step
+
+    # Fallback: cavity center (all positions occupied)
+    return cavity.center_u
+
+
+def _create_route(
+    conn_id: str,
+    system_type: str,
+    wall_id: str,
+    entry_uv: Tuple[float, float],
+    packed_u: float,
+    exit_v: float,
+    crosses_stud: bool,
+) -> Tuple[Route, int]:
+    """Create the in-wall route from entry to exit.
+
+    For most cases this is a single vertical segment (zero stud crossings).
+    When the packed_u differs from entry_u (stud snap), a horizontal
+    segment is prepended.
+
+    Args:
+        conn_id: Connector ID.
+        system_type: MEP system type.
+        wall_id: Wall ID.
+        entry_uv: Original penetration (u, v).
+        packed_u: Edge-packed U position in the assigned cavity.
+        exit_v: Exit V position (near plate).
+        crosses_stud: Whether the horizontal jog crosses a stud.
+
+    Returns:
+        Tuple of (Route, stud_crossings).
+    """
+    entry_u, entry_v = entry_uv
+    segments: List[RouteSegment] = []
+    stud_crossings = 0
+
+    # Horizontal jog (if entry_u != packed_u)
+    if abs(entry_u - packed_u) > 1e-6:
+        segments.append(RouteSegment(
+            start=(entry_u, entry_v),
+            end=(packed_u, entry_v),
+            direction=SegmentDirection.HORIZONTAL,
+            domain_id=wall_id,
+            crosses_obstacle=crosses_stud,
+            obstacle_type="stud" if crosses_stud else None,
+        ))
+        if crosses_stud:
+            stud_crossings = 1
+
+    # Vertical segment (main drop/rise)
+    start_v = entry_v
+    if abs(start_v - exit_v) > 1e-6:
+        segments.append(RouteSegment(
+            start=(packed_u, start_v),
+            end=(packed_u, exit_v),
+            direction=SegmentDirection.VERTICAL,
+            domain_id=wall_id,
+        ))
+
+    exit_uv = (packed_u, exit_v)
+    route = Route(
+        id=f"wall_route_{conn_id}",
+        system_type=system_type,
+        segments=segments,
+        source=entry_uv,
+        target=exit_uv,
+    )
+    return route, stud_crossings
+
+
 # --- Core routing ---
 
 
@@ -491,28 +478,32 @@ def route_wall(
     penetrations: List[Dict[str, Any]],
     wall: Dict[str, Any],
     framing: Optional[Dict[str, Any]] = None,
-    grid_resolution_u: float = 0.333,
-    grid_resolution_v: float = 0.5,
+    cell_data: Optional[Dict[str, Any]] = None,
+    occupancy: Optional[OccupancyMap] = None,
+    pipe_radius: float = 0.0417,
+    tolerance_gap: float = 0.0417,
 ) -> WallRoutingResult:
-    """Route all penetrations for a single wall.
+    """Route all penetrations for a single wall using cavity-based routing.
 
     Steps:
-    1. Create routing domain (with or without framing)
-    2. Build grid graph via WallGraphBuilder
-    3. For each penetration:
-       a. Select exit point based on system_type
-       b. Add source and target as terminal nodes
-       c. Run A* pathfinding
-       d. Convert to Route via PathReconstructor
-    4. Return results with routes, unrouted, stats
+    1. Decompose wall into cavities (framing mode or derived mode)
+    2. For each penetration:
+       a. Assign to a cavity (or nearest if on a stud)
+       b. Edge-pack U within the cavity
+       c. Select exit edge and V from system_type
+       d. Create route (vertical segment, optional horizontal jog)
+       e. Reserve space in occupancy map
+    3. Return results with routes, unrouted, stats
 
     Args:
         wall_id: Wall identifier.
         penetrations: List of penetration dicts from Phase 1.
         wall: Wall data dict from walls_json.
         framing: Optional framing data dict from framing_json.
-        grid_resolution_u: Grid spacing along wall (feet).
-        grid_resolution_v: Grid spacing vertical (feet).
+        cell_data: Optional cell decomposition dict.
+        occupancy: Optional shared OccupancyMap (created internally if None).
+        pipe_radius: Pipe outer radius in feet (~1" OD default).
+        tolerance_gap: Clearance between pipe and cavity edge/other pipes.
 
     Returns:
         WallRoutingResult for this wall.
@@ -522,17 +513,49 @@ def route_wall(
     if not penetrations:
         return result
 
-    # Create routing domain
-    domain, obstacle_source = create_wall_routing_domain(wall, framing)
+    # Determine obstacle source
+    if framing and cell_data:
+        obstacle_source = "framing"
+    else:
+        obstacle_source = "derived"
     result.obstacle_source = obstacle_source
 
-    # Build grid graph
-    builder = WallGraphBuilder(
-        domain,
-        resolution_u=grid_resolution_u,
-        resolution_v=grid_resolution_v,
+    # Build wall_data dict for cavity decomposer
+    wall_length = float(wall.get("wall_length", wall.get("length", 10.0)))
+    wall_height = float(wall.get("wall_height", wall.get("height", 8.0)))
+    wall_thickness = float(wall.get("wall_thickness", 0.292))
+
+    cavity_wall_data = {
+        "wall_id": wall_id,
+        "wall_length": wall_length,
+        "wall_height": wall_height,
+        "wall_thickness": wall_thickness,
+        "openings": wall.get("openings", []),
+    }
+
+    # Decompose wall into cavities
+    cavities = decompose_wall_cavities(
+        cavity_wall_data,
+        cell_data=cell_data,
+        framing_data=framing,
+        config=CavityConfig(),
     )
-    graph = builder.build_grid_graph()
+
+    if not cavities:
+        for pen in penetrations:
+            result.unrouted.append(UnroutedPenetration(
+                connector_id=pen.get("connector_id", "unknown"),
+                system_type=pen.get("system_type", "unknown"),
+                wall_id=wall_id,
+                entry_uv=tuple(pen.get("wall_uv", [0, 0])),
+                reason="No cavities found in wall (wall may be too short or fully blocked)",
+            ))
+        result.status = "needs_input"
+        return result
+
+    # Create internal occupancy map if not provided
+    if occupancy is None:
+        occupancy = OccupancyMap()
 
     # Route each penetration
     for pen in penetrations:
@@ -541,58 +564,59 @@ def route_wall(
         wall_uv = pen.get("wall_uv", [0, 0])
         entry_uv = (float(wall_uv[0]), float(wall_uv[1]))
         fixture_type = pen.get("fixture_type")
+        entry_u, entry_v = entry_uv
 
-        # Select exit point
-        exit_uv, exit_edge = _select_exit_point(pen, wall, domain)
+        # 1. Find cavity for this penetration
+        cavity = find_cavity_for_uv(cavities, entry_u, entry_v)
+        crosses_stud = False
 
-        # Add terminal nodes
-        source_ids = builder.add_terminal_nodes(
-            graph, [entry_uv], is_source=True,
-        )
-        target_ids = builder.add_terminal_nodes(
-            graph, [exit_uv], is_source=False,
-        )
+        if cavity is None:
+            # Entry point is on a stud or outside cavities -> snap to nearest
+            cavity = find_nearest_cavity(cavities, entry_u, entry_v)
+            if cavity is None:
+                result.unrouted.append(UnroutedPenetration(
+                    connector_id=conn_id,
+                    system_type=system_type,
+                    wall_id=wall_id,
+                    entry_uv=entry_uv,
+                    reason="No suitable cavity found near penetration point",
+                ))
+                continue
+            crosses_stud = True  # Snapping from stud to cavity crosses a member
 
-        if not source_ids or not target_ids:
-            result.unrouted.append(UnroutedPenetration(
-                connector_id=conn_id,
-                system_type=system_type,
-                wall_id=wall_id,
-                entry_uv=entry_uv,
-                reason="Failed to add terminal nodes to graph",
-            ))
-            continue
-
-        # Find path
-        pathfinder = AStarPathfinder(graph)
-        path_result = pathfinder.find_path_with_result(
-            source_ids[0], target_ids[0],
+        # 2. Edge-pack U within the cavity
+        packed_u = _edge_pack_u(
+            cavity, entry_u, pipe_radius, tolerance_gap, occupancy, wall_id,
         )
 
-        if not path_result.success:
-            result.unrouted.append(UnroutedPenetration(
-                connector_id=conn_id,
-                system_type=system_type,
-                wall_id=wall_id,
-                entry_uv=entry_uv,
-                reason=(
-                    f"No path found to {exit_edge} plate "
-                    f"(visited {path_result.visited_count} nodes)"
-                ),
-            ))
-            continue
+        # 3. Determine exit edge and V
+        exit_edge, exit_v = _select_exit_point(pen, wall)
 
-        # Reconstruct route
-        reconstructor = PathReconstructor(graph)
-        route = reconstructor.reconstruct(
-            path_result.path,
+        # 4. Create route
+        exit_uv = (packed_u, exit_v)
+        route, stud_crossings = _create_route(
+            conn_id, system_type, wall_id,
+            entry_uv, packed_u, exit_v, crosses_stud,
+        )
+
+        # 5. Reserve space in occupancy map
+        occupancy.reserve(wall_id, OccupiedSegment(
             route_id=f"wall_route_{conn_id}",
             system_type=system_type,
-        )
+            trade="plumbing",
+            start=(packed_u, min(entry_v, exit_v)),
+            end=(packed_u, max(entry_v, exit_v)),
+            diameter=pipe_radius * 2.0,
+        ))
 
-        stud_crossings = _count_stud_crossings(route)
+        # 6. Compute world-coordinate segments for visualization
+        world_segs: List[Dict[str, Any]] = []
+        for seg in route.segments:
+            ws = _uv_to_world(seg.start, wall)
+            we = _uv_to_world(seg.end, wall)
+            world_segs.append({"start": list(ws), "end": list(we)})
 
-        # Create WallRoute
+        # 7. Create WallRoute
         wall_route = WallRoute(
             connector_id=conn_id,
             system_type=system_type,
@@ -603,6 +627,7 @@ def route_wall(
             route=route,
             stud_crossings=stud_crossings,
             fixture_type=fixture_type,
+            world_segments=world_segs,
         )
         result.wall_routes.append(wall_route)
 
@@ -620,12 +645,12 @@ def route_wall(
 
         logger.debug(
             "Routed %s in wall %s: entry=(%.2f, %.2f) -> exit=(%.2f, %.2f) "
-            "%s, %d stud crossings, cost=%.2f",
+            "%s, %d stud crossings, cost=%.2f, cavity=%s",
             conn_id, wall_id,
             entry_uv[0], entry_uv[1],
             exit_uv[0], exit_uv[1],
             exit_edge, stud_crossings,
-            route.total_cost,
+            route.total_cost, cavity.id,
         )
 
     # Set status
@@ -644,6 +669,7 @@ def route_all_walls(
     penetrations_json: Dict[str, Any],
     walls_json: Dict[str, Any],
     framing_json: Optional[Dict[str, Any]] = None,
+    cell_json: Optional[Dict[str, Any]] = None,
 ) -> WallRoutingResult:
     """Main entry point for Phase 2.
 
@@ -655,6 +681,8 @@ def route_all_walls(
         walls_json: Wall analyzer output with "walls" list.
         framing_json: Optional framing generator output. Can be a single
             wall's framing dict or a list under "walls" key.
+        cell_json: Optional cell decomposition output. Can be a single
+            wall's cell data or a list under "walls" key.
 
     Returns:
         WallRoutingResult with all routes, exit points, and floor passthroughs.
@@ -691,6 +719,21 @@ def route_all_walls(
             fid = framing_json["wall_id"]
             framing_lookup[fid] = framing_json
 
+    # Build cell data lookup (optional)
+    cell_lookup: Dict[str, Dict[str, Any]] = {}
+    if cell_json:
+        if "walls" in cell_json:
+            for cw in cell_json["walls"]:
+                cid = cw.get("wall_id", "")
+                if cid:
+                    cell_lookup[cid] = cw
+        elif "wall_id" in cell_json:
+            cid = cell_json["wall_id"]
+            cell_lookup[cid] = cell_json
+
+    # Shared occupancy map across all walls
+    occupancy = OccupancyMap()
+
     # Separate floor penetrations from wall penetrations
     wall_penetrations: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -720,12 +763,15 @@ def route_all_walls(
     for wall_id, pens in wall_penetrations.items():
         wall = wall_lookup[wall_id]
         framing = framing_lookup.get(wall_id)
+        cell_data = cell_lookup.get(wall_id)
 
         wall_result = route_wall(
             wall_id=wall_id,
             penetrations=pens,
             wall=wall,
             framing=framing,
+            cell_data=cell_data,
+            occupancy=occupancy,
         )
 
         result.wall_routes.extend(wall_result.wall_routes)

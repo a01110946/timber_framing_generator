@@ -137,16 +137,24 @@ COMPONENT_MESSAGE = "v1.0.0"
 COMPONENT_CATEGORY = "TimberFraming"
 COMPONENT_SUBCATEGORY = "MEP"
 
-# System color mapping: system_type -> (R, G, B)
+# System color mapping: system_type (lowercase) -> (R, G, B)
+# Includes both Revit PascalCase names (lowered) and shorthand aliases.
 SYSTEM_COLORS = {
-    "sanitary_drain": (139, 90, 43),      # Brown
-    "sanitary_vent": (128, 128, 128),     # Gray
-    "dhw": (255, 0, 0),                   # Red
-    "dcw": (0, 0, 255),                   # Blue
-    "power": (255, 255, 0),               # Yellow
-    "data": (255, 165, 0),                # Orange
-    "lighting": (255, 255, 255),          # White
-    "default": (0, 255, 0),               # Green
+    # Revit system types (lowercase)
+    "sanitary": (139, 90, 43),             # Brown
+    "domesticcoldwater": (0, 100, 255),    # Blue
+    "domestichotwater": (255, 50, 50),     # Red
+    "vent": (128, 128, 128),               # Gray
+    # Shorthand aliases (legacy / OAHS format)
+    "sanitary_drain": (139, 90, 43),       # Brown
+    "sanitary_vent": (128, 128, 128),      # Gray
+    "dhw": (255, 50, 50),                  # Red
+    "dcw": (0, 100, 255),                  # Blue
+    # Other trades
+    "power": (255, 255, 0),                # Yellow
+    "data": (255, 165, 0),                 # Orange
+    "lighting": (255, 255, 255),           # White
+    "default": (0, 255, 0),                # Green
 }
 
 # =============================================================================
@@ -325,8 +333,9 @@ def validate_inputs(routes_json_input, run_input):
         data = json.loads(routes_json_input)
         if not isinstance(data, dict):
             return False, "routes_json must be a JSON object"
-        if "routes" not in data:
-            return False, "routes_json missing 'routes' key"
+        # Accept either "routes" (old OAHS format) or "wall_routes" (Phase 2)
+        if "routes" not in data and "wall_routes" not in data:
+            return False, "routes_json missing 'routes' or 'wall_routes' key"
     except json.JSONDecodeError as e:
         return False, f"Invalid routes_json: {e}"
 
@@ -336,14 +345,36 @@ def validate_inputs(routes_json_input, run_input):
 def parse_routes(routes_json_str):
     """Parse routes from JSON string.
 
+    Supports two formats:
+    - Old OAHS format: {"routes": [{"route_id", "system_type", "segments", ...}]}
+    - Phase 2 wall_routes format: {"wall_routes": [{"connector_id", "system_type",
+      "world_segments", ...}]}
+
     Args:
         routes_json_str: JSON string with routes data
 
     Returns:
-        List of route dictionaries
+        List of route dictionaries in visualizer format
     """
     data = json.loads(routes_json_str)
-    return data.get("routes", [])
+
+    # Old format: routes key with 3D segments
+    if "routes" in data:
+        return data["routes"]
+
+    # Phase 2 format: wall_routes with world_segments
+    if "wall_routes" in data:
+        adapted = []
+        for wr in data["wall_routes"]:
+            adapted.append({
+                "route_id": wr.get("connector_id", "unknown"),
+                "system_type": wr.get("system_type", "default"),
+                "segments": wr.get("world_segments", []),
+                "junctions": [],
+            })
+        return adapted
+
+    return []
 
 
 def create_route_curves(route, factory):
@@ -501,7 +532,7 @@ def process_routes(routes_json_str, color_by_system, show_junctions):
 # Main Function
 # =============================================================================
 
-def main():
+def main(routes_json_input, color_by_system_input, show_junctions_input, run_input):
     """Main entry point for the component.
 
     Coordinates the overall workflow:
@@ -510,10 +541,16 @@ def main():
     3. Process route data
     4. Return visualization geometry
 
+    Args:
+        routes_json_input: JSON string with route data.
+        color_by_system_input: Enable system-type color coding.
+        show_junctions_input: Display junction points.
+        run_input: Boolean trigger.
+
     Returns:
         tuple: (curves, colors, points, info) or empty outputs on failure
     """
-    # Setup component
+    # Setup component (display only, AFTER inputs captured)
     setup_component()
 
     # Initialize empty outputs
@@ -522,13 +559,6 @@ def main():
     empty_points = DataTree[object]()
 
     try:
-        # Get inputs (these come from GH component inputs)
-        # Use globals() to check if variables are defined
-        routes_json_input = routes_json if 'routes_json' in dir() else None
-        color_by_system_input = color_by_system if 'color_by_system' in dir() else True
-        show_junctions_input = show_junctions if 'show_junctions' in dir() else True
-        run_input = run if 'run' in dir() else False
-
         # Handle None/unset boolean inputs with defaults
         if color_by_system_input is None:
             color_by_system_input = True
@@ -560,7 +590,29 @@ def main():
 # Execution
 # =============================================================================
 
+# Capture GH globals at module level (BEFORE main() is called)
+# dir() inside a function only sees local scope -- GH injects at module level.
+try:
+    _routes_json = routes_json
+except NameError:
+    _routes_json = None
+
+try:
+    _color_by_system = color_by_system
+except NameError:
+    _color_by_system = True
+
+try:
+    _show_junctions = show_junctions
+except NameError:
+    _show_junctions = True
+
+try:
+    _run = run
+except NameError:
+    _run = False
+
 if __name__ == "__main__":
-    # Execute main and assign to output variables
-    # These variable names must match your GH component outputs
-    curves, colors, points, info = main()
+    curves, colors, points, info = main(
+        _routes_json, _color_by_system, _show_junctions, _run
+    )

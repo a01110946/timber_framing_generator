@@ -3,28 +3,35 @@
 
 Routes MEP pipes/conduits through wall cavities from penetration points
 (Phase 1 output) to wall exit points (top or bottom plate). This is Phase 2
-of the hierarchical MEP routing pipeline -- uses A* pathfinding through a
-2D grid graph with stud penetration costs and opening obstacles.
+of the hierarchical MEP routing pipeline -- uses cavity-based routing where
+pipes drop vertically within rectangular voids between framing members.
 
 Key Features:
-1. Progressive Refinement
-   - Works with walls_json alone (derives studs at 16" OC)
-   - Improves with framing_json (exact framing element positions)
+1. Cavity-Based Routing
+   - Decomposes walls into rectangular cavities (voids between studs/plates)
+   - Pipes route vertically within cavities -- no A* grid needed
+   - Prefer straight vertical drops; only jog horizontally when necessary
+   - Multi-pipe support via occupancy-aware collision detection
+
+2. Progressive Refinement
+   - walls_json alone: derives cavities from configured stud spacing
+   - walls_json + framing_json: uses exact framing element positions
+   - walls_json + framing_json + cell_json: full precision with cell data
    - Reports obstacle_source in stats ("derived" or "framing")
 
-2. System-Type-Aware Exit Selection
+3. System-Type-Aware Exit Selection
    - Sanitary/supply pipes exit through bottom plate (gravity/riser below)
    - Vent pipes exit through top plate (vent stack above)
    - Each route selects the appropriate wall exit edge
 
-3. User-in-the-Loop Design
+4. User-in-the-Loop Design
    - Reports unrouted penetrations with actionable guidance
    - Floor penetrations passed through unchanged (not routed in wall)
    - Status output: "ready" if all routed, "needs_input" if some failed
 
-4. Debug Visualization
-   - Graph node points for Rhino viewport inspection
-   - Graph edge lines showing the routing grid
+5. Debug Visualization
+   - Route segment endpoints for Rhino viewport inspection
+   - Route segment lines (vertical drops within cavities)
    - Uses RhinoCommonFactory for correct assembly output
 
 Environment:
@@ -33,24 +40,24 @@ Environment:
     Python component (CPython 3)
 
 Dependencies:
-    - networkx: Graph construction and A* pathfinding
     - Rhino.Geometry: Point3d and LineCurve for debug visualization
     - Grasshopper: Component framework and data structures
     - json: Serialization of routing data
     - timber_framing_generator.mep.routing.wall_router: Core routing logic
+    - timber_framing_generator.cavity: Cavity decomposition module
     - timber_framing_generator.utils.geometry_factory: RhinoCommonFactory
 
 Performance Considerations:
-    - O(walls * penetrations * grid_nodes) pathfinding per run
-    - Grid size depends on wall dimensions and resolution (~4" U, ~6" V)
-    - Typical residential wall (10ft x 8ft) creates ~600 grid nodes
-    - A* is efficient with Manhattan heuristic; most routes found in < 50ms
+    - O(walls * penetrations) per run -- no graph search needed
+    - Cavity decomposition is lightweight (sorted member lists)
+    - Typical residential wall routes all pipes in < 5ms
 
 Usage:
     1. Connect penetrations_json from MEP Fixture Router (Phase 1)
     2. Connect walls_json from Wall Analyzer
-    3. Optionally connect framing_json from Framing Generator for exact obstacles
-    4. Set run to True to execute
+    3. Optionally connect framing_json from Framing Generator for exact cavities
+    4. Optionally connect cell_json from Cell Decomposer for cell-aware cavities
+    5. Set run to True to execute
     5. Check status output: "ready" means all penetrations routed
     6. If "needs_input", review info output for guidance
 
@@ -72,7 +79,14 @@ Input Requirements:
     Framing JSON (framing_json) - str:
         JSON string with framing elements from Framing Generator.
         Format: {"wall_id", "elements": [...]} or {"walls": [{...}, ...]}
-        Required: No (progressive refinement - derives studs at 16" OC without it)
+        Required: No (progressive refinement - derives cavities without it)
+        Access: Item
+        Type hint: str (set via GH UI)
+
+    Cell JSON (cell_json) - str:
+        JSON string with cell decomposition from Cell Decomposer.
+        Format: {"walls": [{"wall_id", "cells": [...]}]}
+        Required: No (used with framing_json for cell-aware cavity decomposition)
         Access: Item
         Type hint: str (set via GH UI)
 
@@ -87,10 +101,10 @@ Outputs:
         JSON with in-wall routes, exit points, floor passthroughs, and status.
 
     Graph Points (graph_pts) - List[Point3d]:
-        Graph node positions for debug visualization.
+        Route segment endpoint positions for debug visualization.
 
     Graph Lines (graph_lines) - List[LineCurve]:
-        Graph edge lines for debug visualization.
+        Route segment lines for debug visualization.
 
     Stats JSON (stats_json) - str:
         Routing statistics (routes per wall, stud crossings, success rate).
@@ -102,10 +116,10 @@ Outputs:
         Diagnostic messages and processing log.
 
 Technical Details:
-    - Creates a 2D UV grid graph per wall (U along length, V vertical)
-    - Studs are penetrable obstacles (5x cost penalty)
-    - Plates and openings are non-penetrable (blocked edges)
-    - A* finds optimal path from penetration point to exit point
+    - Decomposes each wall into rectangular cavities between framing members
+    - Pipe drops vertically at entry U when possible (no horizontal jog)
+    - Only shifts horizontally when collision with existing pipe detected
+    - Stud crossing only when penetration falls on a stud (horizontal snap)
     - Exit selection: system_type determines top vs bottom plate exit
     - Floor penetrations (target="floor") bypass wall routing entirely
 
@@ -116,7 +130,7 @@ Error Handling:
     - Failed routes reported in unrouted list with reasons
 
 Author: Fernando Maytorena
-Version: 1.0.0
+Version: 2.0.0
 """
 
 # =============================================================================
@@ -168,7 +182,7 @@ from src.timber_framing_generator.utils.geometry_factory import get_factory
 
 COMPONENT_NAME = "MEP Wall Router"
 COMPONENT_NICKNAME = "WallRouter"
-COMPONENT_MESSAGE = "v1.0 | Phase 2"
+COMPONENT_MESSAGE = "v2.0 | Phase 2 (cavity)"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "MEP"
 
@@ -253,7 +267,10 @@ def setup_component():
          "JSON string with wall geometry from Wall Analyzer",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Framing JSON", "framing_json",
-         "Optional JSON with framing elements (improves obstacle accuracy)",
+         "Optional JSON with framing elements (improves cavity accuracy)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Cell JSON", "cell_json",
+         "Optional JSON with cell decomposition (used with framing_json)",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Run", "run",
          "Boolean to trigger execution",
@@ -470,7 +487,26 @@ def create_debug_geometry(result, walls_json):
 # Main Function
 # =============================================================================
 
-def main(pen_json_input, walls_json_input, framing_json_input, run_input):
+def parse_cell_json(cell_json_str):
+    """Parse optional cell_json.
+
+    Args:
+        cell_json_str: JSON string with cell decomposition data, or None.
+
+    Returns:
+        Dict with cell data, or None.
+    """
+    if not cell_json_str:
+        return None
+
+    try:
+        data = json.loads(cell_json_str)
+        return data
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def main(pen_json_input, walls_json_input, framing_json_input, cell_json_input, run_input):
     """Main entry point for the component.
 
     Coordinates the overall workflow:
@@ -484,6 +520,7 @@ def main(pen_json_input, walls_json_input, framing_json_input, run_input):
         pen_json_input: JSON string with penetration data (from Phase 1).
         walls_json_input: JSON string with wall data.
         framing_json_input: Optional JSON string with framing data.
+        cell_json_input: Optional JSON string with cell decomposition data.
         run_input: Boolean trigger.
 
     Returns:
@@ -518,19 +555,22 @@ def main(pen_json_input, walls_json_input, framing_json_input, run_input):
         penetrations_json = json.loads(pen_json_input)
         walls_json = parse_walls_json(walls_json_input)
         framing_json = parse_framing_json(framing_json_input)
+        cell_json = parse_cell_json(cell_json_input)
 
         wall_count = len(walls_json.get("walls", []))
         pen_count = len(penetrations_json.get("penetrations", []))
         info_lines.append("Parsed {} penetrations across {} walls".format(
             pen_count, wall_count))
 
-        if framing_json:
-            info_lines.append("Framing data provided -> using exact obstacles")
+        if framing_json and cell_json:
+            info_lines.append("Framing + cell data provided -> exact cavity decomposition")
+        elif framing_json:
+            info_lines.append("Framing data provided -> framing-based cavities (no cell data)")
         else:
-            info_lines.append("No framing data -> using derived obstacles (16\" OC)")
+            info_lines.append("No framing data -> derived cavities from wall geometry")
 
         # Run in-wall routing (core logic)
-        result = route_all_walls(penetrations_json, walls_json, framing_json)
+        result = route_all_walls(penetrations_json, walls_json, framing_json, cell_json)
 
         elapsed_ms = (time.time() - start_time) * 1000
         info_lines.append("Routing completed in {:.1f}ms".format(elapsed_ms))
@@ -605,7 +645,7 @@ def main(pen_json_input, walls_json_input, framing_json_input, run_input):
     except ImportError as e:
         log_error("Import error: {}".format(e))
         info_lines.append("Import error: {}".format(e))
-        info_lines.append("Ensure timber_framing_generator and networkx are installed")
+        info_lines.append("Ensure timber_framing_generator package is installed")
         info_lines.append(traceback.format_exc())
     except json.JSONDecodeError as e:
         log_error("JSON parse error: {}".format(e))
@@ -638,11 +678,16 @@ except NameError:
     _framing_json = None
 
 try:
+    _cell_json = cell_json
+except NameError:
+    _cell_json = None
+
+try:
     _run = run
 except NameError:
     _run = False
 
 if __name__ == "__main__":
     wall_routes_json, graph_pts, graph_lines, stats_json, status, info = main(
-        _penetrations_json, _walls_json, _framing_json, _run
+        _penetrations_json, _walls_json, _framing_json, _cell_json, _run
     )

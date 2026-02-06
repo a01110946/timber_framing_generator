@@ -1,5 +1,5 @@
 # File: tests/mep/routing/test_wall_router.py
-"""Tests for Phase 2: In-Wall MEP Router.
+"""Tests for Phase 2: In-Wall MEP Router (cavity-based).
 
 Tests the wall_router module which routes MEP pipes through wall cavities
 from penetration points (Phase 1) to wall exit points (top/bottom plate).
@@ -26,14 +26,15 @@ from src.timber_framing_generator.mep.routing.wall_router import (
     WallRoute,
     WallRoutingResult,
     _count_stud_crossings,
-    _create_framing_obstacles,
+    _edge_pack_u,
     _select_exit_point,
     _uv_to_world,
-    create_wall_routing_domain,
     generate_stats,
     route_all_walls,
     route_wall,
 )
+from src.timber_framing_generator.mep.routing.occupancy import OccupancyMap
+from src.timber_framing_generator.cavity import Cavity
 
 
 # --- Test Helpers ---
@@ -115,6 +116,7 @@ def make_framing(
                 "u_coord": 5.0,
                 "v_start": 0.0,
                 "v_end": 0.125,
+                "cell_id": "wall_A_SC_0",
             },
             # Top plate
             {
@@ -124,6 +126,7 @@ def make_framing(
                 "u_coord": 5.0,
                 "v_start": 7.875,
                 "v_end": 8.0,
+                "cell_id": "wall_A_SC_0",
             },
             # Stud at u=0.0625
             {
@@ -133,6 +136,7 @@ def make_framing(
                 "u_coord": 0.0625,
                 "v_start": 0.125,
                 "v_end": 7.875,
+                "cell_id": "wall_A_SC_0",
             },
             # Stud at u=1.333
             {
@@ -142,6 +146,7 @@ def make_framing(
                 "u_coord": 1.333,
                 "v_start": 0.125,
                 "v_end": 7.875,
+                "cell_id": "wall_A_SC_0",
             },
             # Stud at u=2.666
             {
@@ -151,12 +156,34 @@ def make_framing(
                 "u_coord": 2.666,
                 "v_start": 0.125,
                 "v_end": 7.875,
+                "cell_id": "wall_A_SC_0",
             },
         ]
     return {
         "wall_id": wall_id,
         "material_system": "timber",
         "elements": elements,
+    }
+
+
+def make_cell_data(
+    wall_id: str = "wall_A",
+    length: float = 10.0,
+    height: float = 8.0,
+) -> dict:
+    """Create cell decomposition data for a simple wall (one SC cell)."""
+    return {
+        "wall_id": wall_id,
+        "cells": [
+            {
+                "id": f"{wall_id}_SC_0",
+                "cell_type": "SC",
+                "u_start": 0.0,
+                "u_end": length,
+                "v_start": 0.0,
+                "v_end": height,
+            }
+        ],
     }
 
 
@@ -259,189 +286,6 @@ class TestAddOpeningObstacles:
         assert len(domain.obstacles) == initial_count
 
 
-# --- Tests for _create_framing_obstacles ---
-
-
-class TestCreateFramingObstacles:
-    """Tests for framing element to obstacle conversion."""
-
-    def test_stud_is_penetrable(self) -> None:
-        """Studs are penetrable with 40% max ratio."""
-        elements = [{
-            "id": "s_1",
-            "element_type": "stud",
-            "profile": {"width": 0.125, "depth": 0.292},
-            "u_coord": 1.333,
-            "v_start": 0.125,
-            "v_end": 7.875,
-        }]
-        obstacles = _create_framing_obstacles(elements, "wall_A", 10.0)
-
-        assert len(obstacles) == 1
-        obs = obstacles[0]
-        assert obs.is_penetrable is True
-        assert obs.max_penetration_ratio == 0.4
-        assert obs.obstacle_type == "stud"
-        # U bounds: 1.333 +/- 0.0625
-        assert abs(obs.min_u - (1.333 - 0.0625)) < 1e-6
-        assert abs(obs.max_u - (1.333 + 0.0625)) < 1e-6
-
-    def test_plate_is_non_penetrable(self) -> None:
-        """Plates are non-penetrable and span full wall length."""
-        elements = [{
-            "id": "bp_1",
-            "element_type": "bottom_plate",
-            "profile": {"width": 0.125, "depth": 0.292},
-            "u_coord": 5.0,
-            "v_start": 0.0,
-            "v_end": 0.125,
-        }]
-        obstacles = _create_framing_obstacles(elements, "wall_A", 10.0)
-
-        assert len(obstacles) == 1
-        obs = obstacles[0]
-        assert obs.is_penetrable is False
-        assert obs.obstacle_type == "plate"
-        assert obs.min_u == 0.0
-        assert obs.max_u == 10.0
-
-    def test_king_stud_penetrable(self) -> None:
-        """King studs are penetrable like regular studs."""
-        elements = [{
-            "id": "ks_1",
-            "element_type": "king_stud",
-            "profile": {"width": 0.125, "depth": 0.292},
-            "u_coord": 3.0,
-            "v_start": 0.125,
-            "v_end": 7.875,
-        }]
-        obstacles = _create_framing_obstacles(elements, "wall_A", 10.0)
-
-        assert len(obstacles) == 1
-        assert obstacles[0].is_penetrable is True
-        assert obstacles[0].max_penetration_ratio == 0.4
-
-    def test_header_limited_penetration(self) -> None:
-        """Headers are penetrable but with lower ratio (25%)."""
-        elements = [{
-            "id": "h_1",
-            "element_type": "header",
-            "profile": {"width": 0.125, "depth": 0.292},
-            "u_coord": 4.5,
-            "v_start": 6.5,
-            "v_end": 7.0,
-        }]
-        obstacles = _create_framing_obstacles(elements, "wall_A", 10.0)
-
-        assert len(obstacles) == 1
-        assert obstacles[0].is_penetrable is True
-        assert obstacles[0].max_penetration_ratio == 0.25
-
-    def test_zero_height_element_skipped(self) -> None:
-        """Elements with zero height are skipped."""
-        elements = [{
-            "id": "z_1",
-            "element_type": "stud",
-            "profile": {"width": 0.125, "depth": 0.292},
-            "u_coord": 1.0,
-            "v_start": 3.0,
-            "v_end": 3.0,
-        }]
-        obstacles = _create_framing_obstacles(elements, "wall_A", 10.0)
-        assert len(obstacles) == 0
-
-    def test_mixed_elements(self) -> None:
-        """Mix of studs, plates, and cripples creates correct obstacles."""
-        framing = make_framing()
-        obstacles = _create_framing_obstacles(
-            framing["elements"], "wall_A", 10.0,
-        )
-
-        # 2 plates + 3 studs = 5
-        assert len(obstacles) == 5
-
-        plate_obs = [o for o in obstacles if o.obstacle_type == "plate"]
-        stud_obs = [o for o in obstacles if o.obstacle_type == "stud"]
-        assert len(plate_obs) == 2
-        assert len(stud_obs) == 3
-
-        # All plates non-penetrable
-        for p in plate_obs:
-            assert p.is_penetrable is False
-
-        # All studs penetrable
-        for s in stud_obs:
-            assert s.is_penetrable is True
-
-
-# --- Tests for create_wall_routing_domain ---
-
-
-class TestCreateWallRoutingDomain:
-    """Tests for routing domain creation with progressive refinement."""
-
-    def test_derived_mode_without_framing(self) -> None:
-        """Without framing, creates derived studs at 16" OC."""
-        wall = make_wall(length=10.0, height=8.0)
-        domain, source = create_wall_routing_domain(wall)
-
-        assert source == "derived"
-        assert domain.domain_type == RoutingDomainType.WALL_CAVITY
-        assert domain.width == 10.0
-        assert domain.height == 8.0
-
-        # Should have studs + plates from create_wall_domain
-        studs = [o for o in domain.obstacles if o.obstacle_type == "stud"]
-        plates = [o for o in domain.obstacles if o.obstacle_type == "plate"]
-        assert len(studs) > 0
-        assert len(plates) == 2  # top + bottom
-
-    def test_framing_mode_with_framing(self) -> None:
-        """With framing, uses exact element positions."""
-        wall = make_wall(length=10.0, height=8.0)
-        framing = make_framing()
-        domain, source = create_wall_routing_domain(wall, framing)
-
-        assert source == "framing"
-        assert domain.domain_type == RoutingDomainType.WALL_CAVITY
-
-        # Should have exactly the elements from framing data
-        studs = [o for o in domain.obstacles if o.obstacle_type == "stud"]
-        plates = [o for o in domain.obstacles if o.obstacle_type == "plate"]
-        assert len(studs) == 3
-        assert len(plates) == 2
-
-    def test_openings_added_in_derived_mode(self) -> None:
-        """Opening obstacles added on top of derived studs."""
-        window = make_window_opening()
-        wall = make_wall(openings=[window])
-        domain, source = create_wall_routing_domain(wall)
-
-        assert source == "derived"
-        opening_obs = [o for o in domain.obstacles if o.obstacle_type == "opening"]
-        assert len(opening_obs) == 1
-        assert opening_obs[0].is_penetrable is False
-
-    def test_openings_added_in_framing_mode(self) -> None:
-        """Opening obstacles added on top of framing elements."""
-        window = make_window_opening()
-        wall = make_wall(openings=[window])
-        framing = make_framing()
-        domain, source = create_wall_routing_domain(wall, framing)
-
-        assert source == "framing"
-        opening_obs = [o for o in domain.obstacles if o.obstacle_type == "opening"]
-        assert len(opening_obs) == 1
-
-    def test_no_openings(self) -> None:
-        """Wall without openings has no opening obstacles."""
-        wall = make_wall()
-        domain, _ = create_wall_routing_domain(wall)
-
-        opening_obs = [o for o in domain.obstacles if o.obstacle_type == "opening"]
-        assert len(opening_obs) == 0
-
-
 # --- Tests for _select_exit_point ---
 
 
@@ -452,66 +296,43 @@ class TestSelectExitPoint:
         """Sanitary pipes exit through bottom plate."""
         pen = make_penetration(system_type="Sanitary", wall_uv=(5.0, 4.0))
         wall = make_wall()
-        domain = create_wall_domain("wall_A", length=10.0, height=8.0)
 
-        exit_uv, exit_edge = _select_exit_point(pen, wall, domain)
+        exit_edge, exit_v = _select_exit_point(pen, wall)
         assert exit_edge == "bottom"
-        assert exit_uv[1] < 1.0  # Near bottom
+        assert exit_v < 1.0  # Near bottom
 
     def test_vent_exits_top(self) -> None:
         """Vent pipes exit through top plate."""
         pen = make_penetration(system_type="Vent", wall_uv=(5.0, 4.0))
         wall = make_wall()
-        domain = create_wall_domain("wall_A", length=10.0, height=8.0)
 
-        exit_uv, exit_edge = _select_exit_point(pen, wall, domain)
+        exit_edge, exit_v = _select_exit_point(pen, wall)
         assert exit_edge == "top"
-        assert exit_uv[1] > 7.0  # Near top
+        assert exit_v > 7.0  # Near top
 
     def test_supply_exits_bottom(self) -> None:
         """Supply pipes exit through bottom plate."""
         pen = make_penetration(system_type="DomesticColdWater", wall_uv=(5.0, 4.0))
         wall = make_wall()
-        domain = create_wall_domain("wall_A", length=10.0, height=8.0)
 
-        exit_uv, exit_edge = _select_exit_point(pen, wall, domain)
+        exit_edge, exit_v = _select_exit_point(pen, wall)
         assert exit_edge == "bottom"
 
     def test_hot_water_exits_bottom(self) -> None:
         """Hot water supply exits through bottom plate."""
         pen = make_penetration(system_type="DomesticHotWater", wall_uv=(5.0, 4.0))
         wall = make_wall()
-        domain = create_wall_domain("wall_A", length=10.0, height=8.0)
 
-        exit_uv, exit_edge = _select_exit_point(pen, wall, domain)
+        exit_edge, exit_v = _select_exit_point(pen, wall)
         assert exit_edge == "bottom"
 
     def test_unknown_system_exits_bottom(self) -> None:
         """Unknown system types default to bottom exit."""
         pen = make_penetration(system_type="SomeUnknownSystem", wall_uv=(5.0, 4.0))
         wall = make_wall()
-        domain = create_wall_domain("wall_A", length=10.0, height=8.0)
 
-        exit_uv, exit_edge = _select_exit_point(pen, wall, domain)
+        exit_edge, exit_v = _select_exit_point(pen, wall)
         assert exit_edge == DEFAULT_EXIT_EDGE
-
-    def test_exit_u_matches_entry_u(self) -> None:
-        """Exit U coordinate matches entry U (vertical route preferred)."""
-        pen = make_penetration(system_type="Sanitary", wall_uv=(7.5, 4.0))
-        wall = make_wall()
-        domain = create_wall_domain("wall_A", length=10.0, height=8.0)
-
-        exit_uv, _ = _select_exit_point(pen, wall, domain)
-        assert abs(exit_uv[0] - 7.5) < 0.1
-
-    def test_exit_clamped_to_bounds(self) -> None:
-        """Exit point clamped to domain bounds when entry is at edge."""
-        pen = make_penetration(system_type="Sanitary", wall_uv=(0.01, 4.0))
-        wall = make_wall()
-        domain = create_wall_domain("wall_A", length=10.0, height=8.0)
-
-        exit_uv, _ = _select_exit_point(pen, wall, domain)
-        assert exit_uv[0] >= 0.05  # Clamped to margin
 
 
 # --- Tests for _uv_to_world ---
@@ -552,6 +373,72 @@ class TestUvToWorld:
         assert abs(world[1] - 1.0) < 1e-4
 
 
+# --- Tests for _edge_pack_u ---
+
+
+class TestEdgePackU:
+    """Tests for edge-packing pipe U position within a cavity."""
+
+    @pytest.fixture
+    def cavity(self) -> Cavity:
+        """A standard cavity ~1.208 ft wide (between studs at 16" OC)."""
+        return Cavity(
+            id="cav_0", wall_id="w", cell_id="sc",
+            u_min=0.125, u_max=1.2705,
+            v_min=0.125, v_max=7.875,
+            depth=0.292,
+            left_member="stud", right_member="stud",
+            top_member="top_plate", bottom_member="bottom_plate",
+        )
+
+    def test_prefers_entry_u_when_available(self, cavity) -> None:
+        """Pipe stays at entry_u when no collision (straight vertical drop)."""
+        occ = OccupancyMap()
+        pipe_r = 0.0417
+        gap = 0.0417
+
+        # Entry inside cavity -- should stay at entry_u
+        packed = _edge_pack_u(cavity, 0.5, pipe_r, gap, occ, "w")
+        assert abs(packed - 0.5) < 1e-6, "Should stay at entry_u when no collision"
+
+        # Entry near right edge -- should stay at entry_u (still inside cavity)
+        packed = _edge_pack_u(cavity, 1.1, pipe_r, gap, occ, "w")
+        assert abs(packed - 1.1) < 1e-6, "Should stay at entry_u when no collision"
+
+    def test_clamps_entry_outside_cavity(self, cavity) -> None:
+        """Entry U outside cavity bounds gets clamped to valid range."""
+        occ = OccupancyMap()
+        pipe_r = 0.0417
+        gap = 0.0417
+
+        # Entry before cavity left edge (on a stud)
+        packed = _edge_pack_u(cavity, 0.05, pipe_r, gap, occ, "w")
+        min_u = cavity.u_min + pipe_r + gap
+        assert abs(packed - min_u) < 1e-6, "Should clamp to left edge + clearance"
+
+    def test_second_pipe_shifts_away(self, cavity) -> None:
+        """Second pipe at same entry_u shifts to avoid collision."""
+        occ = OccupancyMap()
+        pipe_r = 0.0417
+        gap = 0.0417
+
+        # First pipe at 0.5
+        u1 = _edge_pack_u(cavity, 0.5, pipe_r, gap, occ, "w")
+        assert abs(u1 - 0.5) < 1e-6
+
+        # Reserve it
+        from src.timber_framing_generator.mep.routing.occupancy import OccupiedSegment
+        occ.reserve("w", OccupiedSegment(
+            route_id="r1", system_type="DCW", trade="plumbing",
+            start=(u1, cavity.v_min), end=(u1, cavity.v_max),
+            diameter=pipe_r * 2,
+        ))
+
+        # Second pipe at same 0.5 -- should shift
+        u2 = _edge_pack_u(cavity, 0.5, pipe_r, gap, occ, "w")
+        assert u2 != u1, "Second pipe should shift to avoid collision"
+
+
 # --- Tests for route_wall ---
 
 
@@ -575,6 +462,40 @@ class TestRouteWall:
         assert wr.entry_uv == (5.0, 4.0)
         assert wr.route.segments  # Has path segments
         assert result.obstacle_source == "derived"
+
+    def test_simple_vertical_drop_zero_stud_crossings(self) -> None:
+        """Within-cavity route has zero stud crossings."""
+        wall = make_wall(length=10.0, height=8.0)
+        # u=5.0 is between studs at ~4.73 and ~6.06 (derived mode)
+        pen = make_penetration(
+            system_type="DomesticColdWater",
+            wall_uv=(5.0, 4.0),
+        )
+
+        result = route_wall("wall_A", [pen], wall)
+
+        assert len(result.wall_routes) == 1
+        wr = result.wall_routes[0]
+        assert wr.stud_crossings == 0
+
+    def test_route_is_vertical(self) -> None:
+        """Route should be predominantly vertical (1-2 segments max)."""
+        wall = make_wall(length=10.0, height=8.0)
+        pen = make_penetration(
+            system_type="DomesticColdWater",
+            wall_uv=(5.0, 4.0),
+        )
+
+        result = route_wall("wall_A", [pen], wall)
+
+        wr = result.wall_routes[0]
+        # At most: 1 horizontal jog + 1 vertical drop
+        assert len(wr.route.segments) <= 2
+        # At least one vertical segment
+        has_vertical = any(
+            abs(s.end[1] - s.start[1]) > 0.1 for s in wr.route.segments
+        )
+        assert has_vertical
 
     def test_vent_routes_to_top(self) -> None:
         """Vent penetration routes to top plate."""
@@ -605,15 +526,30 @@ class TestRouteWall:
         ids = {wr.connector_id for wr in result.wall_routes}
         assert ids == {"conn_1", "conn_2"}
 
-    def test_with_framing_json(self) -> None:
-        """Framing mode uses exact stud positions."""
+    def test_with_framing_and_cell_data(self) -> None:
+        """Framing mode uses exact stud positions when cell_data provided."""
+        wall = make_wall(length=10.0, height=8.0)
+        framing = make_framing()
+        cell_data = make_cell_data()
+        pen = make_penetration(wall_uv=(2.0, 4.0))
+
+        result = route_wall(
+            "wall_A", [pen], wall,
+            framing=framing, cell_data=cell_data,
+        )
+
+        assert result.obstacle_source == "framing"
+        assert len(result.wall_routes) == 1
+
+    def test_framing_without_cell_falls_back_to_derived(self) -> None:
+        """Framing without cell_data falls back to derived mode."""
         wall = make_wall(length=10.0, height=8.0)
         framing = make_framing()
         pen = make_penetration(wall_uv=(5.0, 4.0))
 
         result = route_wall("wall_A", [pen], wall, framing=framing)
 
-        assert result.obstacle_source == "framing"
+        assert result.obstacle_source == "derived"
         assert len(result.wall_routes) == 1
 
     def test_exit_point_created(self) -> None:
@@ -655,7 +591,7 @@ class TestRouteWall:
         """Penetration in a wall with window finds route around it."""
         window = make_window_opening(u_start=4.0, u_end=7.0, v_start=3.0, v_end=6.5)
         wall = make_wall(length=10.0, height=8.0, openings=[window])
-        # Penetration above window, should route to bottom going around window
+        # Penetration above window, should route via HCC cavity above window
         pen = make_penetration(
             system_type="DomesticColdWater",
             wall_uv=(5.5, 7.0),
@@ -663,7 +599,7 @@ class TestRouteWall:
 
         result = route_wall("wall_A", [pen], wall)
 
-        # Should route successfully (going around the window)
+        # Should route successfully
         assert len(result.wall_routes) == 1
         assert len(result.unrouted) == 0
 
@@ -675,6 +611,44 @@ class TestRouteWall:
         result = route_wall("wall_A", [pen], wall)
 
         assert result.status == "ready"
+
+    def test_edge_packed_u_not_on_stud(self) -> None:
+        """Route U should be inside a cavity, not on a stud center."""
+        wall = make_wall(length=10.0, height=8.0)
+        # u=1.333 is a stud center in derived mode
+        pen = make_penetration(
+            system_type="DomesticColdWater",
+            wall_uv=(1.333, 4.0),
+        )
+
+        result = route_wall("wall_A", [pen], wall)
+
+        assert len(result.wall_routes) == 1
+        wr = result.wall_routes[0]
+        # Exit U should NOT be exactly at stud center (1.333)
+        exit_u = wr.exit_uv[0]
+        assert abs(exit_u - 1.333) > 0.01, (
+            f"Exit U={exit_u} should not be at stud center 1.333"
+        )
+
+    def test_two_pipes_same_cavity_different_u(self) -> None:
+        """Two pipes assigned to the same cavity should have different U."""
+        wall = make_wall(length=10.0, height=8.0)
+        # Both penetrations near u=5.0 (same bay)
+        pens = [
+            make_penetration("c1", "DomesticColdWater", wall_uv=(5.0, 4.0)),
+            make_penetration("c2", "DomesticHotWater", wall_uv=(5.1, 4.0)),
+        ]
+
+        result = route_wall("wall_A", pens, wall)
+
+        assert len(result.wall_routes) == 2
+        u1 = result.wall_routes[0].exit_uv[0]
+        u2 = result.wall_routes[1].exit_uv[0]
+        assert abs(u1 - u2) > 0.01, (
+            f"Two pipes in same cavity should have different U: "
+            f"u1={u1}, u2={u2}"
+        )
 
 
 # --- Tests for route_all_walls ---
@@ -759,17 +733,21 @@ class TestRouteAllWalls:
 
         assert result.status == "needs_input"
 
-    def test_with_framing_json_single_wall(self) -> None:
-        """Framing JSON for a single wall uses exact obstacles."""
+    def test_with_framing_and_cell_json(self) -> None:
+        """Framing + cell JSON uses exact obstacles."""
         walls_json = {"walls": [make_wall("wall_A", length=10.0)]}
         pen_json = {
             "penetrations": [
-                make_penetration("c1", "DomesticColdWater", "wall_A", (5.0, 4.0)),
+                make_penetration("c1", "DomesticColdWater", "wall_A", (2.0, 4.0)),
             ],
         }
         framing = make_framing("wall_A")
+        cell = make_cell_data("wall_A")
 
-        result = route_all_walls(pen_json, walls_json, framing_json=framing)
+        result = route_all_walls(
+            pen_json, walls_json,
+            framing_json=framing, cell_json=cell,
+        )
 
         assert result.obstacle_source == "framing"
         assert len(result.wall_routes) == 1
@@ -784,8 +762,8 @@ class TestRouteAllWalls:
         }
         pen_json = {
             "penetrations": [
-                make_penetration("c1", "DomesticColdWater", "wall_A", (5.0, 4.0)),
-                make_penetration("c2", "DomesticColdWater", "wall_B", (5.0, 4.0)),
+                make_penetration("c1", "DomesticColdWater", "wall_A", (2.0, 4.0)),
+                make_penetration("c2", "DomesticColdWater", "wall_B", (2.0, 4.0)),
             ],
         }
         framing = {
@@ -794,8 +772,17 @@ class TestRouteAllWalls:
                 make_framing("wall_B"),
             ],
         }
+        cell = {
+            "walls": [
+                make_cell_data("wall_A"),
+                make_cell_data("wall_B"),
+            ],
+        }
 
-        result = route_all_walls(pen_json, walls_json, framing_json=framing)
+        result = route_all_walls(
+            pen_json, walls_json,
+            framing_json=framing, cell_json=cell,
+        )
 
         assert result.obstacle_source == "framing"
         assert len(result.wall_routes) == 2

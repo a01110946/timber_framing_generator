@@ -5,6 +5,10 @@ Converts sheathing JSON data to RhinoCommon geometry (Breps). This component
 is the final stage of the sheathing pipeline, transforming panel definitions
 with UVW coordinates into 3D geometry using the wall's base plane.
 
+Supports both single-layer sheathing (from Sheathing Generator) and
+multi-layer assemblies (from Multi-Layer Sheathing Generator). Multi-layer
+JSON is automatically flattened so all layer panels are converted uniformly.
+
 Key Features:
 1. Assembly-Safe Geometry Creation
    - Uses RhinoCommonFactory for correct RhinoCommon assembly
@@ -16,7 +20,12 @@ Key Features:
    - Supports both exterior and interior face placement
    - Handles panels with opening cutouts (boolean difference)
 
-3. Flexible Filtering and Organization
+3. Multi-Layer Support
+   - Accepts multi_layer_json from Multi-Layer Sheathing Generator
+   - Automatically flattens layer_results into single panel list per wall
+   - Preserves layer_name and w_offset metadata on each panel
+
+4. Flexible Filtering and Organization
    - Filter by wall ID for single-wall visualization
    - Multiple output formats (flat list, by-wall DataTree)
    - Panel IDs and summary statistics
@@ -46,7 +55,8 @@ Usage:
 
 Input Requirements:
     Sheathing JSON (sheathing_json) - str:
-        JSON string from Sheathing Generator containing panel data
+        JSON string from Sheathing Generator or Multi-Layer Sheathing Generator.
+        Accepts both single-layer and multi-layer formats.
         Required: Yes
         Access: Item
 
@@ -145,7 +155,7 @@ from src.timber_framing_generator.sheathing.sheathing_geometry import (
 
 COMPONENT_NAME = "Sheathing Geometry Converter"
 COMPONENT_NICKNAME = "SheathGeo"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v1.1"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Geometry"
 
@@ -283,34 +293,95 @@ def validate_inputs(sheathing_json, walls_json, run):
 
 
 def parse_sheathing_json(sheathing_json):
-    """Parse sheathing JSON, handling both single wall and multi-wall formats.
+    """Parse sheathing JSON, handling single-layer, multi-layer, and multi-wall formats.
+
+    Supports three formats:
+    1. Single-layer (from Sheathing Generator):
+       [{"wall_id": "...", "sheathing_panels": [...]}]
+    2. Multi-layer (from Multi-Layer Sheathing Generator):
+       [{"wall_id": "...", "layer_results": [{"panels": [...]}]}]
+    3. Single wall dict (either format)
+
+    Multi-layer results are flattened: per-layer panels are merged into a
+    single "sheathing_panels" list per wall so the geometry converter can
+    process them uniformly.
 
     Args:
         sheathing_json: JSON string with sheathing data
 
     Returns:
-        list: List of sheathing data dictionaries (one per wall)
+        list: List of sheathing data dictionaries (one per wall),
+              each containing "sheathing_panels" list
     """
     data = json.loads(sheathing_json)
 
-    # If it's already a list, return as-is
-    if isinstance(data, list):
-        return data
-
-    # If it's a single wall result, wrap in list
+    # Normalize to list
     if isinstance(data, dict):
-        # Check if it has wall_id at top level (single wall format)
         if "wall_id" in data:
-            return [data]
-        # Check if it has a "walls" or "results" key containing list
-        if "walls" in data and isinstance(data["walls"], list):
-            return data["walls"]
-        if "results" in data and isinstance(data["results"], list):
-            return data["results"]
-        # Assume single wall
-        return [data]
+            data = [data]
+        elif "walls" in data and isinstance(data["walls"], list):
+            data = data["walls"]
+        elif "results" in data and isinstance(data["results"], list):
+            data = data["results"]
+        else:
+            data = [data]
+    elif not isinstance(data, list):
+        return []
 
-    return []
+    # Check each entry for multi-layer format and flatten if needed
+    result = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+
+        # Multi-layer format: has "layer_results" instead of "sheathing_panels"
+        if "layer_results" in entry and "sheathing_panels" not in entry:
+            flattened = _flatten_multi_layer_entry(entry)
+            result.append(flattened)
+        else:
+            # Standard single-layer format or already has sheathing_panels
+            result.append(entry)
+
+    return result
+
+
+def _flatten_multi_layer_entry(entry):
+    """Flatten multi-layer result into standard sheathing format.
+
+    Merges panels from all layer_results into a single sheathing_panels list,
+    adding layer_name and w_offset metadata to each panel dict.
+
+    Args:
+        entry: Multi-layer result dict with "layer_results" list.
+
+    Returns:
+        Dict with "wall_id" and "sheathing_panels" in standard format.
+    """
+    wall_id = entry.get("wall_id", "unknown")
+    all_panels = []
+
+    for layer_result in entry.get("layer_results", []):
+        layer_name = layer_result.get("layer_name", "unknown")
+        w_offset = layer_result.get("w_offset")
+
+        for panel in layer_result.get("panels", []):
+            # Add layer metadata to each panel for downstream use
+            enriched_panel = dict(panel)
+            enriched_panel["layer_name"] = layer_name
+            if w_offset is not None:
+                enriched_panel["layer_w_offset"] = w_offset
+            all_panels.append(enriched_panel)
+
+    log_info(
+        f"Flattened multi-layer wall {wall_id}: "
+        f"{len(entry.get('layer_results', []))} layers -> "
+        f"{len(all_panels)} panels"
+    )
+
+    return {
+        "wall_id": wall_id,
+        "sheathing_panels": all_panels,
+    }
 
 
 def parse_walls_json(walls_json):

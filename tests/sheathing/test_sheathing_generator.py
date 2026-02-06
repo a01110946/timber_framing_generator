@@ -16,6 +16,81 @@ from src.timber_framing_generator.sheathing import (
 )
 
 
+from src.timber_framing_generator.sheathing.sheathing_generator import (
+    _sanitize_layer_name,
+)
+
+
+class TestSanitizeLayerName:
+    """Tests for _sanitize_layer_name helper."""
+
+    def test_simple_name(self) -> None:
+        assert _sanitize_layer_name("OSB") == "osb"
+
+    def test_spaces_to_underscores(self) -> None:
+        assert _sanitize_layer_name("Fiber Cement Siding") == "fiber_cement_siding"
+
+    def test_slashes_to_underscores(self) -> None:
+        assert _sanitize_layer_name("OSB 7/16") == "osb_7_16"
+
+    def test_quotes_stripped(self) -> None:
+        assert _sanitize_layer_name('1/2" Gypsum Board') == "1_2_gypsum_board"
+
+    def test_leading_trailing_stripped(self) -> None:
+        assert _sanitize_layer_name("  OSB  ") == "osb"
+
+    def test_consecutive_specials_collapsed(self) -> None:
+        assert _sanitize_layer_name("OSB - 7/16 ") == "osb_7_16"
+
+
+class TestLayerNameInPanelIds:
+    """Tests for layer_name parameter in SheathingGenerator."""
+
+    def test_no_layer_name_backward_compatible(self) -> None:
+        """Without layer_name, IDs use the old format."""
+        wall_data = {
+            "wall_id": "w1",
+            "wall_length": 4.0,
+            "wall_height": 8.0,
+            "openings": [],
+        }
+        gen = SheathingGenerator(wall_data)
+        panels = gen.generate_sheathing(face="exterior")
+        assert panels[0].id == "w1_sheath_exterior_0_0"
+
+    def test_layer_name_included_in_id(self) -> None:
+        """With layer_name, IDs include the sanitized layer name."""
+        wall_data = {
+            "wall_id": "w1",
+            "wall_length": 4.0,
+            "wall_height": 8.0,
+            "openings": [],
+        }
+        gen = SheathingGenerator(wall_data, layer_name="OSB Sheathing")
+        panels = gen.generate_sheathing(face="exterior")
+        assert panels[0].id == "w1_sheath_osb_sheathing_exterior_0_0"
+
+    def test_two_layers_unique_ids(self) -> None:
+        """Two generators with different layer names produce distinct IDs."""
+        wall_data = {
+            "wall_id": "w1",
+            "wall_length": 8.0,
+            "wall_height": 8.0,
+            "openings": [],
+        }
+        gen_osb = SheathingGenerator(wall_data, layer_name="OSB")
+        gen_siding = SheathingGenerator(wall_data, layer_name="Siding")
+
+        panels_osb = gen_osb.generate_sheathing(face="exterior")
+        panels_siding = gen_siding.generate_sheathing(face="exterior")
+
+        osb_ids = {p.id for p in panels_osb}
+        siding_ids = {p.id for p in panels_siding}
+
+        # No overlap
+        assert osb_ids.isdisjoint(siding_ids)
+
+
 class TestSheathingProfiles:
     """Tests for sheathing material profiles."""
 

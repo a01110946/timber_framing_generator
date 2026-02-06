@@ -148,11 +148,12 @@ def calculate_w_offset(
     half_wall = wall_thickness / 2.0
 
     if face == "exterior":
-        # Exterior face: panel outside surface at wall outer face
+        # Exterior face: panel core-facing surface at wall outer face
         return half_wall
     else:
-        # Interior face: panel inside surface at wall inner face
-        return -half_wall - panel_thickness
+        # Interior face: panel core-facing surface at wall inner face
+        # (mirrors exterior: extrusion in -Z places panel against wall)
+        return -half_wall
 
 
 def _calculate_w_offset_from_assembly(
@@ -189,7 +190,7 @@ def _calculate_w_offset_from_assembly(
         half = total / 2.0
         if face == "exterior":
             return half
-        return -half - panel_thickness
+        return -half
 
     core_half = assembly_def.core_thickness / 2.0
 
@@ -198,9 +199,9 @@ def _calculate_w_offset_from_assembly(
         # = core center + half core + all exterior layers
         return core_half + assembly_def.exterior_thickness
     else:
-        # Panel placed outside the wall's interior face
-        interior_face = -(core_half + assembly_def.interior_thickness)
-        return interior_face - panel_thickness
+        # Panel core-facing surface at wall's interior face
+        # (mirrors exterior: extrusion in -Z places panel against wall)
+        return -(core_half + assembly_def.interior_thickness)
 
 
 def calculate_layer_w_offsets(
@@ -405,14 +406,16 @@ def create_cutout_brep(
         uvw_to_world(u_start, v_end, w_start, base_plane),
     ]
 
-    # Extrusion vector through panel
+    # Extrusion vector through panel: always from w_start toward w_end (+Z).
+    # Corners are placed at w_start (the more-negative W boundary), so the
+    # extrusion must go in the +Z direction to reach w_end and fully
+    # encompass the panel for both exterior and interior faces.
     extrusion_depth = abs(w_end - w_start)
     z_axis = base_plane["z_axis"]
-    direction = 1.0 if face == "exterior" else -1.0
     extrusion_vector = (
-        z_axis["x"] * extrusion_depth * direction,
-        z_axis["y"] * extrusion_depth * direction,
-        z_axis["z"] * extrusion_depth * direction
+        z_axis["x"] * extrusion_depth,
+        z_axis["y"] * extrusion_depth,
+        z_axis["z"] * extrusion_depth,
     )
 
     return factory.create_box_from_corners_and_thickness(corners, extrusion_vector)

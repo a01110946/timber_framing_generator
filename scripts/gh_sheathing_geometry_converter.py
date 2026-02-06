@@ -439,6 +439,9 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
         "walls_processed": set(),
     }
 
+    # W offset diagnostics: track which path panels use
+    w_offset_diag = {"layer_w": 0, "fallback": 0, "sample": None}
+
     for sheathing_data in sheathing_list:
         wall_id = str(sheathing_data.get("wall_id", "unknown"))
 
@@ -453,6 +456,29 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
         if "base_plane" not in wall_data:
             log_warning(f"Wall {wall_id}: No base_plane found, skipping")
             continue
+
+        # W offset diagnostics: check first few panels for layer_w_offset
+        panels = sheathing_data.get("sheathing_panels", [])
+        for p in panels[:3]:
+            lw = p.get("layer_w_offset")
+            if lw is not None:
+                w_offset_diag["layer_w"] += 1
+            else:
+                w_offset_diag["fallback"] += 1
+            if w_offset_diag["sample"] is None:
+                wall_t = wall_data.get("thickness", wall_data.get("wall_thickness", 0.5))
+                has_asm = "wall_assembly" in wall_data
+                w_offset_diag["sample"] = (
+                    f"wall={wall_id}, panel={p.get('id','?')}, "
+                    f"layer_w_offset={lw}, face={p.get('face','?')}, "
+                    f"wall_thickness={wall_t}, has_assembly={has_asm}"
+                )
+        # Count remaining panels (beyond first 3)
+        for p in panels[3:]:
+            if p.get("layer_w_offset") is not None:
+                w_offset_diag["layer_w"] += 1
+            else:
+                w_offset_diag["fallback"] += 1
 
         # Create geometry for this wall's panels
         geometries = create_sheathing_breps(sheathing_data, wall_data, factory)
@@ -474,6 +500,9 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
                 stats["total_area_gross"] += geom.area_gross
                 stats["total_area_net"] += geom.area_net
                 stats["walls_processed"].add(wall_id)
+
+    # Append W offset diagnostics to stats
+    stats["w_offset_diag"] = w_offset_diag
 
     return breps, wall_groups, panel_ids, stats
 
@@ -582,6 +611,19 @@ def main():
         log_lines.append("")
         log_lines.append(f"Total Breps: {len(breps)}")
         log_lines.append(f"Panels with Cutouts: {stats['panels_with_cutouts']}")
+
+        # W offset diagnostics
+        w_diag = stats.get("w_offset_diag", {})
+        log_lines.append("")
+        log_lines.append("=== W Offset Diagnostics ===")
+        log_lines.append(
+            f"Panels with layer_w_offset: {w_diag.get('layer_w', 0)}"
+        )
+        log_lines.append(
+            f"Panels using fallback: {w_diag.get('fallback', 0)}"
+        )
+        if w_diag.get("sample"):
+            log_lines.append(f"Sample: {w_diag['sample']}")
 
     except Exception as e:
         log_error(f"Unexpected error: {str(e)}")

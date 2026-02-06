@@ -882,6 +882,175 @@ class TestGenerateAssemblyLayersMetadata:
         assert result["total_panel_count"] == 0
 
 
+class TestPanelLayerWOffset:
+    """Tests that individual panel dicts carry layer_w_offset."""
+
+    def test_exterior_panels_have_layer_w_offset(self) -> None:
+        """Each panel dict should carry its layer_w_offset for geometry conversion."""
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+            {"name": "Studs", "function": "structure", "side": "core", "thickness": 0.458},
+        ])
+        result = generate_assembly_layers(wall_data)
+        for panel in result["layer_results"][0]["panels"]:
+            assert "layer_w_offset" in panel, (
+                f"Panel {panel['id']} missing layer_w_offset"
+            )
+            assert panel["layer_w_offset"] > 0  # Exterior should be positive
+
+    def test_interior_panels_have_negative_offset(self) -> None:
+        """Interior panels should have negative layer_w_offset."""
+        wall_data = _make_wall_data(layers=[
+            {"name": "Studs", "function": "structure", "side": "core", "thickness": 0.458},
+            {"name": "Drywall", "function": "finish", "side": "interior", "thickness": 0.042},
+        ])
+        result = generate_assembly_layers(wall_data)
+        for panel in result["layer_results"][0]["panels"]:
+            assert "layer_w_offset" in panel
+            assert panel["layer_w_offset"] < 0  # Interior should be negative
+
+    def test_panel_w_offset_matches_layer_w_offset(self) -> None:
+        """Panel's embedded layer_w_offset should match the layer-level w_offset."""
+        wall_data = _make_wall_data(layers=[
+            {"name": "Siding", "function": "finish", "side": "exterior", "thickness": 0.026},
+            {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+            {"name": "Studs", "function": "structure", "side": "core", "thickness": 0.458},
+            {"name": "Drywall", "function": "finish", "side": "interior", "thickness": 0.042},
+        ])
+        result = generate_assembly_layers(wall_data)
+        for layer_result in result["layer_results"]:
+            layer_w = layer_result["w_offset"]
+            for panel in layer_result["panels"]:
+                assert panel.get("layer_w_offset") == layer_w, (
+                    f"Panel {panel['id']}: embedded {panel.get('layer_w_offset')} "
+                    f"!= layer {layer_w}"
+                )
+
+    def test_exterior_sheathing_at_core_face(self) -> None:
+        """Exterior sheathing closest to core should have w_offset = core_half."""
+        core_thickness = 3.5 / 12  # 2x4
+        osb_thickness = 7 / 16 / 12
+        wall_data = _make_wall_data(layers=[
+            {"name": "Siding", "function": "finish", "side": "exterior", "thickness": 0.5 / 12},
+            {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": osb_thickness},
+            {"name": "Studs", "function": "structure", "side": "core", "thickness": core_thickness},
+            {"name": "Drywall", "function": "finish", "side": "interior", "thickness": 0.5 / 12},
+        ])
+        result = generate_assembly_layers(wall_data)
+        core_half = core_thickness / 2.0
+
+        # Find OSB layer
+        osb_layer = next(
+            r for r in result["layer_results"] if r["layer_name"] == "OSB"
+        )
+        # OSB is the innermost exterior layer: should start at core_half
+        assert osb_layer["w_offset"] == pytest.approx(core_half, abs=1e-6)
+        # Siding should be further out: core_half + osb_thickness
+        siding_layer = next(
+            r for r in result["layer_results"] if r["layer_name"] == "Siding"
+        )
+        assert siding_layer["w_offset"] == pytest.approx(
+            core_half + osb_thickness, abs=1e-6
+        )
+
+    def test_no_overlap_with_framing_bounds(self) -> None:
+        """All sheathing panels must be positioned outside the framing core."""
+        core_thickness = 3.5 / 12
+        core_half = core_thickness / 2.0
+        wall_data = _make_wall_data(layers=[
+            {"name": "Siding", "function": "finish", "side": "exterior", "thickness": 0.5 / 12},
+            {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 7 / 16 / 12},
+            {"name": "Studs", "function": "structure", "side": "core", "thickness": core_thickness},
+            {"name": "Drywall", "function": "finish", "side": "interior", "thickness": 0.5 / 12},
+        ])
+        result = generate_assembly_layers(wall_data)
+        for layer_result in result["layer_results"]:
+            w_offset = layer_result["w_offset"]
+            side = layer_result["layer_side"]
+            assert w_offset is not None, (
+                f"Layer {layer_result['layer_name']} has no w_offset"
+            )
+            if side == "exterior":
+                assert w_offset >= core_half - 1e-9, (
+                    f"Exterior layer {layer_result['layer_name']} "
+                    f"w_offset={w_offset} overlaps framing at {core_half}"
+                )
+            elif side == "interior":
+                assert w_offset <= -core_half + 1e-9, (
+                    f"Interior layer {layer_result['layer_name']} "
+                    f"w_offset={w_offset} overlaps framing at {-core_half}"
+                )
+
+    def test_catalog_2x4_no_overlap(self) -> None:
+        """Catalog 2x4 exterior assembly: no layer overlaps framing bounds."""
+        core_thickness = 3.5 / 12
+        core_half = core_thickness / 2.0
+        layers = [
+            {"name": "exterior_finish", "function": "finish", "side": "exterior",
+             "thickness": 0.5 / 12, "material": "Lap Siding"},
+            {"name": "structural_sheathing", "function": "substrate", "side": "exterior",
+             "thickness": 0.4375 / 12, "material": "OSB 7/16"},
+            {"name": "framing_core", "function": "structure", "side": "core",
+             "thickness": core_thickness, "material": '2x4 SPF @ 16" OC'},
+            {"name": "interior_finish", "function": "finish", "side": "interior",
+             "thickness": 0.5 / 12, "material": '1/2" Gypsum Board'},
+        ]
+        wall_data = _make_wall_data(layers=layers)
+        result = generate_assembly_layers(wall_data)
+
+        for layer_result in result["layer_results"]:
+            w = layer_result["w_offset"]
+            assert w is not None
+            side = layer_result["layer_side"]
+            if side == "exterior":
+                assert w >= core_half - 1e-9
+            else:
+                assert w <= -core_half + 1e-9
+
+            # Every panel in this layer should also have the offset
+            for panel in layer_result["panels"]:
+                assert panel.get("layer_w_offset") == w
+
+
+class TestFallbackWOffsets:
+    """Tests for _compute_fallback_w_offsets."""
+
+    def test_fallback_matches_primary(self) -> None:
+        """Fallback should produce same offsets as primary for catalog assemblies."""
+        from src.timber_framing_generator.sheathing.multi_layer_generator import (
+            _compute_fallback_w_offsets,
+        )
+        layers = [
+            {"name": "exterior_finish", "function": "finish", "side": "exterior",
+             "thickness": 0.5 / 12},
+            {"name": "structural_sheathing", "function": "substrate", "side": "exterior",
+             "thickness": 0.4375 / 12},
+            {"name": "framing_core", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12},
+            {"name": "interior_finish", "function": "finish", "side": "interior",
+             "thickness": 0.5 / 12},
+        ]
+        assembly = {"layers": layers}
+        offsets = _compute_fallback_w_offsets(assembly)
+
+        core_half = 3.5 / 12 / 2.0
+        osb_t = 0.4375 / 12
+
+        assert offsets["structural_sheathing"] == pytest.approx(core_half, abs=1e-6)
+        assert offsets["exterior_finish"] == pytest.approx(core_half + osb_t, abs=1e-6)
+        assert offsets["interior_finish"] == pytest.approx(-core_half, abs=1e-6)
+
+    def test_fallback_no_core_returns_empty(self) -> None:
+        """Fallback returns empty if no core layer."""
+        from src.timber_framing_generator.sheathing.multi_layer_generator import (
+            _compute_fallback_w_offsets,
+        )
+        assembly = {"layers": [
+            {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+        ]}
+        assert _compute_fallback_w_offsets(assembly) == {}
+
+
 class TestGenerateAssemblyLayersSummary:
     """Tests for layer summaries."""
 

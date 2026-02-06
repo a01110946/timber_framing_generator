@@ -20,11 +20,14 @@ Usage:
         print(f"{layer_result['layer_name']}: {len(layer_result['panels'])} panels")
 """
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 
 from .sheathing_generator import SheathingGenerator
 from .sheathing_profiles import SHEATHING_MATERIALS
+
+logger = logging.getLogger(__name__)
 
 
 # Layer functions that produce panelizable output.
@@ -324,12 +327,25 @@ def generate_assembly_layers(
             panels = []
             summary = {}
 
+        # Embed layer_w_offset directly in each panel dict so panels
+        # are self-contained for geometry conversion. This prevents
+        # issues where the geometry converter's flatten step doesn't
+        # have access to the layer-level w_offset (e.g., when
+        # _safe_calculate_w_offsets failed or JSON round-trip lost it).
+        w_offset_value = w_offsets.get(name)
+        panel_dicts: List[Dict[str, Any]] = []
+        for p in panels:
+            pd = p.to_dict()
+            if w_offset_value is not None:
+                pd["layer_w_offset"] = w_offset_value
+            panel_dicts.append(pd)
+
         result = LayerPanelResult(
             layer_name=name,
             layer_function=func,
             layer_side=side,
-            w_offset=w_offsets.get(name),
-            panels=[p.to_dict() for p in panels],
+            w_offset=w_offset_value,
+            panels=panel_dicts,
             summary=summary,
             rules_applied=rules_dict,
         )
@@ -377,12 +393,85 @@ def _add_assembly_metadata(
 def _safe_calculate_w_offsets(
     wall_assembly: Dict[str, Any],
 ) -> Dict[str, float]:
-    """Calculate W offsets, returning empty dict on failure."""
+    """Calculate W offsets with fallback on failure.
+
+    Tries the full assembly_extractor-based calculation first. If that
+    fails (e.g., import chain issue in GH), falls back to a simple
+    dict-based computation that avoids external imports.
+
+    Args:
+        wall_assembly: Assembly dictionary with "layers" list.
+
+    Returns:
+        Dict mapping layer name to W offset (feet from centerline).
+        Falls back to simple stacking if full calculation fails.
+    """
     try:
         from .sheathing_geometry import calculate_layer_w_offsets
         return calculate_layer_w_offsets(wall_assembly)
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Full W offset calculation failed: %s. "
+            "Falling back to dict-based computation.", e
+        )
+        return _compute_fallback_w_offsets(wall_assembly)
+
+
+def _compute_fallback_w_offsets(
+    wall_assembly: Dict[str, Any],
+) -> Dict[str, float]:
+    """Compute per-layer W offsets directly from assembly dict.
+
+    Fallback when calculate_layer_w_offsets() fails (e.g., due to import
+    chain issues in the GH environment). Works directly with the dict
+    format from the assembly resolver, avoiding assembly_extractor and
+    junction_types imports.
+
+    Layers are stacked outward from the structural core center:
+    - Exterior layers: +core_half, then increasingly positive
+    - Interior layers: -core_half, then increasingly negative
+
+    Args:
+        wall_assembly: Assembly dictionary with "layers" list.
+            Each layer has name, function, side, thickness.
+
+    Returns:
+        Dict mapping layer name to W offset (feet from centerline).
+        Empty dict if no core layer found.
+    """
+    layers = wall_assembly.get("layers", [])
+
+    # Find core thickness
+    core_thickness = 0.0
+    for layer in layers:
+        if layer.get("side") == "core":
+            core_thickness += layer.get("thickness", 0.0)
+
+    if core_thickness == 0.0:
+        logger.warning("No core layer found in assembly; cannot compute W offsets")
         return {}
+
+    core_half = core_thickness / 2.0
+    offsets: Dict[str, float] = {}
+
+    # Exterior layers: stack outward from core.
+    # Assembly order is outside-to-inside, so reverse to get core-outward.
+    ext_layers = [l for l in layers if l.get("side") == "exterior"]
+    cumulative = core_half
+    for layer in reversed(ext_layers):
+        offsets[layer.get("name", "unknown")] = cumulative
+        cumulative += layer.get("thickness", 0.0)
+
+    # Interior layers: stack inward from core.
+    # Assembly order has interior layers after core (closest to core first).
+    int_layers = [l for l in layers if l.get("side") == "interior"]
+    cumulative = -core_half
+    for layer in int_layers:
+        offsets[layer.get("name", "unknown")] = cumulative
+        cumulative -= layer.get("thickness", 0.0)
+
+    logger.info("Fallback W offsets computed: %s", offsets)
+    return offsets
 
 
 def _safe_get_rules(

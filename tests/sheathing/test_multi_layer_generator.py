@@ -837,6 +837,51 @@ class TestGenerateAssemblyLayersPanelIds:
         )
 
 
+class TestGenerateAssemblyLayersMetadata:
+    """Tests for assembly resolution metadata passthrough."""
+
+    def test_metadata_passed_through(self) -> None:
+        """Assembly resolver metadata should appear in output."""
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+        ])
+        # Simulate enrichment by resolve_all_walls
+        wall_data["assembly_source"] = "catalog"
+        wall_data["assembly_confidence"] = 0.8
+        wall_data["assembly_notes"] = "Matched by keywords"
+        wall_data["assembly_name"] = "2x4_exterior"
+        wall_data["wall_type"] = "Basic Wall - 2x4 Exterior"
+
+        result = generate_assembly_layers(wall_data)
+        assert result["assembly_source"] == "catalog"
+        assert result["assembly_confidence"] == 0.8
+        assert result["assembly_name"] == "2x4_exterior"
+        assert result["wall_type"] == "Basic Wall - 2x4 Exterior"
+
+    def test_no_metadata_when_not_enriched(self) -> None:
+        """Without resolver enrichment, metadata keys should be absent."""
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+        ])
+        result = generate_assembly_layers(wall_data)
+        assert "assembly_source" not in result
+        assert "assembly_confidence" not in result
+
+    def test_metadata_on_empty_assembly(self) -> None:
+        """Metadata should appear even when no assembly produces panels."""
+        wall_data = {
+            "wall_id": "w1",
+            "wall_length": 12.0,
+            "wall_height": 8.0,
+            "openings": [],
+            "assembly_source": "skipped",
+            "assembly_confidence": 0.0,
+        }
+        result = generate_assembly_layers(wall_data)
+        assert result["assembly_source"] == "skipped"
+        assert result["total_panel_count"] == 0
+
+
 class TestGenerateAssemblyLayersSummary:
     """Tests for layer summaries."""
 

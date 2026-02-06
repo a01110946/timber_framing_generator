@@ -336,6 +336,7 @@ def convert_wall_data_to_schema(wall_data, wall_id):
         base_curve_end=curve_end,
         openings=openings,
         is_exterior=wall_data.get('is_exterior_wall', False),
+        is_flipped=wall_data.get('is_flipped', False),
         wall_type=wall_data.get('wall_type'),
         base_level_id=base_level_id,
         top_level_id=top_level_id,

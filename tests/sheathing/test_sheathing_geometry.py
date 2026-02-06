@@ -116,14 +116,15 @@ class TestWOffsetCalculation:
         assert abs(w_offset - 0.25) < 0.001
 
     def test_interior_face_offset(self):
-        """Interior face should be at negative W offset."""
+        """Interior face should be at negative W offset (wall surface)."""
         wall_thickness = 0.5
         panel_thickness = 0.0365
 
         w_offset = calculate_w_offset("interior", wall_thickness, panel_thickness)
 
-        # Interior: at -half_wall - panel_thickness
-        expected = -0.25 - panel_thickness
+        # Interior: at -half_wall (panel core-facing surface at wall surface,
+        # extrusion in -Z places panel against wall)
+        expected = -0.25
         assert abs(w_offset - expected) < 0.001
 
     def test_thicker_wall_larger_offset(self):
@@ -475,11 +476,12 @@ class TestWOffsetFromAssembly:
         assert abs(w - expected) < 0.001
 
     def test_interior_offset_equals_negative_core_half_minus_interior(self, asymmetric_assembly):
-        """Interior offset should be -(core/2 + interior_layers) - panel_t."""
+        """Interior offset should be -(core/2 + interior_layers)."""
         core_t = convert_to_feet(3.5, "inches")
         int_t = convert_to_feet(0.5, "inches")
         panel_t = 0.04
-        expected = -(core_t / 2 + int_t) - panel_t
+        # Panel core-facing surface at interior wall face; extrusion in -Z
+        expected = -(core_t / 2 + int_t)
 
         w = calculate_w_offset("interior", 0, panel_t, asymmetric_assembly)
         assert abs(w - expected) < 0.001
@@ -495,7 +497,7 @@ class TestWOffsetFromAssembly:
         assert abs(w - 0.25) < 0.001
 
         w = calculate_w_offset("interior", 0.5, 0.04)
-        expected = -0.25 - 0.04
+        expected = -0.25  # Panel core-facing surface at wall surface
         assert abs(w - expected) < 0.001
 
 

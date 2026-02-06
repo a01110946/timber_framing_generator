@@ -382,6 +382,21 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         wall_thickness = wall_type.Width  # In Revit internal units (feet)
         print(f"Wall thickness from WallType.Width: {wall_thickness} ft ({wall_thickness * 12:.2f} inches)")
 
+        # 7c. Extract CompoundStructure for multi-layer assembly data.
+        wall_assembly_dict = None
+        try:
+            from src.timber_framing_generator.wall_data.assembly_extractor import (
+                extract_compound_structure,
+            )
+            wall_assembly_dict = extract_compound_structure(wall_type, doc)
+            if wall_assembly_dict:
+                layer_count = len(wall_assembly_dict.get("layers", []))
+                print(f"Extracted CompoundStructure: {layer_count} layers from {wall_type.Name}")
+            else:
+                print(f"No CompoundStructure available for {wall_type.Name}, using defaults")
+        except Exception as cs_err:
+            print(f"CompoundStructure extraction failed: {cs_err}")
+
         # 8. Decompose the wall into cells.
         cell_data_dict = decompose_wall_to_cells(
             wall_length=wall_length,
@@ -408,6 +423,7 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             "is_exterior_wall": is_exterior_wall,
             "is_flipped": is_flipped,
             "is_load_bearing": is_load_bearing,
+            "wall_assembly": wall_assembly_dict,
             "openings": openings_data,
             "cells": cells_list,
         }

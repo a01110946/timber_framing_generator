@@ -46,9 +46,11 @@ Usage:
     1. Connect 'walls_json' from Wall Analyzer component (must contain wall_assembly)
     2. Optionally connect 'junctions_json' from Junction Analyzer
     3. Optionally configure per-layer overrides via 'config_json'
-    4. Set 'run' to True to execute
-    5. Collect 'multi_layer_json' for downstream geometry conversion
-    6. View 'layer_summary' for per-layer panel counts
+    4. Optionally set 'assembly_mode' (auto/revit_only/catalog/custom)
+    5. Optionally connect 'custom_map' JSON for per-Wall-Type mappings
+    6. Set 'run' (last input) to True to execute
+    7. Collect 'multi_layer_json' for downstream geometry conversion
+    8. View 'layer_summary' for per-layer panel counts
 
 Input Requirements:
     Walls JSON (walls_json) - str:
@@ -76,8 +78,25 @@ Input Requirements:
         Required: No
         Access: Item
 
+    Assembly Mode (assembly_mode) - str:
+        Assembly resolution mode controlling how wall assemblies are determined:
+        - "auto" (default): Best available (Revit > catalog > inferred > default)
+        - "revit_only": Only use explicit Revit CompoundStructure data
+        - "catalog": Ignore Revit layers, match Wall Type name to catalog
+        - "custom": Use per-Wall-Type mappings from Custom Map input
+        Required: No (defaults to "auto")
+        Access: Item
+
+    Custom Map (custom_map) - str:
+        Per-Wall-Type assembly mapping JSON for "custom" mode. Keys are
+        Revit Wall Type names, values are catalog keys or inline assembly dicts.
+        Example: {"Basic Wall - 2x6 Exterior": "2x6_exterior"}
+        Unmapped Wall Types fall back to "auto" behavior.
+        Required: No (only used in "custom" mode)
+        Access: Item
+
     Run (run) - bool:
-        Boolean to trigger execution
+        Boolean to trigger execution. Always the last input.
         Required: Yes
         Access: Item
 
@@ -235,13 +254,13 @@ def setup_component():
         ("Config JSON", "config_json",
          "Optional configuration JSON with per-layer overrides",
          Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Run", "run", "Boolean to trigger execution",
-         Grasshopper.Kernel.GH_ParamAccess.item),
         ("Assembly Mode", "assembly_mode",
          "Assembly resolution mode: auto, revit_only, catalog, custom (default: auto)",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Custom Map", "custom_map",
          'Per-Wall-Type assembly mapping JSON (e.g., {"My Wall Type": "2x6_exterior"})',
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Run", "run", "Boolean to trigger execution",
          Grasshopper.Kernel.GH_ParamAccess.item),
     ]
 
@@ -717,9 +736,9 @@ _input_count = ghenv.Component.Params.Input.Count
 if _input_count < 4:
     _msg = (
         "ERROR: Component has %d inputs but needs at least 4. "
-        "Right-click component zoomable UI (ZUI) -> add input until you have 4+, "
-        "then reconnect: walls_json, junctions_json, config_json, run, "
-        "[assembly_mode], [custom_map]"
+        "Right-click component zoomable UI (ZUI) -> add inputs, "
+        "then reconnect: walls_json, junctions_json, config_json, "
+        "[assembly_mode], [custom_map], run"
         % _input_count
     )
     print(_msg)
@@ -728,12 +747,16 @@ if _input_count < 4:
     stats = ""
     log = _msg
 else:
+    # Input order: data inputs first, run toggle last.
+    # Indices 3-4 (assembly_mode, custom_map) are optional -- _read_input
+    # returns None when the ZUI slot doesn't exist.
     _walls_json = _read_input(0)       # walls_json
     _junctions_json = _read_input(1)   # junctions_json
     _config_json = _read_input(2)      # config_json
-    _run = bool(_read_input(3, False)) # run
-    _assembly_mode = _read_input(4)    # assembly_mode (optional)
-    _custom_map = _read_input(5)       # custom_map (optional)
+    _assembly_mode = _read_input(3)    # assembly_mode (optional)
+    _custom_map = _read_input(4)       # custom_map (optional)
+    _run_index = _input_count - 1      # run is always last
+    _run = bool(_read_input(_run_index, False))
 
     multi_layer_json, layer_summary, stats, log = main(
         _walls_json, _junctions_json, _config_json, _run,

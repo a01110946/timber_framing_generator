@@ -239,11 +239,12 @@ def calculate_layer_w_offsets(
         cumulative += layer.thickness
 
     # Interior layers: stack inward from core interior face
+    # Store core-facing surface (matching exterior convention)
     int_layers = assembly_def.get_layers_by_side(LayerSide.INTERIOR)
     cumulative = -core_half
     for layer in int_layers:  # order from assembly (closest to core first)
+        offsets[layer.name] = cumulative  # Core-facing surface
         cumulative -= layer.thickness
-        offsets[layer.name] = cumulative
 
     # Core layer
     core_layers = assembly_def.get_layers_by_side(LayerSide.CORE)
@@ -282,9 +283,16 @@ def create_panel_brep(
     # Panel thickness (convert inches to feet)
     thickness_ft = panel_data["thickness_inches"] / 12.0
 
-    # Calculate W offset based on face (uses assembly when available)
+    # Calculate W offset for panel placement.
+    # Per-layer offset (from multi-layer generator) takes priority over
+    # face-level offset, since it correctly positions each layer in the
+    # assembly stack (e.g., siding further out than OSB).
     face = panel_data.get("face", "exterior")
-    w_offset = calculate_w_offset(face, wall_thickness, thickness_ft, wall_assembly)
+    layer_w_offset = panel_data.get("layer_w_offset")
+    if layer_w_offset is not None:
+        w_offset = layer_w_offset
+    else:
+        w_offset = calculate_w_offset(face, wall_thickness, thickness_ft, wall_assembly)
 
     # Create panel corners in world coordinates
     # Order: bottom-left, bottom-right, top-right, top-left (counter-clockwise)

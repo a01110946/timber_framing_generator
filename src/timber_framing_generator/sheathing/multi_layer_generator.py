@@ -229,6 +229,7 @@ def generate_assembly_layers(
     u_start_bound: Optional[float] = None,
     u_end_bound: Optional[float] = None,
     include_functions: Optional[List[str]] = None,
+    face_bounds: Optional[Dict[str, Tuple[Optional[float], Optional[float]]]] = None,
 ) -> Dict[str, Any]:
     """Generate panels for all panelizable layers in a wall assembly.
 
@@ -242,11 +243,17 @@ def generate_assembly_layers(
             layer_configs take precedence.
         layer_configs: Optional per-layer config overrides keyed by layer
             name (e.g., {"OSB": {"panel_size": "4x10"}}).
-        u_start_bound: Minimum U position for panels (feet).
-        u_end_bound: Maximum U position for panels (feet).
+        u_start_bound: Minimum U position for panels (feet). Used as
+            fallback when face_bounds is not provided.
+        u_end_bound: Maximum U position for panels (feet). Used as
+            fallback when face_bounds is not provided.
         include_functions: If provided, only generate panels for layers
             whose function is in this list. Default: all panelizable
             functions (substrate, finish, thermal).
+        face_bounds: Optional per-face junction bounds. Maps face name
+            ("exterior"/"interior") to (u_start, u_end) tuple. When
+            provided, each layer uses the bounds matching its face.
+            Falls back to u_start_bound/u_end_bound if face not found.
 
     Returns:
         Dict with:
@@ -294,12 +301,19 @@ def generate_assembly_layers(
         layer_override = (layer_configs or {}).get(name)
         layer_config = _get_layer_config(layer, rules_config, layer_override or config)
 
+        # Resolve per-face junction bounds
+        if face_bounds and face in face_bounds:
+            layer_u_start, layer_u_end = face_bounds[face]
+        else:
+            layer_u_start = u_start_bound
+            layer_u_end = u_end_bound
+
         # Generate panels using SheathingGenerator
         try:
             generator = SheathingGenerator(
                 wall_data, layer_config,
-                u_start_bound=u_start_bound,
-                u_end_bound=u_end_bound,
+                u_start_bound=layer_u_start,
+                u_end_bound=layer_u_end,
             )
             panels = generator.generate_sheathing(face=face)
             summary = generator.get_material_summary(panels)

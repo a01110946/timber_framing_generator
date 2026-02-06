@@ -314,6 +314,7 @@ def generate_assembly_layers(
                 wall_data, layer_config,
                 u_start_bound=layer_u_start,
                 u_end_bound=layer_u_end,
+                layer_name=name,
             )
             panels = generator.generate_sheathing(face=face)
             summary = generator.get_material_summary(panels)

@@ -784,6 +784,59 @@ class TestGenerateAssemblyLayersCatalog:
         assert result["total_panel_count"] > 0
 
 
+class TestGenerateAssemblyLayersPanelIds:
+    """Tests that multi-layer panels have unique, layer-aware IDs."""
+
+    def test_different_layers_have_unique_ids(self) -> None:
+        """Two exterior layers on the same face must produce distinct panel IDs."""
+        wall_data = _make_wall_data(
+            wall_length=8.0,
+            layers=[
+                {"name": "Siding", "function": "finish", "side": "exterior", "thickness": 0.026},
+                {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+                {"name": "Studs", "function": "structure", "side": "core", "thickness": 0.458},
+            ],
+        )
+        result = generate_assembly_layers(wall_data)
+
+        all_ids = []
+        for layer_result in result["layer_results"]:
+            for panel in layer_result["panels"]:
+                all_ids.append(panel["id"])
+
+        # Should have no duplicates
+        assert len(all_ids) == len(set(all_ids)), (
+            f"Duplicate panel IDs found: {[x for x in all_ids if all_ids.count(x) > 1]}"
+        )
+
+    def test_panel_id_contains_layer_name(self) -> None:
+        """Panel IDs should contain the sanitized layer name."""
+        wall_data = _make_wall_data(
+            wall_length=4.0,
+            layers=[
+                {"name": "Fiber Cement Siding", "function": "finish", "side": "exterior", "thickness": 0.026},
+            ],
+        )
+        result = generate_assembly_layers(wall_data)
+        panel_id = result["layer_results"][0]["panels"][0]["id"]
+        assert "fiber_cement_siding" in panel_id
+
+    def test_full_assembly_all_ids_unique(self) -> None:
+        """All panel IDs across a full 5-layer assembly must be globally unique."""
+        wall_data = _make_wall_data(layers=_typical_exterior_assembly())
+        result = generate_assembly_layers(wall_data)
+
+        all_ids = []
+        for layer_result in result["layer_results"]:
+            for panel in layer_result["panels"]:
+                all_ids.append(panel["id"])
+
+        assert len(all_ids) > 0
+        assert len(all_ids) == len(set(all_ids)), (
+            f"Duplicate IDs: {[x for x in all_ids if all_ids.count(x) > 1]}"
+        )
+
+
 class TestGenerateAssemblyLayersSummary:
     """Tests for layer summaries."""
 

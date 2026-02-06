@@ -146,6 +146,25 @@ class SheathingPanel:
         }
 
 
+def _sanitize_layer_name(name: str) -> str:
+    """Sanitize a layer name for use in panel IDs.
+
+    Converts to lowercase, replaces spaces/special chars with underscores,
+    and collapses consecutive underscores.
+
+    Args:
+        name: Raw layer name (e.g., "Fiber Cement Siding", "OSB 7/16").
+
+    Returns:
+        Sanitized name suitable for IDs (e.g., "fiber_cement_siding", "osb_7_16").
+    """
+    import re
+    sanitized = name.lower().strip()
+    sanitized = re.sub(r'[^a-z0-9]+', '_', sanitized)
+    sanitized = sanitized.strip('_')
+    return sanitized
+
+
 class SheathingGenerator:
     """
     Generates sheathing panels for a wall or wall panel.
@@ -169,6 +188,7 @@ class SheathingGenerator:
         config: Dict[str, Any] = None,
         u_start_bound: Optional[float] = None,
         u_end_bound: Optional[float] = None,
+        layer_name: Optional[str] = None,
     ):
         """
         Initialize the sheathing generator.
@@ -190,9 +210,13 @@ class SheathingGenerator:
                 extend before wall start. Default: 0.0.
             u_end_bound: Maximum U position for panels (feet). Values beyond
                 wall_length extend past wall end. Default: wall_length.
+            layer_name: Optional assembly layer name for multi-layer ID
+                disambiguation. When provided, panel IDs include the
+                sanitized layer name (e.g., "529398_sheath_osb_exterior_0_0").
         """
         self.wall_data = wall_data
         self.config = config or {}
+        self.layer_name = layer_name
 
         # Extract wall dimensions
         self.wall_length = wall_data.get("wall_length", 0)
@@ -349,8 +373,9 @@ class SheathingGenerator:
             cutouts = self._find_cutouts(u_start, u_end, v_start, v_end)
 
             # Create panel
+            layer_tag = f"_{_sanitize_layer_name(self.layer_name)}" if self.layer_name else ""
             panel = SheathingPanel(
-                id=f"{self.wall_id}_sheath_{face}_{row}_{column}",
+                id=f"{self.wall_id}_sheath{layer_tag}_{face}_{row}_{column}",
                 wall_id=self.wall_id,
                 panel_id=self.panel_id,
                 face=face,

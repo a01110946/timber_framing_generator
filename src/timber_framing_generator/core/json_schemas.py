@@ -147,6 +147,7 @@ class WallData:
     is_exterior: bool = False
     is_flipped: bool = False
     wall_type: Optional[str] = None
+    wall_assembly: Optional[Dict[str, Any]] = None
     # Revit level IDs for RiR baking (Add Structural Column/Beam)
     base_level_id: Optional[int] = None
     top_level_id: Optional[int] = None
@@ -320,7 +321,9 @@ def deserialize_wall_data(json_str: str) -> WallData:
         base_curve_end=Point3D(**data['base_curve_end']),
         openings=openings,
         is_exterior=data.get('is_exterior', False),
+        is_flipped=data.get('is_flipped', False),
         wall_type=data.get('wall_type'),
+        wall_assembly=data.get('wall_assembly'),
         base_level_id=data.get('base_level_id'),
         top_level_id=data.get('top_level_id'),
         metadata=data.get('metadata', {}),

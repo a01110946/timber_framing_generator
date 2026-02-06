@@ -201,6 +201,17 @@ def get_assembly_for_wall(wall_data: Dict) -> WallAssemblyDef:
     Returns:
         WallAssemblyDef for the wall.
     """
+    # Check for Revit-extracted assembly data (highest priority)
+    wall_assembly = wall_data.get("wall_assembly")
+    if wall_assembly and isinstance(wall_assembly, dict):
+        try:
+            from src.timber_framing_generator.wall_data.assembly_extractor import (
+                assembly_dict_to_def,
+            )
+            return assembly_dict_to_def(wall_assembly)
+        except Exception:
+            pass  # Fall through to catalog lookup
+
     # Check wall type catalog
     wall_type = wall_data.get("wall_type", "")
     if wall_type in WALL_ASSEMBLIES:

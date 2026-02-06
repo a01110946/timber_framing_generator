@@ -484,21 +484,14 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                         f"(wall_length={wall_length:.4f})"
                     )
 
-            # Use first face bounds as default for the generator
-            # The multi-layer generator determines per-layer face from the
-            # layer side, so we pass bounds from the first configured face.
-            first_face = faces[0] if faces else "exterior"
-            u_start_bound, u_end_bound = face_bounds.get(
-                first_face, (0.0, wall_length)
-            )
-
-            # Call multi-layer generator
+            # Call multi-layer generator with per-face junction bounds.
+            # Each layer uses the bounds matching its face (exterior or
+            # interior), which may differ at wall corners.
             result = generate_assembly_layers(
                 wall_data,
                 config=base_config,
                 layer_configs=layer_configs if layer_configs else None,
-                u_start_bound=u_start_bound,
-                u_end_bound=u_end_bound,
+                face_bounds=face_bounds if face_bounds else None,
                 include_functions=include_functions,
             )
 

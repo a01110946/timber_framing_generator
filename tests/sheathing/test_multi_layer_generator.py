@@ -517,6 +517,96 @@ class TestGenerateAssemblyLayersConfig:
         assert max(u_ends) >= 12.0  # Extends to wall end
 
 
+class TestGenerateAssemblyLayersFaceBounds:
+    """Tests for per-face junction bounds."""
+
+    def test_face_bounds_applied_to_exterior(self) -> None:
+        """Exterior layers should use exterior face bounds."""
+        wall_data = _make_wall_data(
+            wall_length=12.0,
+            layers=[
+                {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+            ],
+        )
+        result = generate_assembly_layers(
+            wall_data,
+            face_bounds={"exterior": (-0.5, 12.5), "interior": (0.0, 12.0)},
+        )
+        panels = result["layer_results"][0]["panels"]
+        u_starts = [p["u_start"] for p in panels]
+        assert min(u_starts) <= 0.0  # Extended by exterior bounds
+
+    def test_face_bounds_applied_to_interior(self) -> None:
+        """Interior layers should use interior face bounds."""
+        wall_data = _make_wall_data(
+            wall_length=12.0,
+            layers=[
+                {"name": "Drywall", "function": "finish", "side": "interior", "thickness": 0.042},
+            ],
+        )
+        # Interior trimmed, exterior extended
+        result = generate_assembly_layers(
+            wall_data,
+            face_bounds={"exterior": (-0.5, 12.5), "interior": (0.5, 11.5)},
+        )
+        panels = result["layer_results"][0]["panels"]
+        u_starts = [p["u_start"] for p in panels]
+        u_ends = [p["u_end"] for p in panels]
+        # Interior panels should NOT extend before 0.5
+        assert min(u_starts) >= 0.0
+        # Interior panels should NOT extend past 11.5 + panel_width
+        assert max(u_ends) <= 12.0
+
+    def test_face_bounds_fallback_to_u_bounds(self) -> None:
+        """When face_bounds missing for a face, falls back to u_start/u_end."""
+        wall_data = _make_wall_data(
+            wall_length=12.0,
+            layers=[
+                {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+            ],
+        )
+        result = generate_assembly_layers(
+            wall_data,
+            u_start_bound=-0.5,
+            u_end_bound=12.5,
+            face_bounds={"interior": (0.0, 12.0)},  # No exterior entry
+        )
+        panels = result["layer_results"][0]["panels"]
+        u_starts = [p["u_start"] for p in panels]
+        assert min(u_starts) <= 0.0  # Falls back to u_start_bound=-0.5
+
+    def test_different_bounds_per_face(self) -> None:
+        """Exterior and interior layers use different bounds on same wall."""
+        wall_data = _make_wall_data(
+            wall_length=12.0,
+            layers=[
+                {"name": "OSB", "function": "substrate", "side": "exterior", "thickness": 0.036},
+                {"name": "Studs", "function": "structure", "side": "core", "thickness": 0.292},
+                {"name": "Drywall", "function": "finish", "side": "interior", "thickness": 0.042},
+            ],
+        )
+        result = generate_assembly_layers(
+            wall_data,
+            face_bounds={
+                "exterior": (-0.5, 12.5),   # Extended at both ends
+                "interior": (0.0, 12.0),     # Flush with wall
+            },
+        )
+        assert result["layers_processed"] == 2
+
+        ext_result = result["layer_results"][0]  # OSB
+        int_result = result["layer_results"][1]  # Drywall
+
+        assert ext_result["layer_side"] == "exterior"
+        assert int_result["layer_side"] == "interior"
+
+        ext_starts = [p["u_start"] for p in ext_result["panels"]]
+        int_starts = [p["u_start"] for p in int_result["panels"]]
+
+        # Exterior extended past wall start, interior not
+        assert min(ext_starts) < min(int_starts)
+
+
 class TestGenerateAssemblyLayersWOffset:
     """Tests for W offset computation."""
 

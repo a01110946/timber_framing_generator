@@ -542,11 +542,11 @@ class TestLayerWOffsets:
         expected = core_half + 0.04  # after OSB
         assert abs(offsets["siding"] - expected) < 0.001
 
-    def test_gypsum_starts_inside_core(self, four_layer_assembly):
-        """Gypsum starts at core interior face, extending inward."""
+    def test_gypsum_starts_at_core_interior_face(self, four_layer_assembly):
+        """Gypsum core-facing surface is at core interior face."""
         offsets = calculate_layer_w_offsets(four_layer_assembly)
         core_half = 0.30 / 2.0
-        expected = -core_half - 0.04  # gypsum thickness inward
+        expected = -core_half  # Core-facing surface (mirrors exterior convention)
         assert abs(offsets["gypsum"] - expected) < 0.001
 
     def test_core_starts_at_negative_half(self, four_layer_assembly):

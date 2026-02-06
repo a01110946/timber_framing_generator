@@ -555,9 +555,11 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                     layer_func = lr.get("layer_function", "")
                     layer_side = lr.get("layer_side", "")
                     panel_count = lr.get("panel_count", 0)
+                    w_off = lr.get("w_offset")
+                    w_str = f"w={w_off:.4f}" if w_off is not None else "w=None"
                     summary_lines.append(
                         f"  {layer_name} ({layer_func}/{layer_side}): "
-                        f"{panel_count} panels"
+                        f"{panel_count} panels, {w_str}"
                     )
                 log_lines.append(
                     f"  Wall {wall_id}: {wall_panel_count} panels "

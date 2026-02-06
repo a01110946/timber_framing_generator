@@ -291,8 +291,17 @@ def create_panel_brep(
     layer_w_offset = panel_data.get("layer_w_offset")
     if layer_w_offset is not None:
         w_offset = layer_w_offset
+        logger.debug(
+            "Panel %s: using layer_w_offset=%.4f",
+            panel_data.get("id", "?"), w_offset,
+        )
     else:
         w_offset = calculate_w_offset(face, wall_thickness, thickness_ft, wall_assembly)
+        logger.debug(
+            "Panel %s: FALLBACK w_offset=%.4f (face=%s, wall_t=%.4f, has_assembly=%s)",
+            panel_data.get("id", "?"), w_offset, face, wall_thickness,
+            wall_assembly is not None,
+        )
 
     # Create panel corners in world coordinates
     # Order: bottom-left, bottom-right, top-right, top-left (counter-clockwise)

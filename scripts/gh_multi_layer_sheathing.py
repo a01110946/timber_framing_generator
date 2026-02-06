@@ -149,6 +149,7 @@ if FORCE_RELOAD:
 from src.timber_framing_generator.sheathing.multi_layer_generator import (
     generate_assembly_layers,
 )
+from src.timber_framing_generator.config.assembly import get_assembly_for_wall
 
 # =============================================================================
 # Constants
@@ -432,12 +433,25 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
     for i, wall_data in enumerate(walls_list):
         wall_id = wall_data.get("wall_id", f"wall_{i}")
 
-        # Check for wall_assembly
+        # Get wall_assembly (from Revit extraction or catalog fallback)
         wall_assembly = wall_data.get("wall_assembly")
         if not wall_assembly:
-            log_warning(f"Wall {wall_id} has no wall_assembly - skipping")
-            log_lines.append(f"  Wall {wall_id}: SKIPPED (no wall_assembly)")
-            continue
+            # Fall back to assembly catalog based on wall_type / is_exterior
+            try:
+                assembly_def = get_assembly_for_wall(wall_data)
+                wall_assembly = assembly_def.to_dict()
+                wall_data["wall_assembly"] = wall_assembly
+                log_info(
+                    f"Wall {wall_id}: using catalog assembly "
+                    f"'{assembly_def.name}' ({len(assembly_def.layers)} layers)"
+                )
+            except Exception as e:
+                log_warning(
+                    f"Wall {wall_id} has no wall_assembly and catalog "
+                    f"lookup failed: {e} - skipping"
+                )
+                log_lines.append(f"  Wall {wall_id}: SKIPPED (no assembly)")
+                continue
 
         log_info(f"Processing wall {wall_id}")
 

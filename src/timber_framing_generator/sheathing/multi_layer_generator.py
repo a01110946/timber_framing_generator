@@ -264,12 +264,14 @@ def generate_assembly_layers(
     """
     wall_assembly = wall_data.get("wall_assembly")
     if not wall_assembly:
-        return {
+        result: Dict[str, Any] = {
             "wall_id": wall_data.get("wall_id", "unknown"),
             "layer_results": [],
             "total_panel_count": 0,
             "layers_processed": 0,
         }
+        _add_assembly_metadata(result, wall_data)
+        return result
 
     layers = wall_assembly.get("layers", [])
     allowed_funcs = set(include_functions) if include_functions else PANELIZABLE_FUNCTIONS
@@ -334,12 +336,42 @@ def generate_assembly_layers(
         layer_results.append(result.to_dict())
         total_panels += len(panels)
 
-    return {
+    result: Dict[str, Any] = {
         "wall_id": wall_data.get("wall_id", "unknown"),
         "layer_results": layer_results,
         "total_panel_count": total_panels,
         "layers_processed": len(layer_results),
     }
+    _add_assembly_metadata(result, wall_data)
+    return result
+
+
+# Assembly metadata keys set by assembly_resolver.resolve_all_walls().
+_ASSEMBLY_METADATA_KEYS = (
+    "assembly_source",
+    "assembly_confidence",
+    "assembly_notes",
+    "assembly_name",
+    "wall_type",
+)
+
+
+def _add_assembly_metadata(
+    result: Dict[str, Any],
+    wall_data: Dict[str, Any],
+) -> None:
+    """Pass through assembly resolution metadata to output.
+
+    When wall_data has been enriched by resolve_all_walls(), copy the
+    assembly metadata fields into the result dict for downstream transparency.
+
+    Args:
+        result: Output dict being built by generate_assembly_layers().
+        wall_data: Wall dict that may contain assembly metadata.
+    """
+    for key in _ASSEMBLY_METADATA_KEYS:
+        if key in wall_data:
+            result[key] = wall_data[key]
 
 
 def _safe_calculate_w_offsets(

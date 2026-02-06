@@ -150,6 +150,10 @@ from src.timber_framing_generator.sheathing.multi_layer_generator import (
     generate_assembly_layers,
 )
 from src.timber_framing_generator.config.assembly import get_assembly_for_wall
+from src.timber_framing_generator.config.assembly_resolver import (
+    resolve_all_walls,
+    summarize_resolutions,
+)
 
 # =============================================================================
 # Constants
@@ -157,7 +161,7 @@ from src.timber_framing_generator.config.assembly import get_assembly_for_wall
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v1.1"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -232,6 +236,12 @@ def setup_component():
          "Optional configuration JSON with per-layer overrides",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Run", "run", "Boolean to trigger execution",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Assembly Mode", "assembly_mode",
+         "Assembly resolution mode: auto, revit_only, catalog, custom (default: auto)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Custom Map", "custom_map",
+         'Per-Wall-Type assembly mapping JSON (e.g., {"My Wall Type": "2x6_exterior"})',
          Grasshopper.Kernel.GH_ParamAccess.item),
     ]
 
@@ -380,12 +390,13 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
 
 
 def process_walls(walls_json, base_config, layer_configs, include_functions,
-                  junctions_data=None):
+                  junctions_data=None, assembly_mode="auto", custom_map=None):
     """Process walls and generate multi-layer sheathing panels.
 
-    For each wall, determines faces from config, computes junction bounds
-    per face, handles wall flip state, and calls generate_assembly_layers()
-    to produce panels for all panelizable layers.
+    For each wall, resolves the assembly (using the assembly resolver),
+    determines faces from config, computes junction bounds per face,
+    handles wall flip state, and calls generate_assembly_layers() to
+    produce panels for all panelizable layers.
 
     Args:
         walls_json: JSON string with wall data.
@@ -393,6 +404,8 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         layer_configs: Per-layer config overrides keyed by layer name.
         include_functions: List of layer functions to generate, or None for all.
         junctions_data: Optional parsed junctions_json dict.
+        assembly_mode: Assembly resolution mode (auto/revit_only/catalog/custom).
+        custom_map: Per-Wall-Type assembly mapping dict for custom mode.
 
     Returns:
         tuple: (all_results, summary_lines, stats_text, log_lines)
@@ -416,8 +429,18 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         log_error("walls_json must be a dict or list")
         return [], [], "Error: Invalid format", ["Invalid walls_json format"]
 
+    # Resolve assemblies for all walls
+    walls_list = resolve_all_walls(walls_list, mode=assembly_mode, custom_map=custom_map)
+    resolution_summary = summarize_resolutions(walls_list)
+
     log_info(f"Processing {len(walls_list)} walls for multi-layer sheathing")
+    log_info(f"Assembly mode: {assembly_mode}")
     log_lines.append(f"Processing {len(walls_list)} walls")
+    log_lines.append(f"Assembly mode: {assembly_mode}")
+    log_lines.append(
+        f"Assembly quality: {resolution_summary['by_source']} "
+        f"(avg conf {resolution_summary['average_confidence']:.2f})"
+    )
     log_lines.append(f"Base config: panel_size={base_config.get('panel_size', '4x8')}")
     if include_functions:
         log_lines.append(f"Layer filter: {include_functions}")
@@ -429,31 +452,31 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
     walls_processed = 0
 
     summary_lines.append("=== Multi-Layer Sheathing ===")
+    summary_lines.append(
+        f"Assembly mode: {assembly_mode} | "
+        f"Quality: {resolution_summary['by_source']}"
+    )
 
     for i, wall_data in enumerate(walls_list):
         wall_id = wall_data.get("wall_id", f"wall_{i}")
 
-        # Get wall_assembly (from Revit extraction or catalog fallback)
+        # Check if assembly was resolved (skipped walls have no assembly)
         wall_assembly = wall_data.get("wall_assembly")
+        assembly_source = wall_data.get("assembly_source", "unknown")
         if not wall_assembly:
-            # Fall back to assembly catalog based on wall_type / is_exterior
-            try:
-                assembly_def = get_assembly_for_wall(wall_data)
-                wall_assembly = assembly_def.to_dict()
-                wall_data["wall_assembly"] = wall_assembly
-                log_info(
-                    f"Wall {wall_id}: using catalog assembly "
-                    f"'{assembly_def.name}' ({len(assembly_def.layers)} layers)"
-                )
-            except Exception as e:
-                log_warning(
-                    f"Wall {wall_id} has no wall_assembly and catalog "
-                    f"lookup failed: {e} - skipping"
-                )
-                log_lines.append(f"  Wall {wall_id}: SKIPPED (no assembly)")
-                continue
+            if assembly_source == "skipped":
+                log_info(f"Wall {wall_id}: skipped ({wall_data.get('assembly_notes', '')})")
+            else:
+                log_warning(f"Wall {wall_id}: no assembly resolved - skipping")
+            log_lines.append(f"  Wall {wall_id}: SKIPPED ({assembly_source})")
+            continue
 
-        log_info(f"Processing wall {wall_id}")
+        log_info(
+            f"Processing wall {wall_id} "
+            f"(assembly: {wall_data.get('assembly_name', '?')}, "
+            f"source: {assembly_source}, "
+            f"conf: {wall_data.get('assembly_confidence', 0):.2f})"
+        )
 
         try:
             # Determine actual face labels, accounting for wall flip state.
@@ -565,7 +588,8 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
 # Main Function
 # =============================================================================
 
-def main(walls_json_in, junctions_json_in, config_json_in, run_in):
+def main(walls_json_in, junctions_json_in, config_json_in, run_in,
+         assembly_mode_in=None, custom_map_in=None):
     """Main entry point for the component.
 
     Orchestrates the multi-layer sheathing generation workflow:
@@ -573,14 +597,19 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in):
     2. Validates inputs
     3. Parses configuration (base config, layer overrides, function filter)
     4. Parses optional junction data
-    5. Processes all walls
-    6. Returns JSON results, summary, stats, and log
+    5. Resolves assemblies for all walls (auto/revit_only/catalog/custom)
+    6. Processes all walls
+    7. Returns JSON results, summary, stats, and log
 
     Args:
         walls_json_in: JSON string from Wall Analyzer.
         junctions_json_in: Optional JSON from Junction Analyzer.
         config_json_in: Optional configuration JSON.
         run_in: Boolean to trigger execution.
+        assembly_mode_in: Optional assembly resolution mode
+            ("auto", "revit_only", "catalog", "custom"). Default: "auto".
+        custom_map_in: Optional JSON string with per-Wall-Type assembly
+            mappings for custom mode.
 
     Returns:
         tuple: (multi_layer_json, layer_summary, stats, log)
@@ -594,6 +623,20 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in):
         junctions_json_input = junctions_json_in
         config_json_input = config_json_in
         run_input = run_in
+
+        # Parse assembly mode (default: "auto")
+        assembly_mode = "auto"
+        if assembly_mode_in and str(assembly_mode_in).strip():
+            assembly_mode = str(assembly_mode_in).strip().lower()
+
+        # Parse custom map JSON (optional)
+        custom_map = None
+        if custom_map_in and str(custom_map_in).strip():
+            try:
+                custom_map = json.loads(custom_map_in)
+                log_info(f"Custom map loaded: {len(custom_map)} Wall Type mappings")
+            except (json.JSONDecodeError, TypeError) as e:
+                log_warning(f"Invalid custom_map JSON, ignoring: {e}")
 
         # Validate inputs
         is_valid, error_msg = validate_inputs(walls_json_input, run_input)
@@ -626,7 +669,7 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in):
         # Process walls
         results, summary_lines, stats_text, log_lines = process_walls(
             walls_json_input, base_config, layer_configs, include_functions,
-            junctions_data
+            junctions_data, assembly_mode=assembly_mode, custom_map=custom_map,
         )
 
         # Serialize results to JSON
@@ -673,9 +716,10 @@ def _read_input(index, default=None):
 _input_count = ghenv.Component.Params.Input.Count
 if _input_count < 4:
     _msg = (
-        "ERROR: Component has %d inputs but needs 4. "
-        "Right-click component zoomable UI (ZUI) -> add input until you have 4, "
-        "then reconnect: walls_json, junctions_json, config_json, run"
+        "ERROR: Component has %d inputs but needs at least 4. "
+        "Right-click component zoomable UI (ZUI) -> add input until you have 4+, "
+        "then reconnect: walls_json, junctions_json, config_json, run, "
+        "[assembly_mode], [custom_map]"
         % _input_count
     )
     print(_msg)
@@ -688,7 +732,10 @@ else:
     _junctions_json = _read_input(1)   # junctions_json
     _config_json = _read_input(2)      # config_json
     _run = bool(_read_input(3, False)) # run
+    _assembly_mode = _read_input(4)    # assembly_mode (optional)
+    _custom_map = _read_input(5)       # custom_map (optional)
 
     multi_layer_json, layer_summary, stats, log = main(
-        _walls_json, _junctions_json, _config_json, _run
+        _walls_json, _junctions_json, _config_json, _run,
+        _assembly_mode, _custom_map,
     )

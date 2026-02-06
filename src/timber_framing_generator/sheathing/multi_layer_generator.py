@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 
 from .sheathing_generator import SheathingGenerator
+from .sheathing_profiles import SHEATHING_MATERIALS
 
 
 # Layer functions that produce panelizable output.
@@ -45,6 +46,82 @@ DEFAULT_LAYER_PANEL_SIZES: Dict[str, str] = {
     "finish": "4x8",
     "thermal": "4x8",
 }
+
+# Common display-name aliases for assembly catalog materials.
+# Maps lowercase display name -> SHEATHING_MATERIALS key.
+# Covers names used in config/assembly.py and typical Revit CompoundStructure names.
+MATERIAL_ALIASES: Dict[str, str] = {
+    "lap siding": "lp_smartside_7_16",
+    "osb 7/16": "osb_7_16",
+    "osb 1/2": "osb_1_2",
+    "osb": "osb_7_16",
+    "fiber cement siding": "fiber_cement_5_16",
+    "fiber cement": "fiber_cement_5_16",
+    '1/2" gypsum board': "gypsum_1_2",
+    "1/2 gypsum board": "gypsum_1_2",
+    '5/8" gypsum board': "gypsum_5_8",
+    "5/8 gypsum board": "gypsum_5_8",
+    "gypsum board": "gypsum_1_2",
+    "gypsum": "gypsum_1_2",
+    "drywall": "gypsum_1_2",
+    "plywood": "structural_plywood_7_16",
+    "rigid foam": "rigid_foam_1",
+    "mineral wool": "mineral_wool_ci_1_5",
+    "house wrap": "housewrap",
+    "tyvek": "housewrap",
+    "densglass": "densglass_1_2",
+    "smartside": "lp_smartside_7_16",
+}
+
+
+def _build_display_name_map() -> Dict[str, str]:
+    """Build reverse lookup: lowercase display_name -> SHEATHING_MATERIALS key."""
+    result: Dict[str, str] = {}
+    for key, mat in SHEATHING_MATERIALS.items():
+        normalized = mat.display_name.lower().strip().rstrip('"').strip()
+        result[normalized] = key
+    return result
+
+
+# Built once at import time.
+_DISPLAY_NAME_MAP: Dict[str, str] = _build_display_name_map()
+
+
+def _resolve_material_key(material_name: str) -> Optional[str]:
+    """Resolve a material display name or alias to a SHEATHING_MATERIALS key.
+
+    Lookup order:
+    1. Exact match against SHEATHING_MATERIALS keys (already a valid key).
+    2. Case-insensitive match against SHEATHING_MATERIALS display_name values.
+    3. Case-insensitive match against MATERIAL_ALIASES.
+    4. Returns None if no match found.
+
+    Args:
+        material_name: Material name from layer dict (may be a display name,
+            alias, or valid SHEATHING_MATERIALS key).
+
+    Returns:
+        Valid SHEATHING_MATERIALS key, or None if unresolvable.
+    """
+    if not material_name:
+        return None
+
+    # 1. Already a valid key
+    if material_name in SHEATHING_MATERIALS:
+        return material_name
+
+    # Normalize for case-insensitive lookups
+    normalized = material_name.lower().strip().rstrip('"').strip()
+
+    # 2. Match against display names
+    if normalized in _DISPLAY_NAME_MAP:
+        return _DISPLAY_NAME_MAP[normalized]
+
+    # 3. Match against manual aliases
+    if normalized in MATERIAL_ALIASES:
+        return MATERIAL_ALIASES[normalized]
+
+    return None
 
 
 @dataclass
@@ -116,10 +193,12 @@ def _get_layer_config(
     if func in DEFAULT_LAYER_PANEL_SIZES:
         config.setdefault("panel_size", DEFAULT_LAYER_PANEL_SIZES[func])
 
-    # Layer may specify its own material
+    # Layer may specify its own material (resolve display names to valid keys)
     layer_material = layer.get("material")
     if layer_material:
-        config["material"] = layer_material
+        resolved = _resolve_material_key(layer_material)
+        if resolved:
+            config["material"] = resolved
 
     # User overrides take highest priority
     if base_config:

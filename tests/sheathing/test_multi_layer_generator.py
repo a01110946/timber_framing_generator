@@ -19,8 +19,10 @@ from src.timber_framing_generator.sheathing.multi_layer_generator import (
     LayerPanelResult,
     PANELIZABLE_FUNCTIONS,
     DEFAULT_LAYER_MATERIALS,
+    MATERIAL_ALIASES,
     _get_layer_config,
     _determine_face,
+    _resolve_material_key,
 )
 
 
@@ -169,6 +171,47 @@ class TestDetermineFace:
         assert _determine_face("core") == "exterior"
 
 
+class TestResolveMaterialKey:
+    """Tests for _resolve_material_key helper."""
+
+    def test_valid_key_returned_as_is(self) -> None:
+        assert _resolve_material_key("osb_7_16") == "osb_7_16"
+        assert _resolve_material_key("gypsum_1_2") == "gypsum_1_2"
+        assert _resolve_material_key("fiber_cement_5_16") == "fiber_cement_5_16"
+
+    def test_display_name_resolved(self) -> None:
+        """SHEATHING_MATERIALS display names should resolve."""
+        assert _resolve_material_key('OSB 7/16"') == "osb_7_16"
+        assert _resolve_material_key('Gypsum Board 1/2"') == "gypsum_1_2"
+        assert _resolve_material_key('Fiber Cement Siding 5/16"') == "fiber_cement_5_16"
+
+    def test_catalog_names_resolved(self) -> None:
+        """Assembly catalog display names should resolve via aliases."""
+        assert _resolve_material_key("Lap Siding") == "lp_smartside_7_16"
+        assert _resolve_material_key("OSB 7/16") == "osb_7_16"
+        assert _resolve_material_key("OSB 1/2") == "osb_1_2"
+        assert _resolve_material_key("Fiber Cement Siding") == "fiber_cement_5_16"
+        assert _resolve_material_key('1/2" Gypsum Board') == "gypsum_1_2"
+
+    def test_case_insensitive(self) -> None:
+        assert _resolve_material_key("lap siding") == "lp_smartside_7_16"
+        assert _resolve_material_key("LAP SIDING") == "lp_smartside_7_16"
+        assert _resolve_material_key("osb 7/16") == "osb_7_16"
+
+    def test_unknown_returns_none(self) -> None:
+        assert _resolve_material_key("Unknown Material XYZ") is None
+        assert _resolve_material_key('2x4 SPF @ 16" OC') is None
+
+    def test_empty_returns_none(self) -> None:
+        assert _resolve_material_key("") is None
+        assert _resolve_material_key(None) is None
+
+    def test_common_aliases(self) -> None:
+        assert _resolve_material_key("Drywall") == "gypsum_1_2"
+        assert _resolve_material_key("Plywood") == "structural_plywood_7_16"
+        assert _resolve_material_key("Tyvek") == "housewrap"
+
+
 class TestGetLayerConfig:
     """Tests for _get_layer_config helper."""
 
@@ -201,6 +244,31 @@ class TestGetLayerConfig:
         layer = {"function": "finish", "side": "interior"}
         config = _get_layer_config(layer, {})
         assert config["panel_size"] == "4x8"
+
+    def test_display_name_material_resolved(self) -> None:
+        """Display names like 'Lap Siding' should resolve to valid keys."""
+        layer = {"function": "finish", "side": "exterior", "material": "Lap Siding"}
+        config = _get_layer_config(layer, {})
+        assert config["material"] == "lp_smartside_7_16"
+
+    def test_unknown_material_ignored(self) -> None:
+        """Unresolvable material names should be ignored (keep default)."""
+        layer = {"function": "substrate", "side": "exterior", "material": '2x4 SPF @ 16" OC'}
+        config = _get_layer_config(layer, {})
+        # Should fall back to DEFAULT_LAYER_MATERIALS for (substrate, exterior)
+        assert config["material"] == "osb_7_16"
+
+    def test_catalog_osb_material_resolved(self) -> None:
+        """Assembly catalog 'OSB 7/16' should resolve correctly."""
+        layer = {"function": "substrate", "side": "exterior", "material": "OSB 7/16"}
+        config = _get_layer_config(layer, {})
+        assert config["material"] == "osb_7_16"
+
+    def test_catalog_gypsum_material_resolved(self) -> None:
+        """Assembly catalog gypsum name should resolve."""
+        layer = {"function": "finish", "side": "interior", "material": '1/2" Gypsum Board'}
+        config = _get_layer_config(layer, {})
+        assert config["material"] == "gypsum_1_2"
 
 
 # =============================================================================
@@ -543,6 +611,87 @@ class TestGenerateAssemblyLayersOpenings:
             assert has_cutout, (
                 f"Layer {layer_result['layer_name']} missing opening cutout"
             )
+
+
+class TestGenerateAssemblyLayersCatalog:
+    """Tests with assembly catalog display-name materials (the real GH scenario)."""
+
+    def _catalog_2x4_exterior_layers(self) -> list:
+        """Mimics the layers from ASSEMBLY_2X4_EXTERIOR in config/assembly.py."""
+        return [
+            {
+                "name": "exterior_finish",
+                "function": "finish",
+                "side": "exterior",
+                "thickness": 0.5 / 12,
+                "material": "Lap Siding",
+            },
+            {
+                "name": "structural_sheathing",
+                "function": "substrate",
+                "side": "exterior",
+                "thickness": 0.4375 / 12,
+                "material": "OSB 7/16",
+            },
+            {
+                "name": "framing_core",
+                "function": "structure",
+                "side": "core",
+                "thickness": 3.5 / 12,
+                "material": '2x4 SPF @ 16" OC',
+            },
+            {
+                "name": "interior_finish",
+                "function": "finish",
+                "side": "interior",
+                "thickness": 0.5 / 12,
+                "material": '1/2" Gypsum Board',
+            },
+        ]
+
+    def test_catalog_assembly_produces_panels(self) -> None:
+        """Catalog assemblies with display-name materials must produce panels."""
+        wall_data = _make_wall_data(layers=self._catalog_2x4_exterior_layers())
+        result = generate_assembly_layers(wall_data)
+
+        # 3 panelizable: finish/ext, substrate/ext, finish/int
+        assert result["layers_processed"] == 3
+        assert result["total_panel_count"] > 0
+
+        for layer_result in result["layer_results"]:
+            assert layer_result["panel_count"] > 0, (
+                f"Layer '{layer_result['layer_name']}' produced 0 panels"
+            )
+
+    def test_catalog_interior_assembly_produces_panels(self) -> None:
+        """Interior assembly with gypsum on both sides."""
+        layers = [
+            {
+                "name": "finish_a",
+                "function": "finish",
+                "side": "exterior",
+                "thickness": 0.5 / 12,
+                "material": '1/2" Gypsum Board',
+            },
+            {
+                "name": "framing_core",
+                "function": "structure",
+                "side": "core",
+                "thickness": 3.5 / 12,
+                "material": '2x4 SPF @ 16" OC',
+            },
+            {
+                "name": "finish_b",
+                "function": "finish",
+                "side": "interior",
+                "thickness": 0.5 / 12,
+                "material": '1/2" Gypsum Board',
+            },
+        ]
+        wall_data = _make_wall_data(layers=layers)
+        result = generate_assembly_layers(wall_data)
+        assert result["layers_processed"] == 2
+        assert result["total_panel_count"] > 0
 
 
 class TestGenerateAssemblyLayersSummary:

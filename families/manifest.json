@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0",
   "revit_version": "2025",
-  "base_url": "https://raw.githubusercontent.com/a01110946/timber_framing_generator/feature/family-resolver/families",
+  "base_url": "https://raw.githubusercontent.com/a01110946/timber_framing_generator/main/families",
   "families": {
 
     "TFG_Timber_Stud": {

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Default GitHub configuration
 DEFAULT_GITHUB_BASE_URL = (
-    "https://raw.githubusercontent.com/a01110946/timber_framing_generator/feature/family-resolver/families"
+    "https://raw.githubusercontent.com/a01110946/timber_framing_generator/main/families"
 )
 DEFAULT_MANIFEST_FILENAME = "manifest.json"
 DEFAULT_TIMEOUT_SECONDS = 30

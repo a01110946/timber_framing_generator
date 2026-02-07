@@ -239,6 +239,8 @@ class FramingElementData:
     v_end: float
     cell_id: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    revit_family: Optional[str] = None  # Resolved Revit family name (from Family Resolver)
+    revit_type: Optional[str] = None    # Resolved Revit type name (from Family Resolver)
 
     @property
     def length(self) -> float:
@@ -389,6 +391,8 @@ def deserialize_framing_results(json_str: str) -> FramingResults:
             v_end=e['v_end'],
             cell_id=e.get('cell_id'),
             metadata=e.get('metadata', {}),
+            revit_family=e.get('revit_family'),
+            revit_type=e.get('revit_type'),
         )
         elements.append(element)
 

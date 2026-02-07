@@ -395,10 +395,13 @@ class JunctionGraph:
     def to_dict(self) -> Dict:
         """Serialize to JSON-compatible dictionary."""
         return {
-            "version": "1.0",
+            "version": "1.1",
             "junction_count": len(self.nodes),
             "junctions": [
                 _serialize_node(node) for node in self.nodes.values()
+            ],
+            "resolutions": [
+                _serialize_resolution(res) for res in self.resolutions
             ],
             "wall_adjustments": {
                 wall_id: [_serialize_adjustment(adj) for adj in adjs]
@@ -477,3 +480,21 @@ def _serialize_adjustment(adj: LayerAdjustment) -> Dict:
     if adj.miter_angle is not None:
         result["miter_angle"] = round(adj.miter_angle, 2)
     return result
+
+
+def _serialize_resolution(res: JunctionResolution) -> Dict:
+    """Serialize a JunctionResolution to a dictionary.
+
+    Includes the topology decisions (join_type, primary/secondary)
+    needed by downstream ``recompute_adjustments()`` to recalculate
+    per-layer amounts with resolved assembly data.
+    """
+    return {
+        "junction_id": res.junction_id,
+        "join_type": res.join_type.value,
+        "primary_wall_id": res.primary_wall_id,
+        "secondary_wall_id": res.secondary_wall_id,
+        "confidence": round(res.confidence, 4),
+        "reason": res.reason,
+        "is_user_override": res.is_user_override,
+    }

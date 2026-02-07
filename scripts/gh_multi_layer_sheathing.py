@@ -197,6 +197,9 @@ from src.timber_framing_generator.config.assembly_resolver import (
     resolve_all_walls,
     summarize_resolutions,
 )
+from src.timber_framing_generator.wall_junctions.junction_resolver import (
+    recompute_adjustments,
+)
 
 # =============================================================================
 # Constants
@@ -204,10 +207,10 @@ from src.timber_framing_generator.config.assembly_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v1.3"
+COMPONENT_MESSAGE = "v1.8"
 
 # Version marker — confirms the updated script is running in GH
-print("[MLSheath] Script version v1.3 loaded (framing_json auto-detect)")
+print("[MLSheath] Script version v1.8 loaded (framing-informed assembly resolution)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -405,7 +408,9 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
     Args:
         wall_id: Wall identifier.
         wall_length: Original wall length in feet.
-        face: "exterior" or "interior" -- determines which layer to use.
+        face: Layer side — "exterior", "interior", or "core".
+            Must match the ``layer_name`` values emitted by the
+            junction resolver.
         junctions_data: Parsed junctions_json dict, or None.
 
     Returns:
@@ -417,8 +422,9 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
     if not junctions_data:
         return u_start_bound, u_end_bound
 
-    # Map face to layer name
-    layer_name = "exterior" if face == "exterior" else "interior"
+    # Use face directly as layer_name — the junction resolver emits
+    # adjustments keyed by "exterior", "core", and "interior".
+    layer_name = face
 
     # Get adjustments for this wall
     wall_adjustments = junctions_data.get("wall_adjustments", {}).get(wall_id, [])
@@ -447,7 +453,7 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
 
 def process_walls(walls_json, base_config, layer_configs, include_functions,
                   junctions_data=None, assembly_mode="auto", custom_map=None,
-                  framing_depth=None):
+                  framing_depth=None, framing_data=None):
     """Process walls and generate multi-layer sheathing panels.
 
     For each wall, resolves the assembly (using the assembly resolver),
@@ -464,8 +470,11 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         assembly_mode: Assembly resolution mode (auto/revit_only/catalog/custom).
         custom_map: Per-Wall-Type assembly mapping dict for custom mode.
         framing_depth: Optional explicit framing profile depth in feet.
-            Passed to generate_assembly_layers() to prevent sheathing
-            from starting inside the framing zone.
+            When set, overrides per-wall detection and applies to ALL walls.
+        framing_data: Optional parsed framing_json for per-wall depth
+            extraction. When provided and framing_depth is None, each wall
+            gets its own framing depth from the framing elements matching
+            its wall_id.
 
     Returns:
         tuple: (all_results, summary_lines, stats_text, log_lines)
@@ -488,6 +497,18 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
     else:
         log_error("walls_json must be a dict or list")
         return [], [], "Error: Invalid format", ["Invalid walls_json format"]
+
+    # Inject framing_hint into wall dicts for assembly resolution (Option B).
+    # When framing_json is connected, each wall gets a hint with its stud
+    # profile depth, enabling the resolver to pick the correct assembly
+    # (e.g., 2x6_exterior for a 6" wall instead of defaulting to 2x4).
+    if framing_data is not None:
+        for wall in walls_list:
+            wid = str(wall.get("wall_id", ""))
+            depth = extract_max_framing_depth(framing_data, wall_id=wid)
+            if depth:
+                wall["framing_hint"] = {"depth_ft": depth}
+                log_info(f"  Injected framing_hint for wall {wid}: depth_ft={depth:.4f}")
 
     # Resolve assemblies for all walls
     walls_list = resolve_all_walls(walls_list, mode=assembly_mode, custom_map=custom_map)
@@ -569,17 +590,82 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
 
             wall_length = wall_data.get("wall_length", 0)
 
-            # Compute junction bounds for each face
+            # Compute junction bounds per individual layer name.
+            # The junction resolver now emits per-layer adjustments keyed
+            # by the actual layer name (e.g., "OSB Sheathing") when wall
+            # assemblies are available, with fallback "exterior"/"core"/
+            # "interior" for walls without assemblies.  We compute bounds
+            # for every individual layer name AND the aggregate face keys
+            # so that generate_assembly_layers() can look up by either.
             face_bounds = {}
-            for face in faces:
-                u_start, u_end = compute_sheathing_bounds(
-                    wall_id, wall_length, face, junctions_data
+
+            # Diagnostic: show what adjustments exist for this wall
+            wall_adjs = (junctions_data or {}).get(
+                "wall_adjustments", {}
+            ).get(wall_id, [])
+            if wall_adjs:
+                adj_layer_names = set(a.get("layer_name") for a in wall_adjs)
+                log_info(
+                    f"  BOUNDS-DIAG wall {wall_id}: {len(wall_adjs)} adjustments, "
+                    f"layer_names={sorted(adj_layer_names)}"
                 )
-                face_bounds[face] = (u_start, u_end)
-                if u_start != 0.0 or u_end != wall_length:
+            else:
+                log_info(f"  BOUNDS-DIAG wall {wall_id}: NO adjustments found")
+
+            # Per-individual-layer bounds (from assembly).
+            # Only add when the junction resolver emitted adjustments keyed
+            # by that specific layer name (per-layer cumulative path).
+            # If only aggregate names (exterior/core/interior) exist, skip
+            # individual names so generate_assembly_layers() falls through
+            # to the aggregate face keys instead of getting shadowed.
+            assembly_layers = (wall_assembly or {}).get("layers", [])
+            log_info(
+                f"  BOUNDS-DIAG assembly layers: "
+                f"{[al.get('name') for al in assembly_layers]}"
+            )
+            for al in assembly_layers:
+                lname = al.get("name")
+                if lname and lname in adj_layer_names:
+                    u_start, u_end = compute_sheathing_bounds(
+                        wall_id, wall_length, lname, junctions_data
+                    )
+                    face_bounds[lname] = (u_start, u_end)
                     log_info(
-                        f"  {face} bounds: u=[{u_start:.4f}, {u_end:.4f}] "
-                        f"(wall_length={wall_length:.4f})"
+                        f"  layer '{lname}' bounds: u=[{u_start:.4f}, {u_end:.4f}] "
+                        f"(ADJUSTED, wall_length={wall_length:.4f})"
+                    )
+                elif lname:
+                    log_info(
+                        f"  layer '{lname}': no matching adjustment "
+                        f"(will use face fallback)"
+                    )
+
+            # Aggregate face-level bounds (fallback for layers not matched by name)
+            for bf in set(faces) | {"core"}:
+                u_start, u_end = compute_sheathing_bounds(
+                    wall_id, wall_length, bf, junctions_data
+                )
+                face_bounds[bf] = (u_start, u_end)
+                matched = "ADJUSTED" if (u_start != 0.0 or u_end != wall_length) else "unchanged"
+                log_info(
+                    f"  face '{bf}' bounds: u=[{u_start:.4f}, {u_end:.4f}] "
+                    f"({matched}, wall_length={wall_length:.4f})"
+                )
+
+            log_info(f"  BOUNDS-DIAG final face_bounds keys: {sorted(face_bounds.keys())}")
+
+            # Resolve per-wall framing depth.
+            # Explicit framing_depth (from config) overrides per-wall detection.
+            # Otherwise, extract from framing_json filtered by this wall's ID.
+            wall_framing_depth = framing_depth
+            if wall_framing_depth is None and framing_data is not None:
+                wall_framing_depth = extract_max_framing_depth(
+                    framing_data, wall_id=wall_id,
+                )
+                if wall_framing_depth is not None:
+                    log_info(
+                        f"  framing_depth={wall_framing_depth:.4f} ft "
+                        f"({wall_framing_depth * 12:.2f} in) for wall {wall_id}"
                     )
 
             # Call multi-layer generator with per-face junction bounds.
@@ -592,7 +678,7 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                     layer_configs=layer_configs if layer_configs else None,
                     face_bounds=face_bounds if face_bounds else None,
                     include_functions=include_functions,
-                    framing_depth=framing_depth,
+                    framing_depth=wall_framing_depth,
                 )
             except TypeError as _te:
                 # Fallback: if an older version of multi_layer_generator is
@@ -629,10 +715,14 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                 )
                 for lr in layer_results_diag:
                     w_off = lr.get("w_offset")
+                    panels_list = lr.get("panels", [])
+                    first_u = panels_list[0].get("u_start", "?") if panels_list else "N/A"
+                    last_u = panels_list[-1].get("u_end", "?") if panels_list else "N/A"
                     log_info(
                         f"    {lr.get('layer_name')}: w_offset={w_off}, "
                         f"side={lr.get('layer_side')}, "
-                        f"panels={lr.get('panel_count', 0)}"
+                        f"panels={lr.get('panel_count', 0)}, "
+                        f"first_u_start={first_u}, last_u_end={last_u}"
                     )
 
             # Accumulate stats
@@ -770,16 +860,25 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             config_json_input
         )
 
-        # Auto-detect framing depth from framing_json (unless explicit)
-        if framing_depth is None and framing_json_in and str(framing_json_in).strip():
+        # Parse framing_json for per-wall framing depth extraction.
+        # When an explicit framing_depth is set via config_json, it overrides
+        # per-wall detection and applies to ALL walls uniformly.
+        framing_data = None
+        if framing_json_in and str(framing_json_in).strip():
             try:
                 framing_data = json.loads(framing_json_in)
-                auto_depth = extract_max_framing_depth(framing_data)
-                if auto_depth is not None:
-                    framing_depth = auto_depth
+                if framing_depth is not None:
                     log_info(
-                        f"Auto-detected framing_depth={framing_depth:.4f} ft "
-                        f"({framing_depth * 12:.2f} in) from framing_json"
+                        f"Explicit framing_depth={framing_depth:.4f} ft from config "
+                        f"(overrides per-wall detection from framing_json)"
+                    )
+                else:
+                    # Quick log: show global max for reference
+                    global_max = extract_max_framing_depth(framing_data)
+                    log_info(
+                        f"framing_json loaded — per-wall depth extraction active "
+                        f"(global max={global_max:.4f} ft / {global_max * 12:.2f} in)"
+                        if global_max else "framing_json loaded (no elements found)"
                     )
             except (json.JSONDecodeError, TypeError) as e:
                 log_warning(f"Invalid framing_json, ignoring: {e}")
@@ -790,22 +889,81 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             try:
                 junctions_data = json.loads(junctions_json_input)
                 junc_count = junctions_data.get("junction_count", 0)
-                adj_count = sum(
-                    len(adjs)
-                    for adjs in junctions_data.get("wall_adjustments", {}).values()
-                )
+                wall_adj_map = junctions_data.get("wall_adjustments", {})
+                adj_count = sum(len(adjs) for adjs in wall_adj_map.values())
                 log_info(
-                    f"Loaded junction data: {junc_count} junctions, "
-                    f"{adj_count} adjustments"
+                    f"Loaded junction data (Phase 1): {junc_count} junctions, "
+                    f"{adj_count} best-effort adjustments across {len(wall_adj_map)} walls"
                 )
             except (json.JSONDecodeError, TypeError) as e:
                 log_warning(f"Invalid junctions_json, ignoring: {e}")
+
+        # Phase 2: Recompute junction adjustments with resolved assemblies.
+        # The Junction Analyzer runs on raw Revit walls (Phase 1) and may
+        # only have single-core-layer data. After assembly resolution,
+        # we recompute adjustments with the real multi-layer assemblies.
+        if junctions_data and junctions_data.get("resolutions"):
+            try:
+                # Parse walls for assembly resolution
+                walls_for_recompute = json.loads(walls_json_input)
+                if isinstance(walls_for_recompute, dict):
+                    walls_for_recompute = [walls_for_recompute]
+
+                # Inject framing_hint for correct assembly resolution
+                if framing_data is not None:
+                    for wall in walls_for_recompute:
+                        wid = str(wall.get("wall_id", ""))
+                        depth = extract_max_framing_depth(framing_data, wall_id=wid)
+                        if depth:
+                            wall["framing_hint"] = {"depth_ft": depth}
+
+                # Resolve assemblies on a copy for recompute
+                walls_for_recompute = resolve_all_walls(
+                    walls_for_recompute, mode=assembly_mode, custom_map=custom_map,
+                )
+
+                recomputed = recompute_adjustments(junctions_data, walls_for_recompute)
+
+                old_count = sum(
+                    len(v) for v in junctions_data.get("wall_adjustments", {}).values()
+                )
+                new_count = sum(len(v) for v in recomputed.values())
+                junctions_data["wall_adjustments"] = recomputed
+
+                log_info(
+                    f"Phase 2 recompute: {old_count} best-effort adjustments "
+                    f"-> {new_count} assembly-aware adjustments"
+                )
+
+                # Diagnostic: dump recomputed adjustments
+                for wid, adjs in recomputed.items():
+                    log_info(f"  RECOMPUTED wall {wid}: {len(adjs)} adjustments")
+                    for adj in adjs:
+                        log_info(
+                            f"    layer={adj.get('layer_name')} "
+                            f"end={adj.get('end')} "
+                            f"type={adj.get('adjustment_type')} "
+                            f"amount={adj.get('amount', 0):.6f} ft "
+                            f"({adj.get('amount', 0) * 12:.4f} in) "
+                            f"vs={adj.get('connecting_wall_id')}"
+                        )
+            except Exception as e:
+                log_warning(
+                    f"Phase 2 recompute failed, using Phase 1 adjustments: {e}"
+                )
+                import traceback as _tb
+                print(_tb.format_exc())
+        elif junctions_data:
+            log_info(
+                "No resolutions in junctions_json (old format?) — "
+                "using Phase 1 adjustments as-is"
+            )
 
         # Process walls
         results, summary_lines, stats_text, log_lines = process_walls(
             walls_json_input, base_config, layer_configs, include_functions,
             junctions_data, assembly_mode=assembly_mode, custom_map=custom_map,
-            framing_depth=framing_depth,
+            framing_depth=framing_depth, framing_data=framing_data,
         )
 
         # Serialize results to JSON

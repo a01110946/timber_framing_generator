@@ -13,7 +13,7 @@ All measurements are in feet.
 
 import math
 import logging
-from typing import List, Dict, Tuple, Optional
+from typing import Any, List, Dict, Tuple, Optional
 
 from .junction_types import (
     JunctionNode,
@@ -25,9 +25,7 @@ from .junction_types import (
     LayerAdjustment,
     JunctionResolution,
     JunctionGraph,
-    LayerSide,
-    WallAssemblyDef,
-    WallLayer,
+    _serialize_adjustment,
 )
 from .junction_detector import _outward_direction_at_junction, _calculate_angle
 
@@ -82,6 +80,11 @@ def build_wall_layers_map(
 ) -> Dict[str, WallLayerInfo]:
     """Build WallLayerInfo for every wall.
 
+    Priority order:
+    1. Explicit ``layer_overrides`` (highest)
+    2. Resolved ``wall_assembly`` layers (from assembly_resolver)
+    3. Proportionally-scaled defaults (lowest)
+
     Args:
         walls_data: List of wall dicts from walls_json.
         layer_overrides: Optional dict of wall_id → layer thickness overrides
@@ -107,10 +110,96 @@ def build_wall_layers_map(
                 interior_thickness=ov.get("interior_thickness", _DEFAULT_INT_FT),
                 source="override",
             )
+        elif _has_assembly_layers(wall):
+            result[wall_id] = _build_layers_from_assembly(wall_id, wall["wall_assembly"], thickness)
         else:
             result[wall_id] = build_default_wall_layers(wall_id, thickness)
 
     return result
+
+
+def _has_assembly_layers(wall: Dict) -> bool:
+    """Check if a wall has resolved assembly layers."""
+    assembly = wall.get("wall_assembly")
+    return bool(assembly and assembly.get("layers"))
+
+
+def _build_layers_from_assembly(
+    wall_id: str,
+    wall_assembly: Dict,
+    total_thickness: float,
+) -> WallLayerInfo:
+    """Build WallLayerInfo from resolved assembly layers.
+
+    Sums actual layer thicknesses by side (exterior/core/interior)
+    instead of proportionally scaling from defaults.
+
+    Args:
+        wall_id: Wall identifier.
+        wall_assembly: Assembly dict with "layers" list.
+        total_thickness: Total wall thickness from Revit (feet).
+
+    Returns:
+        WallLayerInfo with actual layer thicknesses.
+    """
+    layers = wall_assembly.get("layers", [])
+    ext_t = sum(l.get("thickness", 0.0) for l in layers if l.get("side") == "exterior")
+    core_t = sum(l.get("thickness", 0.0) for l in layers if l.get("side") == "core")
+    int_t = sum(l.get("thickness", 0.0) for l in layers if l.get("side") == "interior")
+
+    return WallLayerInfo(
+        wall_id=wall_id,
+        total_thickness=total_thickness,
+        exterior_thickness=ext_t,
+        core_thickness=core_t,
+        interior_thickness=int_t,
+        source="assembly",
+    )
+
+
+def _build_wall_assemblies_map(
+    walls_data: List[Dict],
+) -> Dict[str, List[Dict]]:
+    """Extract individual assembly layers from each wall.
+
+    Args:
+        walls_data: List of wall dicts, each optionally containing
+            ``wall_assembly.layers``.
+
+    Returns:
+        Dict mapping wall_id to list of assembly layer dicts.
+        Only includes walls that have assembly layers.
+    """
+    result: Dict[str, List[Dict]] = {}
+    for wall in walls_data:
+        wall_id = wall.get("wall_id", "")
+        assembly = wall.get("wall_assembly")
+        if assembly and assembly.get("layers"):
+            result[wall_id] = assembly["layers"]
+    return result
+
+
+def _ordered_layers_core_outward(
+    assembly_layers: List[Dict],
+    side: str,
+) -> List[Dict]:
+    """Get layers for a side, ordered from core outward.
+
+    Assembly layers are ordered outside-to-inside (Revit convention).
+    Exterior layers need to be reversed for core-outward ordering.
+    Interior layers are already in core-outward order.
+
+    Args:
+        assembly_layers: Full list of assembly layer dicts.
+        side: "exterior" or "interior".
+
+    Returns:
+        List of layer dicts ordered from closest-to-core to outermost.
+    """
+    side_layers = [l for l in assembly_layers if l.get("side") == side]
+    if side == "exterior":
+        return list(reversed(side_layers))
+    return side_layers
 
 
 # =============================================================================
@@ -216,175 +305,166 @@ def _calculate_butt_adjustments(
     secondary: WallConnection,
     primary_layers: WallLayerInfo,
     secondary_layers: WallLayerInfo,
+    primary_assembly_layers: Optional[List[Dict]] = None,
+    secondary_assembly_layers: Optional[List[Dict]] = None,
 ) -> List[LayerAdjustment]:
     """Calculate per-layer adjustments for a butt join.
 
-    Uses the CROSSED PATTERN at L-corners:
-      - Exterior layers follow the primary wall (extend on outside corner)
-      - Interior layers follow the secondary wall (extend on inside corner)
-      - Core layers follow wall role (primary extends, secondary trims)
+    The primary wall dominates both faces of the corner:
+      - Primary exterior layers EXTEND past the junction
+      - Primary interior layers TRIM before the junction
+      - Primary core EXTENDS
+      - Secondary ALL layers TRIM
 
-    Primary wall:
-      - core:     EXTEND by secondary.core_thickness / 2
-      - exterior: EXTEND by secondary.total_thickness / 2 (wraps outside corner)
-      - interior: TRIM by secondary.core_thickness / 2 (secondary's interior covers this)
+    Each layer's amount is cumulative: ``half_opposing_core`` plus the
+    sum of the opposing wall's layers (same side) up to that layer's
+    position in the stack.  This ensures each layer stops exactly at
+    the face of the corresponding opposing layer.
 
-    Secondary wall:
-      - core:     TRIM by primary.core_thickness / 2
-      - exterior: TRIM by primary.core_thickness / 2 (butts against primary's exterior)
-      - interior: EXTEND by primary.total_thickness / 2 (wraps inside corner)
-    """
-    adjustments = []
-
-    half_sec_core = secondary_layers.core_thickness / 2.0
-    half_sec_total = secondary_layers.total_thickness / 2.0
-    half_pri_core = primary_layers.core_thickness / 2.0
-    half_pri_total = primary_layers.total_thickness / 2.0
-
-    # PRIMARY: exterior extends, core extends, interior TRIMS
-    for layer_name, adj_type, amount in [
-        ("core", AdjustmentType.EXTEND, half_sec_core),
-        ("exterior", AdjustmentType.EXTEND, half_sec_total),
-        ("interior", AdjustmentType.TRIM, half_sec_core),
-    ]:
-        adjustments.append(LayerAdjustment(
-            wall_id=primary.wall_id,
-            end=primary.end,
-            junction_id=junction_id,
-            layer_name=layer_name,
-            adjustment_type=adj_type,
-            amount=amount,
-            connecting_wall_id=secondary.wall_id,
-        ))
-
-    # SECONDARY: exterior trims, core trims, interior EXTENDS
-    for layer_name, adj_type, amount in [
-        ("core", AdjustmentType.TRIM, half_pri_core),
-        ("exterior", AdjustmentType.TRIM, half_pri_core),
-        ("interior", AdjustmentType.EXTEND, half_pri_total),
-    ]:
-        adjustments.append(LayerAdjustment(
-            wall_id=secondary.wall_id,
-            end=secondary.end,
-            junction_id=junction_id,
-            layer_name=layer_name,
-            adjustment_type=adj_type,
-            amount=amount,
-            connecting_wall_id=primary.wall_id,
-        ))
-
-    return adjustments
-
-
-def _calculate_butt_adjustments_v2(
-    junction_id: str,
-    primary: WallConnection,
-    secondary: WallConnection,
-    primary_assembly: WallAssemblyDef,
-    secondary_assembly: WallAssemblyDef,
-) -> List[LayerAdjustment]:
-    """Calculate per-layer adjustments for a butt join using multi-layer assemblies.
-
-    Applies the crossed pattern to each individual layer based on its side:
-      - EXTERIOR-side layers follow the primary wall (extend on outside corner)
-      - INTERIOR-side layers follow the secondary wall (extend on inside corner)
-      - CORE layers follow wall role (primary extends, secondary trims)
-
-    Also emits legacy 3-name adjustments for backward compatibility.
+    When ``primary_assembly_layers`` / ``secondary_assembly_layers``
+    are provided, adjustments are emitted per individual layer name.
+    Otherwise, falls back to 3-aggregate (exterior/core/interior)
+    adjustments using aggregate thicknesses.
 
     Args:
         junction_id: Junction identifier.
         primary: Primary wall connection (extends at outside corner).
-        secondary: Secondary wall connection (trims at outside corner).
-        primary_assembly: Full assembly definition for primary wall.
-        secondary_assembly: Full assembly definition for secondary wall.
+        secondary: Secondary wall connection (trims).
+        primary_layers: Aggregate layer info for primary wall.
+        secondary_layers: Aggregate layer info for secondary wall.
+        primary_assembly_layers: Optional list of individual layer dicts
+            for the primary wall (from wall_assembly["layers"]).
+        secondary_assembly_layers: Optional list of individual layer
+            dicts for the secondary wall.
 
     Returns:
-        List of LayerAdjustments for all layers of both walls.
+        List of LayerAdjustments for both walls.
     """
-    adjustments = []
+    adjustments: List[LayerAdjustment] = []
 
-    half_sec_core = secondary_assembly.core_thickness / 2.0
-    half_sec_total = secondary_assembly.total_thickness / 2.0
-    half_pri_core = primary_assembly.core_thickness / 2.0
-    half_pri_total = primary_assembly.total_thickness / 2.0
+    half_sec_core = secondary_layers.core_thickness / 2.0
+    half_pri_core = primary_layers.core_thickness / 2.0
 
-    # --- PRIMARY WALL: per-layer ---
-    for layer in primary_assembly.layers:
-        if layer.side == LayerSide.CORE:
-            adj_type = AdjustmentType.EXTEND
-            amount = half_sec_core
-        elif layer.side == LayerSide.EXTERIOR:
-            adj_type = AdjustmentType.EXTEND
-            amount = half_sec_total
-        else:  # INTERIOR
-            adj_type = AdjustmentType.TRIM
-            amount = half_sec_core
+    if primary_assembly_layers and secondary_assembly_layers:
+        # ----------------------------------------------------------
+        # Per-individual-layer cumulative adjustments
+        # ----------------------------------------------------------
+        sec_ext = _ordered_layers_core_outward(secondary_assembly_layers, "exterior")
+        sec_int = _ordered_layers_core_outward(secondary_assembly_layers, "interior")
+        pri_ext = _ordered_layers_core_outward(primary_assembly_layers, "exterior")
+        pri_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
 
+        # --- PRIMARY WALL ---
+        # Core: EXTEND by half_sec_core
         adjustments.append(LayerAdjustment(
-            wall_id=primary.wall_id,
-            end=primary.end,
-            junction_id=junction_id,
-            layer_name=layer.name,
-            adjustment_type=adj_type,
-            amount=amount,
+            wall_id=primary.wall_id, end=primary.end,
+            junction_id=junction_id, layer_name="core",
+            adjustment_type=AdjustmentType.EXTEND, amount=half_sec_core,
             connecting_wall_id=secondary.wall_id,
         ))
 
-    # --- SECONDARY WALL: per-layer ---
-    for layer in secondary_assembly.layers:
-        if layer.side == LayerSide.CORE:
-            adj_type = AdjustmentType.TRIM
-            amount = half_pri_core
-        elif layer.side == LayerSide.EXTERIOR:
-            adj_type = AdjustmentType.TRIM
-            amount = half_pri_core
-        else:  # INTERIOR
-            adj_type = AdjustmentType.EXTEND
-            amount = half_pri_total
+        # Primary exterior: each EXTENDS by half_sec_core + cumulative sec ext
+        p_ext = _ordered_layers_core_outward(primary_assembly_layers, "exterior")
+        cumulative = 0.0
+        for i, p_layer in enumerate(p_ext):
+            if i < len(sec_ext):
+                cumulative += sec_ext[i].get("thickness", 0.0)
+            adjustments.append(LayerAdjustment(
+                wall_id=primary.wall_id, end=primary.end,
+                junction_id=junction_id,
+                layer_name=p_layer.get("name", f"exterior_{i}"),
+                adjustment_type=AdjustmentType.EXTEND,
+                amount=half_sec_core + cumulative,
+                connecting_wall_id=secondary.wall_id,
+            ))
 
+        # Primary interior: each TRIMS by half_sec_core + cumulative sec int
+        p_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
+        cumulative = 0.0
+        for i, p_layer in enumerate(p_int):
+            if i < len(sec_int):
+                cumulative += sec_int[i].get("thickness", 0.0)
+            adjustments.append(LayerAdjustment(
+                wall_id=primary.wall_id, end=primary.end,
+                junction_id=junction_id,
+                layer_name=p_layer.get("name", f"interior_{i}"),
+                adjustment_type=AdjustmentType.TRIM,
+                amount=half_sec_core + cumulative,
+                connecting_wall_id=secondary.wall_id,
+            ))
+
+        # --- SECONDARY WALL (all TRIM) ---
+        # Core: TRIM by half_pri_core
         adjustments.append(LayerAdjustment(
-            wall_id=secondary.wall_id,
-            end=secondary.end,
-            junction_id=junction_id,
-            layer_name=layer.name,
-            adjustment_type=adj_type,
-            amount=amount,
+            wall_id=secondary.wall_id, end=secondary.end,
+            junction_id=junction_id, layer_name="core",
+            adjustment_type=AdjustmentType.TRIM, amount=half_pri_core,
             connecting_wall_id=primary.wall_id,
         ))
 
-    # --- LEGACY 3-name adjustments for backward compatibility ---
-    # Primary: exterior extends, core extends, interior trims
-    for layer_name, adj_type, amount in [
-        ("core", AdjustmentType.EXTEND, half_sec_core),
-        ("exterior", AdjustmentType.EXTEND, half_sec_total),
-        ("interior", AdjustmentType.TRIM, half_sec_core),
-    ]:
-        adjustments.append(LayerAdjustment(
-            wall_id=primary.wall_id,
-            end=primary.end,
-            junction_id=junction_id,
-            layer_name=layer_name,
-            adjustment_type=adj_type,
-            amount=amount,
-            connecting_wall_id=secondary.wall_id,
-        ))
+        # Secondary exterior: each TRIMS by half_pri_core + cumulative pri ext
+        s_ext = _ordered_layers_core_outward(secondary_assembly_layers, "exterior")
+        cumulative = 0.0
+        for i, s_layer in enumerate(s_ext):
+            if i < len(pri_ext):
+                cumulative += pri_ext[i].get("thickness", 0.0)
+            adjustments.append(LayerAdjustment(
+                wall_id=secondary.wall_id, end=secondary.end,
+                junction_id=junction_id,
+                layer_name=s_layer.get("name", f"exterior_{i}"),
+                adjustment_type=AdjustmentType.TRIM,
+                amount=half_pri_core + cumulative,
+                connecting_wall_id=primary.wall_id,
+            ))
 
-    # Secondary: exterior trims, core trims, interior extends
-    for layer_name, adj_type, amount in [
-        ("core", AdjustmentType.TRIM, half_pri_core),
-        ("exterior", AdjustmentType.TRIM, half_pri_core),
-        ("interior", AdjustmentType.EXTEND, half_pri_total),
-    ]:
-        adjustments.append(LayerAdjustment(
-            wall_id=secondary.wall_id,
-            end=secondary.end,
-            junction_id=junction_id,
-            layer_name=layer_name,
-            adjustment_type=adj_type,
-            amount=amount,
-            connecting_wall_id=primary.wall_id,
-        ))
+        # Secondary interior: each TRIMS by half_pri_core + cumulative pri int
+        s_int = _ordered_layers_core_outward(secondary_assembly_layers, "interior")
+        cumulative = 0.0
+        for i, s_layer in enumerate(s_int):
+            if i < len(pri_int):
+                cumulative += pri_int[i].get("thickness", 0.0)
+            adjustments.append(LayerAdjustment(
+                wall_id=secondary.wall_id, end=secondary.end,
+                junction_id=junction_id,
+                layer_name=s_layer.get("name", f"interior_{i}"),
+                adjustment_type=AdjustmentType.TRIM,
+                amount=half_pri_core + cumulative,
+                connecting_wall_id=primary.wall_id,
+            ))
+
+    else:
+        # ----------------------------------------------------------
+        # Fallback: 3-aggregate adjustments (no individual layers)
+        # ----------------------------------------------------------
+        # PRIMARY wall
+        for layer_name, adj_type, amount in [
+            ("core", AdjustmentType.EXTEND, half_sec_core),
+            ("exterior", AdjustmentType.EXTEND,
+             half_sec_core + secondary_layers.exterior_thickness),
+            ("interior", AdjustmentType.TRIM,
+             half_sec_core + secondary_layers.interior_thickness),
+        ]:
+            adjustments.append(LayerAdjustment(
+                wall_id=primary.wall_id, end=primary.end,
+                junction_id=junction_id, layer_name=layer_name,
+                adjustment_type=adj_type, amount=amount,
+                connecting_wall_id=secondary.wall_id,
+            ))
+
+        # SECONDARY wall — ALL TRIM
+        for layer_name, adj_type, amount in [
+            ("core", AdjustmentType.TRIM, half_pri_core),
+            ("exterior", AdjustmentType.TRIM,
+             half_pri_core + primary_layers.exterior_thickness),
+            ("interior", AdjustmentType.TRIM,
+             half_pri_core + primary_layers.interior_thickness),
+        ]:
+            adjustments.append(LayerAdjustment(
+                wall_id=secondary.wall_id, end=secondary.end,
+                junction_id=junction_id, layer_name=layer_name,
+                adjustment_type=adj_type, amount=amount,
+                connecting_wall_id=primary.wall_id,
+            ))
 
     return adjustments
 
@@ -466,31 +546,92 @@ def _calculate_t_intersection_adjustments(
     terminating: WallConnection,
     continuous_layers: WallLayerInfo,
     terminating_layers: WallLayerInfo,
+    continuous_assembly_layers: Optional[List[Dict]] = None,
+    terminating_assembly_layers: Optional[List[Dict]] = None,
 ) -> List[LayerAdjustment]:
     """Calculate adjustments for a T-intersection.
 
     The continuous wall is NOT adjusted (it passes through).
-    The terminating wall trims at its end meeting the continuous wall.
+    The terminating wall trims all layers at the junction end.
 
-    Terminating wall trims:
-      - core:     by continuous.core_thickness / 2
-      - exterior: by continuous.core_thickness / 2
-      - interior: by continuous.core_thickness / 2
+    Each terminating layer trims by ``half_cont_core`` plus the
+    cumulative thickness of the continuous wall's layers on the
+    same side up to that layer's stack position.
+
+    Args:
+        junction_id: Junction identifier.
+        continuous: Continuous wall connection (passes through).
+        terminating: Terminating wall connection (butts against continuous).
+        continuous_layers: Aggregate layer info for continuous wall.
+        terminating_layers: Aggregate layer info for terminating wall.
+        continuous_assembly_layers: Optional individual layer dicts for
+            the continuous wall.
+        terminating_assembly_layers: Optional individual layer dicts for
+            the terminating wall.
+
+    Returns:
+        List of LayerAdjustments (all TRIM) for the terminating wall.
     """
-    adjustments = []
+    adjustments: List[LayerAdjustment] = []
 
     half_cont_core = continuous_layers.core_thickness / 2.0
 
-    for layer_name in ("core", "exterior", "interior"):
+    if continuous_assembly_layers and terminating_assembly_layers:
+        # Per-layer cumulative adjustments
+        cont_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
+        cont_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
+
+        # Core: TRIM by half_cont_core
         adjustments.append(LayerAdjustment(
-            wall_id=terminating.wall_id,
-            end=terminating.end,
-            junction_id=junction_id,
-            layer_name=layer_name,
-            adjustment_type=AdjustmentType.TRIM,
-            amount=half_cont_core,
+            wall_id=terminating.wall_id, end=terminating.end,
+            junction_id=junction_id, layer_name="core",
+            adjustment_type=AdjustmentType.TRIM, amount=half_cont_core,
             connecting_wall_id=continuous.wall_id,
         ))
+
+        # Terminating exterior: each TRIMS by half_cont_core + cumulative cont ext
+        t_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
+        cumulative = 0.0
+        for i, t_layer in enumerate(t_ext):
+            if i < len(cont_ext):
+                cumulative += cont_ext[i].get("thickness", 0.0)
+            adjustments.append(LayerAdjustment(
+                wall_id=terminating.wall_id, end=terminating.end,
+                junction_id=junction_id,
+                layer_name=t_layer.get("name", f"exterior_{i}"),
+                adjustment_type=AdjustmentType.TRIM,
+                amount=half_cont_core + cumulative,
+                connecting_wall_id=continuous.wall_id,
+            ))
+
+        # Terminating interior: each TRIMS by half_cont_core + cumulative cont int
+        t_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
+        cumulative = 0.0
+        for i, t_layer in enumerate(t_int):
+            if i < len(cont_int):
+                cumulative += cont_int[i].get("thickness", 0.0)
+            adjustments.append(LayerAdjustment(
+                wall_id=terminating.wall_id, end=terminating.end,
+                junction_id=junction_id,
+                layer_name=t_layer.get("name", f"interior_{i}"),
+                adjustment_type=AdjustmentType.TRIM,
+                amount=half_cont_core + cumulative,
+                connecting_wall_id=continuous.wall_id,
+            ))
+
+    else:
+        # Fallback: 3-aggregate adjustments
+        for layer_name, amount in [
+            ("core", half_cont_core),
+            ("exterior", half_cont_core + continuous_layers.exterior_thickness),
+            ("interior", half_cont_core + continuous_layers.interior_thickness),
+        ]:
+            adjustments.append(LayerAdjustment(
+                wall_id=terminating.wall_id, end=terminating.end,
+                junction_id=junction_id, layer_name=layer_name,
+                adjustment_type=AdjustmentType.TRIM, amount=amount,
+                connecting_wall_id=continuous.wall_id,
+            ))
 
     return adjustments
 
@@ -506,6 +647,7 @@ def _resolve_two_wall_junction(
     default_join_type: str,
     priority_strategy: str,
     override: Optional[Dict],
+    wall_assemblies: Optional[Dict[str, List[Dict]]] = None,
 ) -> JunctionResolution:
     """Resolve a junction between two walls (L-corner or T-intersection)."""
     # Get the two main connections (skip extra for now)
@@ -525,8 +667,13 @@ def _resolve_two_wall_junction(
             build_default_wall_layers(terminating.wall_id, terminating.wall_thickness),
         )
 
+        cont_assembly = (wall_assemblies or {}).get(continuous.wall_id)
+        term_assembly = (wall_assemblies or {}).get(terminating.wall_id)
+
         adjustments = _calculate_t_intersection_adjustments(
-            node.id, continuous, terminating, cont_layers, term_layers
+            node.id, continuous, terminating, cont_layers, term_layers,
+            continuous_assembly_layers=cont_assembly,
+            terminating_assembly_layers=term_assembly,
         )
 
         return JunctionResolution(
@@ -586,10 +733,16 @@ def _resolve_two_wall_junction(
         build_default_wall_layers(secondary.wall_id, secondary.wall_thickness),
     )
 
+    # Get individual assembly layers (if available)
+    pri_assembly = (wall_assemblies or {}).get(primary.wall_id)
+    sec_assembly = (wall_assemblies or {}).get(secondary.wall_id)
+
     # Calculate per-layer adjustments
     if join_type == JoinType.BUTT:
         adjustments = _calculate_butt_adjustments(
-            node.id, primary, secondary, pri_layers, sec_layers
+            node.id, primary, secondary, pri_layers, sec_layers,
+            primary_assembly_layers=pri_assembly,
+            secondary_assembly_layers=sec_assembly,
         )
     elif join_type == JoinType.MITER:
         out_a = _outward_direction_at_junction(primary)
@@ -619,6 +772,7 @@ def _resolve_multi_wall_junction(
     default_join_type: str,
     priority_strategy: str,
     override: Optional[Dict],
+    wall_assemblies: Optional[Dict[str, List[Dict]]] = None,
 ) -> List[JunctionResolution]:
     """Resolve a junction with 3+ walls by processing pairwise.
 
@@ -642,7 +796,8 @@ def _resolve_multi_wall_junction(
                 connections=list(pair),
             )
             res = _resolve_two_wall_junction(
-                temp_node, wall_layers, default_join_type, priority_strategy, override
+                temp_node, wall_layers, default_join_type,
+                priority_strategy, override, wall_assemblies,
             )
             resolutions.append(res)
     else:
@@ -661,7 +816,8 @@ def _resolve_multi_wall_junction(
                 connections=connections[:2],
             )
             res = _resolve_two_wall_junction(
-                temp_node, wall_layers, default_join_type, priority_strategy, override
+                temp_node, wall_layers, default_join_type,
+                priority_strategy, override, wall_assemblies,
             )
             resolutions.append(res)
 
@@ -705,6 +861,7 @@ def resolve_all_junctions(
     default_join_type: str = "butt",
     priority_strategy: str = "longer_wall",
     user_overrides: Optional[Dict[str, Dict]] = None,
+    wall_assemblies: Optional[Dict[str, List[Dict]]] = None,
 ) -> List[JunctionResolution]:
     """Resolve join type and priority for every junction.
 
@@ -735,7 +892,8 @@ def resolve_all_junctions(
             JunctionType.T_INTERSECTION,
         ):
             resolution = _resolve_two_wall_junction(
-                node, wall_layers, default_join_type, priority_strategy, override
+                node, wall_layers, default_join_type,
+                priority_strategy, override, wall_assemblies,
             )
             resolutions.append(resolution)
 
@@ -744,7 +902,8 @@ def resolve_all_junctions(
             JunctionType.MULTI_WAY,
         ):
             multi_res = _resolve_multi_wall_junction(
-                node, wall_layers, default_join_type, priority_strategy, override
+                node, wall_layers, default_join_type,
+                priority_strategy, override, wall_assemblies,
             )
             resolutions.extend(multi_res)
 
@@ -818,6 +977,9 @@ def analyze_junctions(
     # Build layer info for all walls
     wall_layers = build_wall_layers_map(walls_data, layer_overrides)
 
+    # Build individual assembly layer map (for per-layer cumulative adjustments)
+    wall_assemblies = _build_wall_assemblies_map(walls_data)
+
     # Phase 3+4: Resolve junctions and calculate adjustments
     resolutions = resolve_all_junctions(
         nodes,
@@ -825,6 +987,7 @@ def analyze_junctions(
         default_join_type=default_join_type,
         priority_strategy=priority_strategy,
         user_overrides=user_overrides,
+        wall_assemblies=wall_assemblies,
     )
 
     # Build per-wall adjustment lookup
@@ -835,4 +998,225 @@ def analyze_junctions(
         wall_layers=wall_layers,
         resolutions=resolutions,
         wall_adjustments=wall_adjustments,
+    )
+
+
+def recompute_adjustments(
+    junctions_data: Dict[str, Any],
+    walls_data: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Recompute per-layer adjustments using resolved assembly data.
+
+    Phase 2 of the two-phase junction processing flow:
+
+    - Phase 1 (Junction Analyzer): detect junctions, classify, determine
+      primary/secondary walls. Outputs topology + best-effort adjustments.
+    - Phase 2 (this function): recompute adjustment amounts using the
+      actual assembly layers from enriched ``walls_data``.
+
+    This solves the chicken-and-egg problem where assembly resolution
+    happens after junction detection: the Junction Analyzer runs on
+    raw Revit walls (possibly only a single core layer), while this
+    function runs after ``resolve_all_walls()`` has assigned full
+    multi-layer assemblies.
+
+    Args:
+        junctions_data: Parsed junctions_json dict. Must contain:
+            - ``junctions``: list of node dicts with connections.
+            - ``resolutions``: list of resolution dicts with
+              ``junction_id``, ``join_type``, ``primary_wall_id``,
+              ``secondary_wall_id``.
+        walls_data: Wall dicts **with resolved** ``wall_assembly``.
+            Each wall should have been processed by ``resolve_all_walls()``.
+
+    Returns:
+        Dict mapping wall_id to list of serialized adjustment dicts.
+        Drop-in replacement for ``junctions_data["wall_adjustments"]``.
+    """
+    # Build lookup maps from enriched walls
+    wall_layers = build_wall_layers_map(walls_data)
+    wall_assemblies = _build_wall_assemblies_map(walls_data)
+    wall_lookup: Dict[str, Dict] = {
+        w.get("wall_id", ""): w for w in walls_data
+    }
+
+    # Read topology from junctions_data
+    resolutions_data = junctions_data.get("resolutions", [])
+    junctions_list = junctions_data.get("junctions", [])
+    node_lookup: Dict[str, Dict] = {j["id"]: j for j in junctions_list}
+
+    if not resolutions_data:
+        logger.info("recompute_adjustments: no resolutions in junctions_data")
+        return {}
+
+    logger.info(
+        "recompute_adjustments: %d resolutions, %d walls with assemblies",
+        len(resolutions_data),
+        len(wall_assemblies),
+    )
+
+    all_adjustments: Dict[str, List[LayerAdjustment]] = {}
+
+    for res_data in resolutions_data:
+        junction_id = res_data["junction_id"]
+        join_type = res_data.get("join_type", "butt")
+        primary_wall_id = res_data["primary_wall_id"]
+        secondary_wall_id = res_data["secondary_wall_id"]
+
+        # Find the junction node
+        node_data = node_lookup.get(junction_id)
+        if not node_data:
+            logger.warning(
+                "recompute: junction %s not found in nodes", junction_id
+            )
+            continue
+
+        junction_type = node_data.get("junction_type", "l_corner")
+        connections = node_data.get("connections", [])
+
+        # Find primary and secondary connection dicts
+        primary_conn_data = _find_connection(
+            connections, primary_wall_id, junction_type, is_primary=True
+        )
+        secondary_conn_data = _find_connection(
+            connections, secondary_wall_id, junction_type, is_primary=False
+        )
+
+        if not primary_conn_data or not secondary_conn_data:
+            logger.warning(
+                "recompute: missing connections for junction %s "
+                "(pri=%s, sec=%s)",
+                junction_id, primary_wall_id, secondary_wall_id,
+            )
+            continue
+
+        # Reconstruct minimal WallConnection objects
+        primary_conn = _rebuild_connection(
+            primary_conn_data, wall_lookup.get(primary_wall_id, {})
+        )
+        secondary_conn = _rebuild_connection(
+            secondary_conn_data, wall_lookup.get(secondary_wall_id, {})
+        )
+
+        # Get layer info (now uses assembly data when available)
+        pri_layers = wall_layers.get(
+            primary_wall_id,
+            build_default_wall_layers(primary_wall_id, primary_conn.wall_thickness),
+        )
+        sec_layers = wall_layers.get(
+            secondary_wall_id,
+            build_default_wall_layers(secondary_wall_id, secondary_conn.wall_thickness),
+        )
+
+        # Get individual assembly layers
+        pri_assembly = wall_assemblies.get(primary_wall_id)
+        sec_assembly = wall_assemblies.get(secondary_wall_id)
+
+        # Compute adjustments using the existing calculation functions
+        if junction_type == "t_intersection":
+            adjustments = _calculate_t_intersection_adjustments(
+                junction_id, primary_conn, secondary_conn,
+                pri_layers, sec_layers,
+                continuous_assembly_layers=pri_assembly,
+                terminating_assembly_layers=sec_assembly,
+            )
+        elif join_type == "butt":
+            adjustments = _calculate_butt_adjustments(
+                junction_id, primary_conn, secondary_conn,
+                pri_layers, sec_layers,
+                primary_assembly_layers=pri_assembly,
+                secondary_assembly_layers=sec_assembly,
+            )
+        else:
+            # Miter — skip for recompute (amounts are angle-based, not assembly-based)
+            continue
+
+        # Accumulate adjustments by wall_id
+        for adj in adjustments:
+            if adj.wall_id not in all_adjustments:
+                all_adjustments[adj.wall_id] = []
+            all_adjustments[adj.wall_id].append(adj)
+
+    # Serialize to dict format (matching junctions_json wall_adjustments)
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for wall_id, adjs in all_adjustments.items():
+        result[wall_id] = [_serialize_adjustment(adj) for adj in adjs]
+
+    logger.info(
+        "recompute_adjustments: %d walls, %d total adjustments",
+        len(result),
+        sum(len(v) for v in result.values()),
+    )
+    return result
+
+
+def _find_connection(
+    connections: List[Dict],
+    wall_id: str,
+    junction_type: str,
+    is_primary: bool,
+) -> Optional[Dict]:
+    """Find a connection dict for a wall in the serialized connections list.
+
+    For T-intersections, the primary (continuous) wall may be the
+    midspan connection. For L-corners, prefer non-midspan connections.
+
+    Args:
+        connections: List of serialized connection dicts.
+        wall_id: Wall ID to find.
+        junction_type: Junction type string.
+        is_primary: Whether looking for the primary wall.
+
+    Returns:
+        Connection dict, or None if not found.
+    """
+    # Collect all matches for this wall_id
+    matches = [c for c in connections if c.get("wall_id") == wall_id]
+    if not matches:
+        return None
+
+    if len(matches) == 1:
+        return matches[0]
+
+    # Multiple matches (e.g., T-intersection with midspan + endpoint)
+    if junction_type == "t_intersection" and is_primary:
+        # Primary in T-intersection is the continuous wall (midspan)
+        midspan = [c for c in matches if c.get("is_midspan", False)]
+        if midspan:
+            return midspan[0]
+
+    # Default: prefer non-midspan
+    non_midspan = [c for c in matches if not c.get("is_midspan", False)]
+    return non_midspan[0] if non_midspan else matches[0]
+
+
+def _rebuild_connection(
+    conn_data: Dict,
+    wall_data: Dict,
+) -> WallConnection:
+    """Reconstruct a WallConnection from serialized data + wall lookup.
+
+    The serialized connection has wall_id, end, wall_thickness,
+    is_midspan, is_exterior. Wall length comes from wall_data.
+
+    Args:
+        conn_data: Serialized connection dict from junctions_json.
+        wall_data: Wall dict from enriched walls_data.
+
+    Returns:
+        WallConnection with enough fields for adjustment calculation.
+    """
+    return WallConnection(
+        wall_id=conn_data["wall_id"],
+        end=conn_data["end"],
+        direction=(0.0, 0.0, 0.0),  # Not needed for amount calculation
+        angle_at_junction=0.0,
+        wall_thickness=conn_data.get(
+            "wall_thickness",
+            wall_data.get("wall_thickness", 0.0),
+        ),
+        wall_length=wall_data.get("wall_length", 0.0),
+        is_exterior=conn_data.get("is_exterior", False),
+        is_midspan=conn_data.get("is_midspan", False),
+        midspan_u=conn_data.get("midspan_u"),
     )

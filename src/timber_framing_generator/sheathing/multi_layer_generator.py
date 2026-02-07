@@ -315,15 +315,19 @@ def _get_layer_config(
 def _determine_face(side: str) -> str:
     """Map layer side to sheathing face.
 
+    The face is used as a key into ``face_bounds`` to look up junction
+    adjustments and as the ``face`` tag on generated panels.  Returning
+    the side unchanged ensures that each layer (exterior / core /
+    interior) receives its own junction adjustments rather than core
+    layers silently inheriting exterior bounds.
+
     Args:
         side: Layer side ("exterior", "core", "interior").
 
     Returns:
-        Face string for SheathingGenerator ("exterior" or "interior").
+        The side string unchanged.
     """
-    if side == "interior":
-        return "interior"
-    return "exterior"
+    return side
 
 
 def generate_assembly_layers(
@@ -441,8 +445,12 @@ def generate_assembly_layers(
         layer_override = (layer_configs or {}).get(name)
         layer_config = _get_layer_config(layer, rules_config, layer_override or config)
 
-        # Resolve per-face junction bounds
-        if face_bounds and face in face_bounds:
+        # Resolve per-layer junction bounds.
+        # Try individual layer name first (per-layer cumulative
+        # adjustments), then fall back to aggregate face key.
+        if face_bounds and name in face_bounds:
+            layer_u_start, layer_u_end = face_bounds[name]
+        elif face_bounds and face in face_bounds:
             layer_u_start, layer_u_end = face_bounds[face]
         else:
             layer_u_start = u_start_bound

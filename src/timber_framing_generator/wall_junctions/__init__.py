@@ -36,6 +36,7 @@ from .junction_detector import build_junction_graph
 
 from .junction_resolver import (
     analyze_junctions,
+    recompute_adjustments,
     resolve_all_junctions,
     build_wall_layers_map,
     build_wall_adjustments_map,
@@ -43,8 +44,9 @@ from .junction_resolver import (
 )
 
 __all__ = [
-    # Main entry point
+    # Main entry points
     "analyze_junctions",
+    "recompute_adjustments",
     # Types
     "JunctionType",
     "JoinType",

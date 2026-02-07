@@ -17,13 +17,15 @@ import math
 
 from src.timber_framing_generator.wall_junctions.junction_resolver import (
     analyze_junctions,
+    recompute_adjustments,
     resolve_all_junctions,
     build_wall_layers_map,
     build_default_wall_layers,
     build_wall_adjustments_map,
     _determine_priority,
     _calculate_butt_adjustments,
-    _calculate_butt_adjustments_v2,
+    _ordered_layers_core_outward,
+    _build_layers_from_assembly,
 )
 from src.timber_framing_generator.wall_junctions.junction_detector import (
     build_junction_graph,
@@ -34,10 +36,6 @@ from src.timber_framing_generator.wall_junctions.junction_types import (
     AdjustmentType,
     WallConnection,
     WallLayerInfo,
-    WallLayer,
-    WallAssemblyDef,
-    LayerFunction,
-    LayerSide,
     JunctionGraph,
 )
 
@@ -479,14 +477,14 @@ class TestAnalyzeJunctions:
 # =============================================================================
 
 
-class TestCrossedPattern:
-    """Tests verifying the crossed pattern at L-corner butt joints.
+class TestButtJoinDirections:
+    """Tests verifying primary-dominates pattern at L-corner butt joints.
 
     At a butt joint:
     - Primary exterior EXTENDS (wraps outside corner)
-    - Primary interior TRIMS (secondary's interior covers inside corner)
-    - Secondary exterior TRIMS (butts against primary)
-    - Secondary interior EXTENDS (wraps inside corner)
+    - Primary interior TRIMS (stops at opposing framing face)
+    - Primary core EXTENDS
+    - Secondary ALL layers TRIM (stop at opposing faces)
     """
 
     def test_primary_exterior_extends(self, l_corner_walls):
@@ -534,7 +532,8 @@ class TestCrossedPattern:
         assert len(ext_adj) == 1
         assert ext_adj[0].adjustment_type == AdjustmentType.TRIM
 
-    def test_secondary_interior_extends(self, l_corner_walls):
+    def test_secondary_interior_trims(self, l_corner_walls):
+        """Secondary interior TRIMS (primary covers inside corner)."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -543,7 +542,7 @@ class TestCrossedPattern:
         wall_b_adjs = graph.get_adjustments_for_wall("wall_B")
         int_adj = [a for a in wall_b_adjs if a.layer_name == "interior"]
         assert len(int_adj) == 1
-        assert int_adj[0].adjustment_type == AdjustmentType.EXTEND
+        assert int_adj[0].adjustment_type == AdjustmentType.TRIM
 
     def test_secondary_core_trims(self, l_corner_walls):
         graph = analyze_junctions(
@@ -556,20 +555,22 @@ class TestCrossedPattern:
         assert len(core_adj) == 1
         assert core_adj[0].adjustment_type == AdjustmentType.TRIM
 
-    def test_primary_exterior_extends_by_half_secondary_total(self, l_corner_walls):
+    def test_primary_exterior_amount(self, l_corner_walls):
+        """Primary ext extends by half_sec_core + sec_exterior_thickness."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
             priority_strategy="longer_wall",
         )
-        # Both walls have same thickness (0.3958), so half_total = 0.1979
+        # Default layers for t=0.3958: ext=0.0625, core=0.2917, int=0.0417
         wall_a_adjs = graph.get_adjustments_for_wall("wall_A")
         ext_adj = [a for a in wall_a_adjs if a.layer_name == "exterior"][0]
-        # Secondary total / 2
-        expected = 0.3958 / 2.0
+        layers = build_default_wall_layers("wall_B", 0.3958)
+        expected = layers.core_thickness / 2.0 + layers.exterior_thickness
         assert abs(ext_adj.amount - expected) < 0.001
 
-    def test_secondary_interior_extends_by_half_primary_total(self, l_corner_walls):
+    def test_secondary_interior_trim_amount(self, l_corner_walls):
+        """Secondary int trims by half_pri_core + pri_interior_thickness."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -577,12 +578,12 @@ class TestCrossedPattern:
         )
         wall_b_adjs = graph.get_adjustments_for_wall("wall_B")
         int_adj = [a for a in wall_b_adjs if a.layer_name == "interior"][0]
-        # Primary total / 2
-        expected = 0.3958 / 2.0
+        layers = build_default_wall_layers("wall_A", 0.3958)
+        expected = layers.core_thickness / 2.0 + layers.interior_thickness
         assert abs(int_adj.amount - expected) < 0.001
 
-    def test_crossed_pattern_with_four_room_layout(self, four_room_layout):
-        """Verify crossed pattern holds for all corners in a rectangular room."""
+    def test_directions_with_four_room_layout(self, four_room_layout):
+        """Verify directions hold for all corners in a rectangular room."""
         graph = analyze_junctions(
             four_room_layout,
             default_join_type="butt",
@@ -607,26 +608,34 @@ class TestCrossedPattern:
             assert primary_adjs["core"].adjustment_type == AdjustmentType.EXTEND
             assert primary_adjs["interior"].adjustment_type == AdjustmentType.TRIM
 
-            # Secondary: exterior trims, core trims, interior extends
+            # Secondary: ALL TRIM
             assert secondary_adjs["exterior"].adjustment_type == AdjustmentType.TRIM
             assert secondary_adjs["core"].adjustment_type == AdjustmentType.TRIM
-            assert secondary_adjs["interior"].adjustment_type == AdjustmentType.EXTEND
+            assert secondary_adjs["interior"].adjustment_type == AdjustmentType.TRIM
 
 
 # =============================================================================
-# Multi-Layer (v2) Butt Adjustment Tests
+# Per-Layer Cumulative Adjustment Tests
 # =============================================================================
 
 
-class TestButtAdjustmentsV2:
-    """Tests for _calculate_butt_adjustments_v2 with multi-layer assemblies."""
+class TestPerLayerCumulativeAdjustments:
+    """Tests for per-individual-layer cumulative adjustments.
+
+    When walls have wall_assembly with individual layers, the resolver
+    emits per-layer adjustments with cumulative amounts:
+      primary ext[i]:  EXTEND  half_sec_core + sum(sec_ext[0:i+1])
+      primary int[i]:  TRIM    half_sec_core + sum(sec_int[0:i+1])
+      secondary ext[i]: TRIM   half_pri_core + sum(pri_ext[0:i+1])
+      secondary int[i]: TRIM   half_pri_core + sum(pri_int[0:i+1])
+    """
 
     @pytest.fixture
     def primary_conn(self):
         return WallConnection(
             wall_id="wall_A", end="end",
             direction=(1, 0, 0), angle_at_junction=0.0,
-            wall_thickness=0.40, wall_length=20.0,
+            wall_thickness=0.50, wall_length=20.0,
         )
 
     @pytest.fixture
@@ -634,124 +643,611 @@ class TestButtAdjustmentsV2:
         return WallConnection(
             wall_id="wall_B", end="start",
             direction=(0, 1, 0), angle_at_junction=90.0,
-            wall_thickness=0.40, wall_length=15.0,
+            wall_thickness=0.50, wall_length=15.0,
         )
 
     @pytest.fixture
-    def test_assembly(self):
-        """4-layer assembly for testing."""
-        return WallAssemblyDef(
-            name="test",
-            layers=[
-                WallLayer("siding", LayerFunction.FINISH,
-                          LayerSide.EXTERIOR, thickness=0.04),
-                WallLayer("sheathing", LayerFunction.SUBSTRATE,
-                          LayerSide.EXTERIOR, thickness=0.04),
-                WallLayer("framing", LayerFunction.STRUCTURE,
-                          LayerSide.CORE, thickness=0.29),
-                WallLayer("drywall", LayerFunction.FINISH,
-                          LayerSide.INTERIOR, thickness=0.04),
-            ],
-        )
-
-    def test_v2_produces_per_layer_adjustments(
-        self, primary_conn, secondary_conn, test_assembly
-    ):
-        adjs = _calculate_butt_adjustments_v2(
-            "j0", primary_conn, secondary_conn,
-            test_assembly, test_assembly,
-        )
-        # Should have: 4 per-layer for primary + 4 per-layer for secondary
-        # + 3 legacy for primary + 3 legacy for secondary = 14
-        assert len(adjs) == 14
-
-    def test_v2_primary_exterior_layers_extend(
-        self, primary_conn, secondary_conn, test_assembly
-    ):
-        adjs = _calculate_butt_adjustments_v2(
-            "j0", primary_conn, secondary_conn,
-            test_assembly, test_assembly,
-        )
-        # Per-layer: siding and sheathing (both exterior-side) should EXTEND
-        primary_per_layer = [
-            a for a in adjs
-            if a.wall_id == "wall_A" and a.layer_name in ("siding", "sheathing")
+    def assembly_layers_6in(self):
+        """Assembly: 2 ext layers + 6" core + 1 int layer."""
+        return [
+            {"name": "siding", "function": "finish", "side": "exterior",
+             "thickness": 1.0 / 24},      # 0.5"
+            {"name": "sheathing", "function": "substrate", "side": "exterior",
+             "thickness": 1.0 / 24},      # 0.5"
+            {"name": "framing", "function": "structure", "side": "core",
+             "thickness": 6.0 / 12},      # 6"
+            {"name": "gypsum", "function": "finish", "side": "interior",
+             "thickness": 1.0 / 24},      # 0.5"
         ]
-        assert len(primary_per_layer) == 2
-        for a in primary_per_layer:
-            assert a.adjustment_type == AdjustmentType.EXTEND
 
-    def test_v2_primary_interior_layers_trim(
-        self, primary_conn, secondary_conn, test_assembly
-    ):
-        adjs = _calculate_butt_adjustments_v2(
-            "j0", primary_conn, secondary_conn,
-            test_assembly, test_assembly,
-        )
-        # Drywall (interior-side) should TRIM
-        primary_drywall = [
-            a for a in adjs
-            if a.wall_id == "wall_A" and a.layer_name == "drywall"
+    @pytest.fixture
+    def assembly_layers_3_5in(self):
+        """Assembly: 2 ext layers + 3.5" core + 1 int layer."""
+        return [
+            {"name": "siding", "function": "finish", "side": "exterior",
+             "thickness": 1.0 / 24},      # 0.5"
+            {"name": "sheathing", "function": "substrate", "side": "exterior",
+             "thickness": 1.0 / 24},      # 0.5"
+            {"name": "framing", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12},      # 3.5"
+            {"name": "gypsum", "function": "finish", "side": "interior",
+             "thickness": 1.0 / 24},      # 0.5"
         ]
-        assert len(primary_drywall) == 1
-        assert primary_drywall[0].adjustment_type == AdjustmentType.TRIM
 
-    def test_v2_secondary_interior_layers_extend(
-        self, primary_conn, secondary_conn, test_assembly
-    ):
-        adjs = _calculate_butt_adjustments_v2(
-            "j0", primary_conn, secondary_conn,
-            test_assembly, test_assembly,
+    @pytest.fixture
+    def layers_6in(self):
+        return WallLayerInfo(
+            wall_id="wall_A", total_thickness=0.50,
+            exterior_thickness=2.0 / 24, core_thickness=6.0 / 12,
+            interior_thickness=1.0 / 24, source="test",
         )
-        # Secondary drywall (interior-side) should EXTEND
-        sec_drywall = [
-            a for a in adjs
-            if a.wall_id == "wall_B" and a.layer_name == "drywall"
-        ]
-        assert len(sec_drywall) == 1
-        assert sec_drywall[0].adjustment_type == AdjustmentType.EXTEND
 
-    def test_v2_includes_legacy_adjustments(
-        self, primary_conn, secondary_conn, test_assembly
-    ):
-        adjs = _calculate_butt_adjustments_v2(
-            "j0", primary_conn, secondary_conn,
-            test_assembly, test_assembly,
+    @pytest.fixture
+    def layers_3_5in(self):
+        return WallLayerInfo(
+            wall_id="wall_B", total_thickness=0.50,
+            exterior_thickness=2.0 / 24, core_thickness=3.5 / 12,
+            interior_thickness=1.0 / 24, source="test",
         )
-        # Legacy names should be present for backward compatibility
-        legacy_names = {"core", "exterior", "interior"}
-        primary_legacy = [
-            a for a in adjs
-            if a.wall_id == "wall_A" and a.layer_name in legacy_names
-        ]
-        assert len(primary_legacy) == 3
 
-        secondary_legacy = [
-            a for a in adjs
-            if a.wall_id == "wall_B" and a.layer_name in legacy_names
-        ]
-        assert len(secondary_legacy) == 3
-
-    def test_v2_legacy_crossed_pattern(
-        self, primary_conn, secondary_conn, test_assembly
+    def test_per_layer_count(
+        self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
+        assembly_layers_6in, assembly_layers_3_5in,
     ):
-        adjs = _calculate_butt_adjustments_v2(
-            "j0", primary_conn, secondary_conn,
-            test_assembly, test_assembly,
+        """Should emit 1 core + 2 ext + 1 int per wall = 8 total."""
+        adjs = _calculate_butt_adjustments(
+            "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
+            primary_assembly_layers=assembly_layers_6in,
+            secondary_assembly_layers=assembly_layers_3_5in,
         )
-        # Legacy adjustments should follow crossed pattern
-        pri_legacy = {
-            a.layer_name: a for a in adjs
-            if a.wall_id == "wall_A" and a.layer_name in ("core", "exterior", "interior")
+        # Primary: core + sheathing + siding + gypsum = 4
+        # Secondary: core + sheathing + siding + gypsum = 4
+        assert len(adjs) == 8
+
+    def test_primary_ext_cumulative_amounts(
+        self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
+        assembly_layers_6in, assembly_layers_3_5in,
+    ):
+        """Primary ext layers extend by half_sec_core + cumulative sec ext."""
+        adjs = _calculate_butt_adjustments(
+            "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
+            primary_assembly_layers=assembly_layers_6in,
+            secondary_assembly_layers=assembly_layers_3_5in,
+        )
+        half_sec_core = (3.5 / 12) / 2.0  # secondary has 3.5" core
+        sec_ext_1 = 1.0 / 24  # secondary sheathing (closest to core)
+        sec_ext_2 = 1.0 / 24  # secondary siding
+
+        pri_ext = [a for a in adjs if a.wall_id == "wall_A"
+                   and a.layer_name in ("sheathing", "siding")]
+        # Order: sheathing (closest to core) then siding
+        sheathing_adj = [a for a in pri_ext if a.layer_name == "sheathing"][0]
+        siding_adj = [a for a in pri_ext if a.layer_name == "siding"][0]
+
+        assert sheathing_adj.adjustment_type == AdjustmentType.EXTEND
+        assert abs(sheathing_adj.amount - (half_sec_core + sec_ext_1)) < 0.0001
+
+        assert siding_adj.adjustment_type == AdjustmentType.EXTEND
+        assert abs(siding_adj.amount - (half_sec_core + sec_ext_1 + sec_ext_2)) < 0.0001
+
+    def test_primary_int_cumulative_amounts(
+        self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
+        assembly_layers_6in, assembly_layers_3_5in,
+    ):
+        """Primary int layers trim by half_sec_core + cumulative sec int."""
+        adjs = _calculate_butt_adjustments(
+            "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
+            primary_assembly_layers=assembly_layers_6in,
+            secondary_assembly_layers=assembly_layers_3_5in,
+        )
+        half_sec_core = (3.5 / 12) / 2.0
+        sec_int_1 = 1.0 / 24  # secondary gypsum
+
+        gypsum_adj = [a for a in adjs if a.wall_id == "wall_A"
+                      and a.layer_name == "gypsum"][0]
+        assert gypsum_adj.adjustment_type == AdjustmentType.TRIM
+        assert abs(gypsum_adj.amount - (half_sec_core + sec_int_1)) < 0.0001
+
+    def test_secondary_all_trim(
+        self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
+        assembly_layers_6in, assembly_layers_3_5in,
+    ):
+        """All secondary layers should TRIM."""
+        adjs = _calculate_butt_adjustments(
+            "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
+            primary_assembly_layers=assembly_layers_6in,
+            secondary_assembly_layers=assembly_layers_3_5in,
+        )
+        sec_adjs = [a for a in adjs if a.wall_id == "wall_B"]
+        assert all(a.adjustment_type == AdjustmentType.TRIM for a in sec_adjs)
+
+    def test_secondary_ext_cumulative_amounts(
+        self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
+        assembly_layers_6in, assembly_layers_3_5in,
+    ):
+        """Secondary ext layers trim by half_pri_core + cumulative pri ext."""
+        adjs = _calculate_butt_adjustments(
+            "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
+            primary_assembly_layers=assembly_layers_6in,
+            secondary_assembly_layers=assembly_layers_3_5in,
+        )
+        half_pri_core = (6.0 / 12) / 2.0  # primary has 6" core
+        pri_ext_1 = 1.0 / 24  # primary sheathing
+        pri_ext_2 = 1.0 / 24  # primary siding
+
+        sec_ext = [a for a in adjs if a.wall_id == "wall_B"
+                   and a.layer_name in ("sheathing", "siding")]
+        sheathing_adj = [a for a in sec_ext if a.layer_name == "sheathing"][0]
+        siding_adj = [a for a in sec_ext if a.layer_name == "siding"][0]
+
+        assert abs(sheathing_adj.amount - (half_pri_core + pri_ext_1)) < 0.0001
+        assert abs(siding_adj.amount - (half_pri_core + pri_ext_1 + pri_ext_2)) < 0.0001
+
+    def test_secondary_int_cumulative_amounts(
+        self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
+        assembly_layers_6in, assembly_layers_3_5in,
+    ):
+        """Secondary int trims by half_pri_core + cumulative pri int."""
+        adjs = _calculate_butt_adjustments(
+            "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
+            primary_assembly_layers=assembly_layers_6in,
+            secondary_assembly_layers=assembly_layers_3_5in,
+        )
+        half_pri_core = (6.0 / 12) / 2.0
+        pri_int_1 = 1.0 / 24  # primary gypsum
+
+        gypsum_adj = [a for a in adjs if a.wall_id == "wall_B"
+                      and a.layer_name == "gypsum"][0]
+        assert abs(gypsum_adj.amount - (half_pri_core + pri_int_1)) < 0.0001
+
+    def test_asymmetric_layer_counts(self):
+        """Wall with 3 ext layers vs wall with 1 ext layer."""
+        conn_a = WallConnection(
+            wall_id="wall_A", end="end", direction=(1, 0, 0),
+            angle_at_junction=0.0, wall_thickness=0.5, wall_length=20.0,
+        )
+        conn_b = WallConnection(
+            wall_id="wall_B", end="start", direction=(0, 1, 0),
+            angle_at_junction=90.0, wall_thickness=0.5, wall_length=15.0,
+        )
+        layers_a = WallLayerInfo(
+            wall_id="wall_A", total_thickness=0.5,
+            exterior_thickness=3.0 / 24, core_thickness=3.5 / 12,
+            interior_thickness=1.0 / 24, source="test",
+        )
+        layers_b = WallLayerInfo(
+            wall_id="wall_B", total_thickness=0.5,
+            exterior_thickness=1.0 / 24, core_thickness=3.5 / 12,
+            interior_thickness=1.0 / 24, source="test",
+        )
+        assembly_a = [
+            {"name": "siding", "side": "exterior", "thickness": 1.0 / 24},
+            {"name": "sheathing", "side": "exterior", "thickness": 1.0 / 24},
+            {"name": "foam", "side": "exterior", "thickness": 1.0 / 24},
+            {"name": "framing", "side": "core", "thickness": 3.5 / 12},
+            {"name": "gypsum", "side": "interior", "thickness": 1.0 / 24},
+        ]
+        assembly_b = [
+            {"name": "osb", "side": "exterior", "thickness": 1.0 / 24},
+            {"name": "framing", "side": "core", "thickness": 3.5 / 12},
+            {"name": "gypsum", "side": "interior", "thickness": 1.0 / 24},
+        ]
+
+        adjs = _calculate_butt_adjustments(
+            "j0", conn_a, conn_b, layers_a, layers_b,
+            primary_assembly_layers=assembly_a,
+            secondary_assembly_layers=assembly_b,
+        )
+
+        # Primary (wall_A) has 3 ext layers.  Secondary (wall_B) has 1.
+        # pri ext[0] "foam":      half_sec_core + sec_osb_thickness
+        # pri ext[1] "sheathing": half_sec_core + sec_osb_thickness (no sec ext[1])
+        # pri ext[2] "siding":    half_sec_core + sec_osb_thickness (no sec ext[2])
+        half_sec_core = (3.5 / 12) / 2.0
+        osb_t = 1.0 / 24
+
+        pri_foam = [a for a in adjs if a.wall_id == "wall_A"
+                    and a.layer_name == "foam"][0]
+        pri_sheathing = [a for a in adjs if a.wall_id == "wall_A"
+                         and a.layer_name == "sheathing"][0]
+        pri_siding = [a for a in adjs if a.wall_id == "wall_A"
+                      and a.layer_name == "siding"][0]
+
+        # foam (ext[0]): cumulative = osb_t
+        assert abs(pri_foam.amount - (half_sec_core + osb_t)) < 0.0001
+        # sheathing (ext[1]): no sec_ext[1], cumulative stays osb_t
+        assert abs(pri_sheathing.amount - (half_sec_core + osb_t)) < 0.0001
+        # siding (ext[2]): same
+        assert abs(pri_siding.amount - (half_sec_core + osb_t)) < 0.0001
+
+    def test_fallback_without_assembly(self):
+        """Without assembly layers, falls back to 3-aggregate."""
+        conn_a = WallConnection(
+            wall_id="wall_A", end="end", direction=(1, 0, 0),
+            angle_at_junction=0.0, wall_thickness=0.40, wall_length=20.0,
+        )
+        conn_b = WallConnection(
+            wall_id="wall_B", end="start", direction=(0, 1, 0),
+            angle_at_junction=90.0, wall_thickness=0.40, wall_length=15.0,
+        )
+        layers_a = build_default_wall_layers("wall_A", 0.40)
+        layers_b = build_default_wall_layers("wall_B", 0.40)
+
+        adjs = _calculate_butt_adjustments(
+            "j0", conn_a, conn_b, layers_a, layers_b,
+        )
+        # Should produce 6 adjustments (3 per wall)
+        assert len(adjs) == 6
+        names = {a.layer_name for a in adjs}
+        assert names == {"core", "exterior", "interior"}
+
+
+class TestOrderedLayersCoreOutward:
+    """Tests for _ordered_layers_core_outward helper."""
+
+    def test_exterior_layers_reversed(self):
+        assembly = [
+            {"name": "siding", "side": "exterior"},
+            {"name": "sheathing", "side": "exterior"},
+            {"name": "framing", "side": "core"},
+            {"name": "gypsum", "side": "interior"},
+        ]
+        result = _ordered_layers_core_outward(assembly, "exterior")
+        assert [l["name"] for l in result] == ["sheathing", "siding"]
+
+    def test_interior_layers_not_reversed(self):
+        assembly = [
+            {"name": "sheathing", "side": "exterior"},
+            {"name": "framing", "side": "core"},
+            {"name": "gypsum", "side": "interior"},
+            {"name": "paint", "side": "interior"},
+        ]
+        result = _ordered_layers_core_outward(assembly, "interior")
+        assert [l["name"] for l in result] == ["gypsum", "paint"]
+
+    def test_empty_side(self):
+        assembly = [
+            {"name": "framing", "side": "core"},
+        ]
+        result = _ordered_layers_core_outward(assembly, "exterior")
+        assert result == []
+
+
+# =============================================================================
+# Build Layers From Assembly Tests
+# =============================================================================
+
+
+class TestBuildLayersFromAssembly:
+    """Tests for _build_layers_from_assembly and updated build_wall_layers_map."""
+
+    def test_assembly_layers_used_over_defaults(self):
+        """When wall has wall_assembly, use real layer thicknesses."""
+        walls = [{
+            "wall_id": "W1",
+            "wall_thickness": 0.5,
+            "wall_assembly": {
+                "layers": [
+                    {"name": "siding", "side": "exterior", "thickness": 0.03},
+                    {"name": "osb", "side": "exterior", "thickness": 0.036},
+                    {"name": "studs", "side": "core", "thickness": 0.292},
+                    {"name": "gyp", "side": "interior", "thickness": 0.042},
+                ],
+            },
+        }]
+        result = build_wall_layers_map(walls)
+        info = result["W1"]
+        assert info.source == "assembly"
+        assert abs(info.exterior_thickness - 0.066) < 0.001
+        assert abs(info.core_thickness - 0.292) < 0.001
+        assert abs(info.interior_thickness - 0.042) < 0.001
+
+    def test_no_assembly_falls_back_to_defaults(self):
+        """Without wall_assembly, use proportionally scaled defaults."""
+        walls = [{"wall_id": "W1", "wall_thickness": 0.4}]
+        result = build_wall_layers_map(walls)
+        assert result["W1"].source == "default"
+
+    def test_override_takes_priority_over_assembly(self):
+        """Layer overrides have highest priority."""
+        walls = [{
+            "wall_id": "W1",
+            "wall_thickness": 0.5,
+            "wall_assembly": {
+                "layers": [
+                    {"name": "studs", "side": "core", "thickness": 0.292},
+                ],
+            },
+        }]
+        overrides = {"W1": {"core_thickness": 0.458}}
+        result = build_wall_layers_map(walls, layer_overrides=overrides)
+        assert result["W1"].source == "override"
+        assert abs(result["W1"].core_thickness - 0.458) < 0.001
+
+
+# =============================================================================
+# Recompute Adjustments Tests
+# =============================================================================
+
+
+def _make_assembly(ext_layers, core_thickness, int_layers):
+    """Helper to build a wall_assembly dict.
+
+    Args:
+        ext_layers: List of (name, thickness) tuples for exterior layers.
+        core_thickness: Core layer thickness.
+        int_layers: List of (name, thickness) tuples for interior layers.
+
+    Returns:
+        Assembly dict with layers list.
+    """
+    layers = []
+    for name, thick in ext_layers:
+        layers.append({
+            "name": name, "side": "exterior",
+            "function": "substrate", "thickness": thick,
+        })
+    layers.append({
+        "name": "framing_core", "side": "core",
+        "function": "structure", "thickness": core_thickness,
+    })
+    for name, thick in int_layers:
+        layers.append({
+            "name": name, "side": "interior",
+            "function": "finish", "thickness": thick,
+        })
+    return {"layers": layers}
+
+
+class TestRecomputeAdjustments:
+    """Tests for the Phase 2 recompute_adjustments() function."""
+
+    def _make_l_corner_junctions_data(self):
+        """Create a minimal junctions_json dict for an L-corner."""
+        return {
+            "version": "1.1",
+            "junction_count": 1,
+            "junctions": [{
+                "id": "junction_0",
+                "position": {"x": 0, "y": 0, "z": 0},
+                "junction_type": "l_corner",
+                "connections": [
+                    {
+                        "wall_id": "W_PRI",
+                        "end": "end",
+                        "is_midspan": False,
+                        "midspan_u": None,
+                        "wall_thickness": 0.333,
+                        "is_exterior": True,
+                    },
+                    {
+                        "wall_id": "W_SEC",
+                        "end": "start",
+                        "is_midspan": False,
+                        "midspan_u": None,
+                        "wall_thickness": 0.5,
+                        "is_exterior": True,
+                    },
+                ],
+            }],
+            "resolutions": [{
+                "junction_id": "junction_0",
+                "join_type": "butt",
+                "primary_wall_id": "W_PRI",
+                "secondary_wall_id": "W_SEC",
+                "confidence": 0.7,
+                "reason": "test",
+                "is_user_override": False,
+            }],
+            "wall_adjustments": {},
         }
-        assert pri_legacy["exterior"].adjustment_type == AdjustmentType.EXTEND
-        assert pri_legacy["core"].adjustment_type == AdjustmentType.EXTEND
-        assert pri_legacy["interior"].adjustment_type == AdjustmentType.TRIM
 
-        sec_legacy = {
-            a.layer_name: a for a in adjs
-            if a.wall_id == "wall_B" and a.layer_name in ("core", "exterior", "interior")
+    def _make_enriched_walls(self):
+        """Create enriched walls with resolved assemblies.
+
+        Wall W_PRI: 2x4 (core=3.5"/12), OSB ext (7/16"/12), gyp int (1/2"/12)
+        Wall W_SEC: 2x6 (core=5.5"/12), OSB ext (7/16"/12), gyp int (1/2"/12)
+        """
+        return [
+            {
+                "wall_id": "W_PRI",
+                "wall_thickness": 0.333,
+                "wall_length": 20.0,
+                "wall_assembly": _make_assembly(
+                    ext_layers=[("OSB Sheathing", 7 / 16 / 12)],
+                    core_thickness=3.5 / 12,
+                    int_layers=[("Gypsum Board", 0.5 / 12)],
+                ),
+            },
+            {
+                "wall_id": "W_SEC",
+                "wall_thickness": 0.5,
+                "wall_length": 10.0,
+                "wall_assembly": _make_assembly(
+                    ext_layers=[("OSB Sheathing", 7 / 16 / 12)],
+                    core_thickness=5.5 / 12,
+                    int_layers=[("Gypsum Board", 0.5 / 12)],
+                ),
+            },
+        ]
+
+    def test_recompute_produces_per_layer_adjustments(self):
+        """With assemblies, recompute emits per-individual-layer adjustments."""
+        junctions_data = self._make_l_corner_junctions_data()
+        walls = self._make_enriched_walls()
+        result = recompute_adjustments(junctions_data, walls)
+
+        # Both walls should have adjustments
+        assert "W_PRI" in result
+        assert "W_SEC" in result
+
+        # Per-layer: core + OSB + Gypsum = 3 per wall = 6 total
+        pri_names = [a["layer_name"] for a in result["W_PRI"]]
+        assert "core" in pri_names
+        assert "OSB Sheathing" in pri_names
+        assert "Gypsum Board" in pri_names
+
+    def test_recompute_uses_real_thicknesses(self):
+        """Adjustment amounts should use assembly core thickness, not scaled defaults."""
+        junctions_data = self._make_l_corner_junctions_data()
+        walls = self._make_enriched_walls()
+        result = recompute_adjustments(junctions_data, walls)
+
+        # Primary core extends by half of secondary's core
+        # Secondary core = 5.5/12 = 0.4583 ft → half = 0.2292 ft
+        pri_core = [a for a in result["W_PRI"]
+                     if a["layer_name"] == "core"][0]
+        assert pri_core["adjustment_type"] == "extend"
+        assert abs(pri_core["amount"] - (5.5 / 12 / 2)) < 0.001
+
+        # Secondary core trims by half of primary's core
+        # Primary core = 3.5/12 = 0.2917 ft → half = 0.1458 ft
+        sec_core = [a for a in result["W_SEC"]
+                     if a["layer_name"] == "core"][0]
+        assert sec_core["adjustment_type"] == "trim"
+        assert abs(sec_core["amount"] - (3.5 / 12 / 2)) < 0.001
+
+    def test_recompute_primary_ext_cumulative(self):
+        """Primary exterior extends by half_sec_core + sec_ext_thickness."""
+        junctions_data = self._make_l_corner_junctions_data()
+        walls = self._make_enriched_walls()
+        result = recompute_adjustments(junctions_data, walls)
+
+        pri_osb = [a for a in result["W_PRI"]
+                    if a["layer_name"] == "OSB Sheathing"][0]
+        expected = (5.5 / 12 / 2) + (7 / 16 / 12)
+        assert pri_osb["adjustment_type"] == "extend"
+        assert abs(pri_osb["amount"] - expected) < 0.001
+
+    def test_recompute_secondary_all_trim(self):
+        """All secondary layers should trim."""
+        junctions_data = self._make_l_corner_junctions_data()
+        walls = self._make_enriched_walls()
+        result = recompute_adjustments(junctions_data, walls)
+
+        for adj in result["W_SEC"]:
+            assert adj["adjustment_type"] == "trim"
+
+    def test_recompute_no_assemblies_uses_aggregate(self):
+        """Without assemblies, falls back to aggregate adjustments."""
+        junctions_data = self._make_l_corner_junctions_data()
+        walls = [
+            {"wall_id": "W_PRI", "wall_thickness": 0.333, "wall_length": 20.0},
+            {"wall_id": "W_SEC", "wall_thickness": 0.5, "wall_length": 10.0},
+        ]
+        result = recompute_adjustments(junctions_data, walls)
+
+        # Should still produce adjustments (3 per wall)
+        assert len(result["W_PRI"]) == 3
+        assert len(result["W_SEC"]) == 3
+        # Aggregate names: core, exterior, interior
+        pri_names = sorted(a["layer_name"] for a in result["W_PRI"])
+        assert pri_names == ["core", "exterior", "interior"]
+
+    def test_recompute_empty_resolutions(self):
+        """No resolutions → empty result."""
+        junctions_data = {"junctions": [], "resolutions": []}
+        result = recompute_adjustments(junctions_data, [])
+        assert result == {}
+
+    def test_round_trip_analyze_then_recompute(self):
+        """Round-trip: analyze_junctions → to_dict → recompute.
+
+        Verifies that recompute produces the same adjustments as the
+        original analyze_junctions when using the same wall data.
+        """
+        from tests.wall_junctions.conftest import create_mock_wall
+
+        # Two walls at an L-corner with assemblies
+        wall_a = create_mock_wall("A", (0, 0, 0), (10, 0, 0), thickness=0.333)
+        wall_b = create_mock_wall("B", (10, 0, 0), (10, 10, 0), thickness=0.5)
+        wall_a["wall_assembly"] = _make_assembly(
+            [("OSB", 0.036)], 0.292, [("Gyp", 0.042)]
+        )
+        wall_b["wall_assembly"] = _make_assembly(
+            [("OSB", 0.036)], 0.458, [("Gyp", 0.042)]
+        )
+        walls = [wall_a, wall_b]
+
+        # Phase 1: full analysis
+        graph = analyze_junctions(walls)
+        original_json = graph.to_dict()
+
+        # Phase 2: recompute from serialized topology
+        recomputed = recompute_adjustments(original_json, walls)
+
+        # Compare: same walls, same adjustment counts
+        orig_adj = original_json["wall_adjustments"]
+        for wall_id in orig_adj:
+            assert wall_id in recomputed
+            assert len(recomputed[wall_id]) == len(orig_adj[wall_id])
+
+            # Same amounts (within floating point tolerance)
+            for orig, recomp in zip(orig_adj[wall_id], recomputed[wall_id]):
+                assert orig["layer_name"] == recomp["layer_name"]
+                assert orig["adjustment_type"] == recomp["adjustment_type"]
+                assert abs(orig["amount"] - recomp["amount"]) < 1e-6
+
+    def test_t_intersection_recompute(self):
+        """Recompute works for T-intersections."""
+        junctions_data = {
+            "junctions": [{
+                "id": "j0",
+                "position": {"x": 5, "y": 0, "z": 0},
+                "junction_type": "t_intersection",
+                "connections": [
+                    {
+                        "wall_id": "CONT",
+                        "end": "midspan",
+                        "is_midspan": True,
+                        "midspan_u": 5.0,
+                        "wall_thickness": 0.333,
+                        "is_exterior": True,
+                    },
+                    {
+                        "wall_id": "TERM",
+                        "end": "start",
+                        "is_midspan": False,
+                        "midspan_u": None,
+                        "wall_thickness": 0.5,
+                        "is_exterior": True,
+                    },
+                ],
+            }],
+            "resolutions": [{
+                "junction_id": "j0",
+                "join_type": "butt",
+                "primary_wall_id": "CONT",
+                "secondary_wall_id": "TERM",
+                "confidence": 0.95,
+                "reason": "T-intersection",
+                "is_user_override": False,
+            }],
         }
-        assert sec_legacy["exterior"].adjustment_type == AdjustmentType.TRIM
-        assert sec_legacy["core"].adjustment_type == AdjustmentType.TRIM
-        assert sec_legacy["interior"].adjustment_type == AdjustmentType.EXTEND
+        walls = [
+            {
+                "wall_id": "CONT", "wall_thickness": 0.333, "wall_length": 20.0,
+                "wall_assembly": _make_assembly(
+                    [("OSB", 0.036)], 0.292, [("Gyp", 0.042)]
+                ),
+            },
+            {
+                "wall_id": "TERM", "wall_thickness": 0.5, "wall_length": 10.0,
+                "wall_assembly": _make_assembly(
+                    [("OSB", 0.036)], 0.458, [("Gyp", 0.042)]
+                ),
+            },
+        ]
+        result = recompute_adjustments(junctions_data, walls)
+
+        # Only terminating wall gets adjustments (T-intersection)
+        assert "CONT" not in result
+        assert "TERM" in result
+
+        # All TERM adjustments are trim
+        for adj in result["TERM"]:
+            assert adj["adjustment_type"] == "trim"
+
+        # TERM core trims by half of continuous core
+        term_core = [a for a in result["TERM"] if a["layer_name"] == "core"][0]
+        assert abs(term_core["amount"] - 0.292 / 2) < 0.001

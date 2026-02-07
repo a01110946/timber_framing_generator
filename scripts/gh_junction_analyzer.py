@@ -129,23 +129,41 @@ from Grasshopper import DataTree
 from Grasshopper.Kernel.Data import GH_Path
 
 # =============================================================================
-# Force Module Reload (CPython 3 in Rhino 8)
-# =============================================================================
-
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
-for mod in _modules_to_clear:
-    del sys.modules[mod]
-
-# =============================================================================
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path (contains wall_junctions fixes, etc.)
+# Fallback: main repo path (for when this file is used from the main checkout)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+# =============================================================================
+# Force Module Reload (CPython 3 in Rhino 8)
+# =============================================================================
+
+# Clear timber_framing_generator modules AND the 'src' package itself.
+# Other GH components may have already imported 'src', caching its
+# __path__ to the main repo.  Clearing it forces Python to re-resolve
+# 'src' from the updated sys.path (worktree at index 0).
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k
+                     or k == 'src']
+for mod in _modules_to_clear:
+    del sys.modules[mod]
+
+# Ensure worktree path has highest priority (index 0) in sys.path.
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.wall_junctions import analyze_junctions
 from src.timber_framing_generator.utils.geometry_factory import get_factory
+from src.timber_framing_generator.config.assembly_resolver import (
+    resolve_all_walls,
+    summarize_resolutions,
+)
 
 # =============================================================================
 # Constants
@@ -153,7 +171,10 @@ from src.timber_framing_generator.utils.geometry_factory import get_factory
 
 COMPONENT_NAME = "Junction Analyzer"
 COMPONENT_NICKNAME = "JnxAnl"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v1.2-diag"
+
+# Version marker — confirms the updated script is running in GH
+print("[JnxAnl] Script version v1.1-diag loaded (worktree path + assembly resolution + diagnostics)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "0-Analysis"
 
@@ -472,19 +493,25 @@ def _extract_point(wall: dict, key: str) -> tuple:
     return None
 
 
-def build_summary_text(graph) -> str:
+def build_summary_text(graph, walls_data: list = None) -> str:
     """Build a human-readable summary string from the junction graph.
+
+    Includes detailed diagnostics for each junction: endpoint positions,
+    distances, assembly layers detected, and resulting adjustments.
 
     Args:
         graph: JunctionGraph with nodes, resolutions, and adjustments.
+        walls_data: Optional wall data list for assembly inspection.
 
     Returns:
         Formatted summary string.
     """
+    import math
+
     stats = graph._build_summary()
 
     lines = [
-        "=== Junction Analysis Summary ===",
+        "=== Junction Analysis Summary (v1.1) ===",
         "",
         f"Total Junctions: {stats['total_junctions']}",
         f"  L-Corners:        {stats['l_corners']}",
@@ -496,24 +523,101 @@ def build_summary_text(graph) -> str:
         "",
         f"Resolutions: {stats['total_resolutions']}",
         f"User Overrides Applied: {stats['user_overrides_applied']}",
-        "",
         f"Walls with Adjustments: {len(graph.wall_adjustments)}",
     ]
+
+    # Build wall assembly lookup for diagnostics
+    wall_assembly_map = {}
+    if walls_data:
+        for w in walls_data:
+            wid = w.get("wall_id", "")
+            wall_assembly_map[wid] = w.get("wall_assembly")
+
+    # Detailed junction diagnostics
+    lines.append("")
+    lines.append("=== JUNCTION DETAILS ===")
+    for node in graph.nodes.values():
+        pos = node.position
+        lines.append(
+            f"\n[{node.id}] type={node.junction_type.value} "
+            f"pos=({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f})"
+        )
+
+        # Show each connection
+        for i, conn in enumerate(node.connections):
+            lines.append(
+                f"  conn[{i}]: wall={conn.wall_id} end={conn.end} "
+                f"thick={conn.wall_thickness:.4f} len={conn.wall_length:.4f} "
+                f"dir=({conn.direction[0]:.3f},{conn.direction[1]:.3f},{conn.direction[2]:.3f}) "
+                f"midspan={conn.is_midspan}"
+            )
+
+        # Show pairwise endpoint distances
+        if len(node.connections) >= 2:
+            for i in range(len(node.connections)):
+                for j in range(i + 1, len(node.connections)):
+                    ci = node.connections[i]
+                    cj = node.connections[j]
+                    # Distance is not directly available; we log junction-level info
+                    lines.append(
+                        f"  pair: {ci.wall_id}/{ci.end} <-> "
+                        f"{cj.wall_id}/{cj.end} "
+                        f"thick_sum/2={(ci.wall_thickness + cj.wall_thickness)/2:.4f}"
+                    )
+
+        # Show assembly layers for each wall in this junction
+        for conn in node.connections:
+            assembly = wall_assembly_map.get(conn.wall_id)
+            if assembly and assembly.get("layers"):
+                al_lines = []
+                for al in assembly["layers"]:
+                    al_lines.append(
+                        f"{al.get('name','?')} "
+                        f"[{al.get('side','?')}/{al.get('function','?')}] "
+                        f"t={al.get('thickness',0):.4f}"
+                    )
+                lines.append(
+                    f"  assembly({conn.wall_id}): {len(assembly['layers'])} layers"
+                )
+                for al_line in al_lines:
+                    lines.append(f"    {al_line}")
+            else:
+                lines.append(
+                    f"  assembly({conn.wall_id}): NONE (will use fallback)"
+                )
+
+    # Detailed resolution diagnostics
+    lines.append("")
+    lines.append("=== RESOLUTION DETAILS ===")
+    for res in graph.resolutions:
+        lines.append(
+            f"\n[{res.junction_id}] join={res.join_type.value} "
+            f"primary={res.primary_wall_id} secondary={res.secondary_wall_id} "
+            f"conf={res.confidence:.2f}"
+        )
+        lines.append(f"  reason: {res.reason}")
+        lines.append(f"  adjustments ({len(res.layer_adjustments)}):")
+        for adj in res.layer_adjustments:
+            lines.append(
+                f"    wall={adj.wall_id} end={adj.end} "
+                f"layer={adj.layer_name} "
+                f"{adj.adjustment_type.value} amount={adj.amount:.6f} ft "
+                f"({adj.amount * 12:.4f} in) "
+                f"vs_wall={adj.connecting_wall_id}"
+            )
 
     # Per-wall adjustment summary
     if graph.wall_adjustments:
         lines.append("")
-        lines.append("--- Per-Wall Adjustments ---")
+        lines.append("=== PER-WALL ADJUSTMENTS ===")
         for wall_id, adjs in sorted(graph.wall_adjustments.items()):
-            adj_strs = []
+            lines.append(f"\nWall {wall_id}: {len(adjs)} adjustments")
             for adj in adjs:
-                adj_strs.append(
-                    f"{adj.layer_name}/{adj.end}: "
-                    f"{adj.adjustment_type.value} {adj.amount:.4f}'"
+                lines.append(
+                    f"  {adj.layer_name}/{adj.end}: "
+                    f"{adj.adjustment_type.value} {adj.amount:.6f} ft "
+                    f"({adj.amount * 12:.4f} in)"
                 )
-            lines.append(f"  Wall {wall_id}: {len(adjs)} adjustments")
-            for s in adj_strs:
-                lines.append(f"    {s}")
 
     return "\n".join(lines)
 
@@ -562,7 +666,7 @@ def main(
             log_lines.append(error_msg or "Validation failed")
             return junctions_json, graph_pts, graph_lines, summary_text, "\n".join(log_lines)
 
-        log_lines.append("Junction Analyzer v1.0")
+        log_lines.append("Junction Analyzer v1.1-diag")
         log_lines.append("Inputs validated successfully")
 
         # Parse configuration
@@ -577,6 +681,71 @@ def main(
         start_time = time.time()
         walls_data = parse_walls(walls_json_input)
         log_lines.append(f"Parsed {len(walls_data)} walls")
+
+        # Resolve assemblies so analyze_junctions() has real layer
+        # thicknesses for per-layer cumulative adjustments.
+        try:
+            walls_data = resolve_all_walls(walls_data, mode="auto")
+            res_summary = summarize_resolutions(walls_data)
+            log_lines.append(
+                f"Assembly resolution: {res_summary['by_source']} "
+                f"(avg conf {res_summary['average_confidence']:.2f})"
+            )
+        except Exception as e:
+            log_warning(f"Assembly resolution failed: {e}")
+            log_lines.append(f"Assembly resolution failed: {e} (using raw wall data)")
+
+        # Diagnostic: show each wall's endpoints, thickness, assembly
+        for w in walls_data:
+            wid = w.get("wall_id", "?")
+            wt = w.get("wall_thickness", 0)
+            wl = w.get("wall_length", 0)
+            s = w.get("base_curve_start", {})
+            e = w.get("base_curve_end", {})
+            sx, sy, sz = s.get("x", 0), s.get("y", 0), s.get("z", 0)
+            ex, ey, ez = e.get("x", 0), e.get("y", 0), e.get("z", 0)
+            wa = w.get("wall_assembly")
+            has_asm = "YES" if (wa and wa.get("layers")) else "NO"
+            asm_count = len(wa.get("layers", [])) if wa else 0
+            log_lines.append(
+                f"  Wall {wid}: thick={wt:.4f} len={wl:.4f} "
+                f"start=({sx:.4f},{sy:.4f},{sz:.4f}) "
+                f"end=({ex:.4f},{ey:.4f},{ez:.4f}) "
+                f"assembly={has_asm} ({asm_count} layers)"
+            )
+            if wa and wa.get("layers"):
+                for al in wa["layers"]:
+                    log_lines.append(
+                        f"    layer: {al.get('name','?')} "
+                        f"side={al.get('side','?')} "
+                        f"func={al.get('function','?')} "
+                        f"thick={al.get('thickness',0):.4f}"
+                    )
+
+        # Diagnostic: show pairwise endpoint distances
+        import math as _math
+        for i in range(len(walls_data)):
+            for j in range(i + 1, len(walls_data)):
+                wi = walls_data[i]
+                wj = walls_data[j]
+                for ei_name in ("start", "end"):
+                    for ej_name in ("start", "end"):
+                        pi = wi.get(f"base_curve_{ei_name}", {})
+                        pj = wj.get(f"base_curve_{ej_name}", {})
+                        dx = pi.get("x", 0) - pj.get("x", 0)
+                        dy = pi.get("y", 0) - pj.get("y", 0)
+                        dz = pi.get("z", 0) - pj.get("z", 0)
+                        dist = _math.sqrt(dx*dx + dy*dy + dz*dz)
+                        ti = wi.get("wall_thickness", 0)
+                        tj = wj.get("wall_thickness", 0)
+                        pair_tol = max(config["tolerance"], (ti + tj) / 2.0)
+                        match = "MATCH" if dist <= pair_tol else "no match"
+                        log_lines.append(
+                            f"  dist {wi.get('wall_id','?')}/{ei_name} <-> "
+                            f"{wj.get('wall_id','?')}/{ej_name}: "
+                            f"{dist:.4f} ft ({dist*12:.2f} in) "
+                            f"pair_tol={pair_tol:.4f} -> {match}"
+                        )
 
         # Run junction analysis pipeline
         graph = analyze_junctions(
@@ -596,8 +765,8 @@ def main(
         graph_dict = graph.to_dict()
         junctions_json = json.dumps(graph_dict, indent=2)
 
-        # Build summary
-        summary_text = build_summary_text(graph)
+        # Build summary (pass walls_data for assembly inspection)
+        summary_text = build_summary_text(graph, walls_data)
 
         # Create debug visualization geometry
         graph_pts, graph_lines = create_debug_geometry(graph, walls_data)

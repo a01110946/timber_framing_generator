@@ -127,20 +127,26 @@ from Grasshopper import DataTree
 from Grasshopper.Kernel.Data import GH_Path
 
 # =============================================================================
-# Force Module Reload (CPython 3 in Rhino 8)
-# =============================================================================
-
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
-for mod in _modules_to_clear:
-    del sys.modules[mod]
-
-# =============================================================================
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path (contains latest sheathing code)
+# Fallback: main repo path (for when this file is used from the main checkout)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+# Clear timber_framing_generator modules AND 'src' to force fresh imports
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k or k == 'src']
+for mod in _modules_to_clear:
+    del sys.modules[mod]
+
+# Ensure worktree path has highest priority (index 0) in sys.path.
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.utils.geometry_factory import get_factory
 from src.timber_framing_generator.sheathing.sheathing_geometry import (
@@ -155,7 +161,10 @@ from src.timber_framing_generator.sheathing.sheathing_geometry import (
 
 COMPONENT_NAME = "Sheathing Geometry Converter"
 COMPONENT_NICKNAME = "SheathGeo"
-COMPONENT_MESSAGE = "v1.1"
+COMPONENT_MESSAGE = "v1.2"
+
+# Version marker — confirms updated script is running in GH
+print("[SheathGeo] Script version v1.2 loaded (worktree path fix)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Geometry"
 
@@ -579,9 +588,29 @@ def main():
         sheathing_list = parse_sheathing_json(sheathing_json_input)
         walls_by_id = parse_walls_json(walls_json_input)
 
-        log_lines.append(f"Sheathing Geometry Converter v1.1-diag")
+        log_lines.append(f"Sheathing Geometry Converter v1.2")
         log_lines.append(f"Sheathing entries: {len(sheathing_list)}")
         log_lines.append(f"Walls available: {len(walls_by_id)}")
+
+        # Panel U-position diagnostic: show first panel's u_start per wall/layer
+        log_lines.append("")
+        log_lines.append("=== Panel U-Position Diagnostic ===")
+        for sh_entry in sheathing_list:
+            sh_wid = sh_entry.get("wall_id", "?")
+            sh_panels = sh_entry.get("sheathing_panels", [])
+            # Group first panel per layer_name
+            seen_layers = set()
+            for p in sh_panels:
+                lname = p.get("layer_name", p.get("face", "unknown"))
+                if lname in seen_layers:
+                    continue
+                seen_layers.add(lname)
+                log_lines.append(
+                    f"  Wall {sh_wid} | {lname}: "
+                    f"first_panel u_start={p.get('u_start', '?'):.4f}, "
+                    f"u_end={p.get('u_end', '?'):.4f}"
+                )
+        log_lines.append("")
 
         # Wall orientation diagnostic: print base_plane for each wall
         for wid, wdata in walls_by_id.items():

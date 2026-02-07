@@ -204,3 +204,79 @@ def four_room_layout() -> List[Dict]:
         create_mock_wall("wall_C", (20.0, 15.0, 0.0), (0.0, 15.0, 0.0)),
         create_mock_wall("wall_D", (0.0, 15.0, 0.0), (0.0, 0.0, 0.0)),
     ]
+
+
+# =============================================================================
+# Fixtures: Revit-Realistic Centerline Offsets
+# =============================================================================
+
+
+@pytest.fixture
+def l_corner_offset_walls() -> List[Dict]:
+    """Two perpendicular walls with centerline-offset endpoints (Revit-realistic).
+
+    Wall A: horizontal, thickness=0.5 ft (6"), 20 ft long
+        centerline from (0, 0, 0) to (20.0, 0, 0)
+    Wall B: vertical, thickness=0.333 ft (4"), ~15 ft long
+        centerline from (20.25, -0.167, 0) to (20.25, 14.833, 0)
+
+    The endpoints (20.0, 0, 0) and (20.25, -0.167, 0) are offset by:
+        sqrt(0.25^2 + 0.167^2) ≈ 0.301 ft
+    This exceeds the default 0.1 ft tolerance but is within
+    (0.5 + 0.333) / 2 = 0.4165 ft thickness-aware tolerance.
+    """
+    return [
+        create_mock_wall(
+            "wall_A", (0.0, 0.0, 0.0), (20.0, 0.0, 0.0), thickness=0.5
+        ),
+        create_mock_wall(
+            "wall_B", (20.25, -0.167, 0.0), (20.25, 14.833, 0.0),
+            thickness=0.333,
+        ),
+    ]
+
+
+@pytest.fixture
+def t_intersection_offset_walls() -> List[Dict]:
+    """T-intersection with centerline offset (Revit-realistic).
+
+    Wall A: horizontal, thickness=0.5 ft, 30 ft long
+        centerline from (0, 0, 0) to (30, 0, 0)
+    Wall B: vertical, thickness=0.333 ft, 10 ft long
+        centerline from (15, -0.25, 0) to (15, -10.25, 0)
+
+    Wall B's start endpoint (15, -0.25, 0) is 0.25 ft from wall A's
+    centerline (the y-offset equals wall_A.thickness / 2 = 0.25 ft).
+    This exceeds the default 0.15 ft T-intersection tolerance but is
+    within (0.5 + 0.333) / 2 = 0.4165 ft thickness-aware tolerance.
+    """
+    return [
+        create_mock_wall(
+            "wall_A", (0.0, 0.0, 0.0), (30.0, 0.0, 0.0), thickness=0.5
+        ),
+        create_mock_wall(
+            "wall_B", (15.0, -0.25, 0.0), (15.0, -10.25, 0.0),
+            thickness=0.333, is_exterior=False,
+        ),
+    ]
+
+
+@pytest.fixture
+def parallel_close_walls() -> List[Dict]:
+    """Two parallel walls close together but NOT at a junction.
+
+    Wall A: horizontal, thickness=0.5 ft, from (0, 0, 0) to (20, 0, 0)
+    Wall B: horizontal, thickness=0.5 ft, from (0, 0.6, 0) to (20, 0.6, 0)
+
+    Start endpoints (0,0,0) and (0,0.6,0) are 0.6 ft apart.
+    Thickness-aware tolerance = (0.5+0.5)/2 = 0.5 ft.
+    Distance (0.6) > tolerance (0.5), so these should NOT be merged.
+    """
+    return [
+        create_mock_wall(
+            "wall_A", (0.0, 0.0, 0.0), (20.0, 0.0, 0.0), thickness=0.5
+        ),
+        create_mock_wall(
+            "wall_B", (0.0, 0.6, 0.0), (20.0, 0.6, 0.0), thickness=0.5
+        ),
+    ]

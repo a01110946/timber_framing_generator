@@ -266,3 +266,168 @@ class TestExtraction:
         # Wall A goes from (0,0,0) to (20,0,0) → direction = (1, 0, 0)
         assert abs(direction[0] - 1.0) < 0.001
         assert abs(direction[1] - 0.0) < 0.001
+
+
+# =============================================================================
+# Thickness-Aware Matching Tests
+# =============================================================================
+
+
+class TestThicknessAwareMatching:
+    """Tests for thickness-aware endpoint matching.
+
+    Verifies that junction detection works correctly when wall
+    endpoints are offset due to Revit's centerline representation.
+    """
+
+    def test_l_corner_detected_with_offset_endpoints(
+        self, l_corner_offset_walls
+    ):
+        """L-corner is detected even though endpoints are ~0.301 ft apart."""
+        nodes = build_junction_graph(l_corner_offset_walls)
+
+        l_corners = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.L_CORNER
+        ]
+        assert len(l_corners) == 1, (
+            f"Expected 1 L-corner, got {len(l_corners)}. "
+            f"Types: {[n.junction_type.value for n in nodes.values()]}"
+        )
+
+    def test_l_corner_offset_has_both_walls(self, l_corner_offset_walls):
+        """Both walls are present in the L-corner connection list."""
+        nodes = build_junction_graph(l_corner_offset_walls)
+
+        l_corners = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.L_CORNER
+        ]
+        wall_ids = {c.wall_id for c in l_corners[0].connections}
+        assert wall_ids == {"wall_A", "wall_B"}
+
+    def test_l_corner_offset_position_is_average(
+        self, l_corner_offset_walls
+    ):
+        """Junction position is the average of the two offset endpoints."""
+        nodes = build_junction_graph(l_corner_offset_walls)
+
+        l_corners = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.L_CORNER
+        ]
+        pos = l_corners[0].position
+        # Average of (20.0, 0.0, 0.0) and (20.25, -0.167, 0.0)
+        assert abs(pos[0] - 20.125) < 0.01
+        assert abs(pos[1] - (-0.0835)) < 0.01
+
+    def test_t_intersection_detected_with_offset(
+        self, t_intersection_offset_walls
+    ):
+        """T-intersection is detected despite centerline offset of 0.25 ft."""
+        nodes = build_junction_graph(t_intersection_offset_walls)
+
+        t_ints = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.T_INTERSECTION
+        ]
+        assert len(t_ints) == 1, (
+            f"Expected 1 T-intersection, got {len(t_ints)}. "
+            f"Types: {[n.junction_type.value for n in nodes.values()]}"
+        )
+
+    def test_t_intersection_offset_has_midspan_connection(
+        self, t_intersection_offset_walls
+    ):
+        """T-intersection has a midspan connection for the continuous wall."""
+        nodes = build_junction_graph(t_intersection_offset_walls)
+
+        t_ints = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.T_INTERSECTION
+        ]
+        midspan_conns = [c for c in t_ints[0].connections if c.is_midspan]
+        assert len(midspan_conns) == 1
+        assert midspan_conns[0].wall_id == "wall_A"
+
+    def test_parallel_walls_not_merged(self, parallel_close_walls):
+        """Two parallel walls 0.6 ft apart should NOT be merged.
+
+        Even with thickness-aware tolerance of 0.5 ft, the distance
+        (0.6 ft) exceeds the threshold.
+        """
+        nodes = build_junction_graph(parallel_close_walls)
+
+        # All 4 endpoints should be free ends (no merging)
+        free_ends = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.FREE_END
+        ]
+        assert len(free_ends) == 4
+
+    def test_existing_coincident_fixtures_still_work(
+        self, l_corner_walls, t_intersection_walls, four_room_layout
+    ):
+        """Backward compatibility: fixtures with coincident endpoints still pass."""
+        # L-corner
+        nodes_l = build_junction_graph(l_corner_walls)
+        l_corners = [
+            n for n in nodes_l.values()
+            if n.junction_type == JunctionType.L_CORNER
+        ]
+        assert len(l_corners) == 1
+
+        # T-intersection
+        nodes_t = build_junction_graph(t_intersection_walls)
+        t_ints = [
+            n for n in nodes_t.values()
+            if n.junction_type == JunctionType.T_INTERSECTION
+        ]
+        assert len(t_ints) == 1
+
+        # Four room layout
+        nodes_4 = build_junction_graph(four_room_layout)
+        l_corners_4 = [
+            n for n in nodes_4.values()
+            if n.junction_type == JunctionType.L_CORNER
+        ]
+        assert len(l_corners_4) == 4
+
+    def test_thin_walls_use_base_tolerance(self):
+        """For very thin walls, the base tolerance governs (not inflated lower)."""
+        from tests.wall_junctions.conftest import create_mock_wall
+
+        walls = [
+            create_mock_wall(
+                "wall_A", (0.0, 0.0, 0.0), (10.0, 0.0, 0.0),
+                thickness=0.05,
+            ),
+            create_mock_wall(
+                "wall_B", (10.0, 0.0, 0.0), (10.0, 10.0, 0.0),
+                thickness=0.05,
+            ),
+        ]
+        # (0.05 + 0.05) / 2 = 0.05, but base tolerance = 0.1
+        # max(0.1, 0.05) = 0.1, so base tolerance governs
+        nodes = build_junction_graph(walls, tolerance=0.1)
+        l_corners = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.L_CORNER
+        ]
+        assert len(l_corners) == 1
+
+    def test_thickness_aware_tolerance_formula(self):
+        """Verify that (t1+t2)/2 >= sqrt((t1/2)^2 + (t2/2)^2) for all cases."""
+        test_pairs = [
+            (0.333, 0.5),    # 4" and 6" walls
+            (0.5, 0.5),      # Two 6" walls
+            (0.25, 0.667),   # 3" and 8" walls
+            (0.083, 0.083),  # Two 1" walls
+        ]
+        for t1, t2 in test_pairs:
+            formula = (t1 + t2) / 2.0
+            geometric = math.sqrt((t1 / 2.0) ** 2 + (t2 / 2.0) ** 2)
+            assert formula >= geometric, (
+                f"Formula {formula} < geometric {geometric} "
+                f"for t1={t1}, t2={t2}"
+            )

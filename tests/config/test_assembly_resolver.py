@@ -22,6 +22,8 @@ from src.timber_framing_generator.config.assembly_resolver import (
     _score_match,
     _has_explicit_assembly,
     _infer_assembly_from_thickness,
+    _infer_from_framing_hint,
+    _nearest_lumber_size,
     _lookup_custom_map,
     CATALOG_KEYWORDS,
     VALID_MODES,
@@ -516,8 +518,9 @@ class TestInferFromThickness:
         assert key == "2x6_exterior"
 
     def test_thin_exterior_infers_2x4(self) -> None:
+        """0.333 ft = 4" -> nearest lumber is 2x4 (3.5")."""
         result = _infer_assembly_from_thickness(
-            {"is_exterior": True, "wall_thickness": 0.4}
+            {"is_exterior": True, "wall_thickness": 0.333}
         )
         assert result is not None
         key, _ = result
@@ -570,3 +573,216 @@ class TestEdgeCases:
         res = resolve_assembly(wall, mode="revit_only")
         assert "My Wall Type" in res.notes
         assert "revit_only" in res.notes
+
+
+# =============================================================================
+# Nearest Lumber Size Tests (Option C)
+# =============================================================================
+
+
+class TestNearestLumberSize:
+    """Tests for _nearest_lumber_size() midpoint-based mapping."""
+
+    def test_exact_3_5_maps_to_4(self) -> None:
+        assert _nearest_lumber_size(3.5) == "4"
+
+    def test_exact_5_5_maps_to_6(self) -> None:
+        assert _nearest_lumber_size(5.5) == "6"
+
+    def test_exact_7_25_maps_to_8(self) -> None:
+        assert _nearest_lumber_size(7.25) == "8"
+
+    def test_midpoint_below_maps_to_smaller(self) -> None:
+        """4.0" is below midpoint (4.5) -> maps to 2x4."""
+        assert _nearest_lumber_size(4.0) == "4"
+
+    def test_midpoint_above_maps_to_larger(self) -> None:
+        """5.0" is above midpoint (4.5) -> maps to 2x6."""
+        assert _nearest_lumber_size(5.0) == "6"
+
+    def test_very_small_maps_to_2x4(self) -> None:
+        assert _nearest_lumber_size(2.0) == "4"
+
+    def test_very_large_maps_to_2x12(self) -> None:
+        assert _nearest_lumber_size(15.0) == "12"
+
+    def test_six_inch_wall_at_boundary(self) -> None:
+        """6.0" is in the 2x6 range (midpoints 4.5-6.375). Critical fix for Issue #2."""
+        assert _nearest_lumber_size(6.0) == "6"
+
+
+# =============================================================================
+# Framing Hint Inference Tests (Option B)
+# =============================================================================
+
+
+class TestInferFromFramingHint:
+    """Tests for _infer_from_framing_hint() — Option B."""
+
+    def test_no_hint_returns_none(self) -> None:
+        wall = _make_wall(is_exterior=True)
+        assert _infer_from_framing_hint(wall) is None
+
+    def test_empty_hint_returns_none(self) -> None:
+        wall = _make_wall(is_exterior=True)
+        wall["framing_hint"] = {}
+        assert _infer_from_framing_hint(wall) is None
+
+    def test_zero_depth_returns_none(self) -> None:
+        wall = _make_wall(is_exterior=True)
+        wall["framing_hint"] = {"depth_ft": 0.0}
+        assert _infer_from_framing_hint(wall) is None
+
+    def test_negative_depth_returns_none(self) -> None:
+        wall = _make_wall(is_exterior=True)
+        wall["framing_hint"] = {"depth_ft": -0.5}
+        assert _infer_from_framing_hint(wall) is None
+
+    def test_2x4_exterior_from_3_5_inch_depth(self) -> None:
+        """3.5" stud = 2x4 -> 2x4_exterior for exterior wall."""
+        wall = _make_wall(is_exterior=True)
+        wall["framing_hint"] = {"depth_ft": 3.5 / 12.0}
+        result = _infer_from_framing_hint(wall)
+        assert result is not None
+        key, conf = result
+        assert key == "2x4_exterior"
+        assert conf == 0.85
+
+    def test_2x6_exterior_from_5_5_inch_depth(self) -> None:
+        """5.5" stud = 2x6 -> 2x6_exterior for exterior wall."""
+        wall = _make_wall(is_exterior=True)
+        wall["framing_hint"] = {"depth_ft": 5.5 / 12.0}
+        result = _infer_from_framing_hint(wall)
+        assert result is not None
+        key, conf = result
+        assert key == "2x6_exterior"
+        assert conf == 0.85
+
+    def test_2x4_interior_from_3_5_inch_depth(self) -> None:
+        """3.5" stud = 2x4 -> 2x4_interior for interior wall."""
+        wall = _make_wall(is_exterior=False)
+        wall["framing_hint"] = {"depth_ft": 3.5 / 12.0}
+        result = _infer_from_framing_hint(wall)
+        assert result is not None
+        key, conf = result
+        assert key == "2x4_interior"
+        assert conf == 0.85
+
+    def test_2x6_interior_defaults_to_2x4_interior(self) -> None:
+        """5.5" stud on interior wall -> 2x4_interior (no 2x6_interior in catalog)."""
+        wall = _make_wall(is_exterior=False)
+        wall["framing_hint"] = {"depth_ft": 5.5 / 12.0}
+        result = _infer_from_framing_hint(wall)
+        assert result is not None
+        key, _ = result
+        assert key == "2x4_interior"
+
+    def test_confidence_higher_than_thickness_inference(self) -> None:
+        """Framing hint (0.85) should be more confident than thickness (0.4)."""
+        wall = _make_wall(is_exterior=True, wall_thickness=0.5)
+        wall["framing_hint"] = {"depth_ft": 5.5 / 12.0}
+        hint_result = _infer_from_framing_hint(wall)
+        thickness_result = _infer_assembly_from_thickness(wall)
+        assert hint_result[1] > thickness_result[1]
+
+
+# =============================================================================
+# Framing Hint Integration in Resolution Pipeline
+# =============================================================================
+
+
+class TestFramingHintInPipeline:
+    """Tests that framing hint is used at the right priority in resolve_assembly."""
+
+    def test_framing_hint_used_when_no_catalog_match(self) -> None:
+        """Auto mode: cryptic name + framing hint -> framing_hint source."""
+        wall = _make_wall(
+            wall_type="CW 102-50-100p",  # No catalog match
+            is_exterior=True,
+            wall_thickness=0.5,
+        )
+        wall["framing_hint"] = {"depth_ft": 5.5 / 12.0}  # 2x6 stud
+        res = resolve_assembly(wall, mode="auto")
+        assert res.source == "framing_hint"
+        assert res.assembly_name == "2x6_exterior"
+        assert res.confidence == 0.85
+
+    def test_catalog_match_beats_framing_hint(self) -> None:
+        """Catalog match has higher priority than framing hint."""
+        wall = _make_wall(
+            wall_type="Basic Wall - 2x4 Exterior",
+            is_exterior=True,
+        )
+        wall["framing_hint"] = {"depth_ft": 5.5 / 12.0}  # 2x6 hint
+        res = resolve_assembly(wall, mode="auto")
+        # Catalog matches "2x4 Exterior" keyword, should win
+        assert res.source == "catalog"
+        assert res.assembly_name == "2x4_exterior"
+
+    def test_explicit_revit_beats_framing_hint(self) -> None:
+        """Explicit Revit assembly has highest priority."""
+        wall = _make_wall(
+            wall_type="CW 102-50-100p",
+            wall_assembly=_make_revit_assembly(),
+            is_exterior=True,
+        )
+        wall["framing_hint"] = {"depth_ft": 5.5 / 12.0}
+        res = resolve_assembly(wall, mode="auto")
+        assert res.source == "explicit"
+
+    def test_framing_hint_in_catalog_mode(self) -> None:
+        """Catalog mode should also use framing hint when no name match."""
+        wall = _make_wall(
+            wall_type="CW 102-50-100p",
+            is_exterior=True,
+        )
+        wall["framing_hint"] = {"depth_ft": 5.5 / 12.0}
+        res = resolve_assembly(wall, mode="catalog")
+        assert res.source == "framing_hint"
+        assert res.assembly_name == "2x6_exterior"
+
+    def test_6_inch_wall_gets_2x6_via_thickness(self) -> None:
+        """Issue #2 fix: 6" wall (0.5 ft) should get 2x6, not 2x4."""
+        wall = _make_wall(
+            wall_type="CW 102-50-100p",  # No catalog match
+            is_exterior=True,
+            wall_thickness=0.5,  # 6 inches = 0.5 ft
+        )
+        # Without framing hint, thickness inference uses nearest-lumber
+        res = resolve_assembly(wall, mode="auto")
+        assert res.source == "inferred"
+        assert res.assembly_name == "2x6_exterior"
+
+    def test_4_inch_wall_gets_2x4_via_thickness(self) -> None:
+        """4" wall (0.333 ft) should get 2x4."""
+        wall = _make_wall(
+            wall_type="CW 102-50-100p",
+            is_exterior=True,
+            wall_thickness=0.333,  # ~4 inches
+        )
+        res = resolve_assembly(wall, mode="auto")
+        assert res.source == "inferred"
+        assert res.assembly_name == "2x4_exterior"
+
+    def test_different_walls_get_different_assemblies(self) -> None:
+        """Issue #3 fix: a 4" and 6" wall should NOT get the same assembly."""
+        wall_4 = _make_wall(
+            wall_type="CW 102",
+            is_exterior=True,
+            wall_thickness=0.333,
+            wall_id="w_4inch",
+        )
+        wall_6 = _make_wall(
+            wall_type="CW 102",
+            is_exterior=True,
+            wall_thickness=0.5,
+            wall_id="w_6inch",
+        )
+        wall_6["framing_hint"] = {"depth_ft": 5.5 / 12.0}
+
+        res_4 = resolve_assembly(wall_4, mode="auto")
+        res_6 = resolve_assembly(wall_6, mode="auto")
+
+        assert res_4.assembly_name == "2x4_exterior"
+        assert res_6.assembly_name == "2x6_exterior"
+        assert res_4.assembly_name != res_6.assembly_name

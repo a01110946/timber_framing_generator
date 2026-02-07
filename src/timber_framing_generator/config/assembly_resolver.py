@@ -179,7 +179,82 @@ def _score_match(normalized_type: str, keywords: Dict[str, Any]) -> float:
 
 
 # =============================================================================
-# Thickness-Based Inference
+# Framing-Hint Inference (Option B)
+# =============================================================================
+
+# Standard nominal-to-actual lumber depths (inches).
+# Used by _infer_from_framing_hint() and _nearest_lumber_size().
+_LUMBER_ACTUAL_DEPTHS: Dict[str, float] = {
+    "4": 3.5,
+    "6": 5.5,
+    "8": 7.25,
+    "10": 9.25,
+    "12": 11.25,
+}
+
+
+def _infer_from_framing_hint(
+    wall_data: Dict[str, Any],
+) -> Optional[Tuple[str, float]]:
+    """Infer a catalog assembly from framing_hint injected by the GH component.
+
+    When framing_json is connected, the MLSheath component extracts the actual
+    stud profile depth per wall and stores it as ``framing_hint`` on the wall
+    dict. This function maps that depth to the nearest standard lumber size
+    and returns the corresponding catalog key.
+
+    Args:
+        wall_data: Wall dict, possibly containing framing_hint with depth_ft.
+
+    Returns:
+        Tuple of (catalog_key, confidence) or None if no hint present.
+    """
+    hint = wall_data.get("framing_hint")
+    if not hint or not isinstance(hint, dict):
+        return None
+
+    depth_ft = hint.get("depth_ft")
+    if depth_ft is None or depth_ft <= 0:
+        return None
+
+    depth_in = depth_ft * 12.0
+    nominal = _nearest_lumber_size(depth_in)
+    is_exterior = wall_data.get("is_exterior", False)
+
+    # Map nominal lumber size to catalog key
+    if is_exterior:
+        if nominal == "6" or int(nominal) >= 6:
+            return ("2x6_exterior", 0.85)
+        return ("2x4_exterior", 0.85)
+    else:
+        return ("2x4_interior", 0.85)
+
+
+def _nearest_lumber_size(depth_inches: float) -> str:
+    """Map a depth in inches to the nearest standard lumber nominal size.
+
+    Uses midpoints between consecutive standard actual depths as thresholds:
+        2x4 (3.5") -- 4.5" -- 2x6 (5.5") -- 6.375" -- 2x8 (7.25") -- ...
+
+    Args:
+        depth_inches: Actual depth measurement in inches.
+
+    Returns:
+        Nominal size string (e.g., "4", "6", "8").
+    """
+    sizes = sorted(_LUMBER_ACTUAL_DEPTHS.items(), key=lambda x: x[1])
+    for i, (nominal, actual) in enumerate(sizes):
+        if i == len(sizes) - 1:
+            return nominal
+        next_actual = sizes[i + 1][1]
+        midpoint = (actual + next_actual) / 2.0
+        if depth_inches < midpoint:
+            return nominal
+    return sizes[-1][0]
+
+
+# =============================================================================
+# Thickness-Based Inference (Option C — nearest lumber fallback)
 # =============================================================================
 
 
@@ -188,8 +263,10 @@ def _infer_assembly_from_thickness(
 ) -> Optional[Tuple[str, float]]:
     """Infer a catalog assembly from wall thickness and is_exterior flag.
 
-    This is the lowest-confidence automatic resolution, used when the
-    Wall Type name doesn't match any catalog entry.
+    Uses nearest standard lumber size mapping: wall_thickness (in inches) is
+    matched to the closest standard actual depth (3.5", 5.5", 7.25", ...).
+    This is more reliable than a single threshold for generic Revit walls
+    where wall_thickness ≈ core-only thickness.
 
     Args:
         wall_data: Wall dict with wall_thickness and is_exterior.
@@ -203,13 +280,14 @@ def _infer_assembly_from_thickness(
     if not is_exterior:
         return ("2x4_interior", 0.4)
 
-    # Exterior wall — try to distinguish 2x4 vs 2x6 by thickness
-    # 2x4 exterior total ~4.9" (0.41 ft), 2x6 exterior total ~7.1" (0.59 ft)
+    # Exterior wall — map thickness to nearest lumber size
     if thickness > 0:
-        if thickness > 0.5:  # > 6 inches total
+        depth_inches = thickness * 12.0 if thickness < 2.0 else thickness
+        nominal = _nearest_lumber_size(depth_inches)
+
+        if nominal == "6" or int(nominal) >= 6:
             return ("2x6_exterior", 0.4)
-        else:
-            return ("2x4_exterior", 0.4)
+        return ("2x4_exterior", 0.4)
 
     # No thickness info — default by exterior/interior
     return ("2x4_exterior", 0.3) if is_exterior else ("2x4_interior", 0.3)
@@ -371,6 +449,7 @@ def resolve_assembly(
         return _resolve_catalog(wall_data, wall_type)
 
     # --- Auto mode (or custom fallback for unmapped types) ---
+    # Priority: explicit Revit > catalog name match > framing hint > thickness > default
     return _resolve_auto(wall_data, wall_type)
 
 
@@ -408,7 +487,7 @@ def _resolve_auto(
 ) -> AssemblyResolution:
     """Resolve assembly in auto mode (best available source).
 
-    Priority: explicit Revit > catalog name match > thickness inference > default.
+    Priority: explicit Revit > catalog name match > framing hint > thickness > default.
 
     Args:
         wall_data: Wall dict.
@@ -441,7 +520,22 @@ def _resolve_auto(
                 assembly_name=catalog_key,
             )
 
-    # 3. Infer from thickness + is_exterior
+    # 3. Framing hint (from framing_json stud depth — Option B)
+    framing_hint = _infer_from_framing_hint(wall_data)
+    if framing_hint:
+        hint_key, confidence = framing_hint
+        assembly = _get_catalog_assembly(hint_key)
+        if assembly:
+            depth_ft = wall_data.get("framing_hint", {}).get("depth_ft", 0)
+            return AssemblyResolution(
+                assembly=assembly,
+                source="framing_hint",
+                confidence=confidence,
+                notes=f"Inferred from framing stud depth {depth_ft:.4f} ft -> '{hint_key}'",
+                assembly_name=hint_key,
+            )
+
+    # 4. Infer from thickness + is_exterior (Option C — nearest lumber fallback)
     inferred = _infer_assembly_from_thickness(wall_data)
     if inferred:
         inferred_key, confidence = inferred
@@ -456,7 +550,7 @@ def _resolve_auto(
                 assembly_name=inferred_key,
             )
 
-    # 4. Default fallback
+    # 5. Default fallback
     is_exterior = wall_data.get("is_exterior", False)
     default_key = "2x4_exterior" if is_exterior else "2x4_interior"
     assembly = _get_catalog_assembly(default_key)
@@ -475,7 +569,7 @@ def _resolve_catalog(
 ) -> AssemblyResolution:
     """Resolve assembly in catalog mode (ignore Revit layers).
 
-    Priority: catalog name match > thickness inference > default.
+    Priority: catalog name match > framing hint > thickness inference > default.
 
     Args:
         wall_data: Wall dict.
@@ -498,7 +592,22 @@ def _resolve_catalog(
                 assembly_name=catalog_key,
             )
 
-    # 2. Infer from thickness + is_exterior
+    # 2. Framing hint (from framing_json stud depth — Option B)
+    framing_hint = _infer_from_framing_hint(wall_data)
+    if framing_hint:
+        hint_key, confidence = framing_hint
+        assembly = _get_catalog_assembly(hint_key)
+        if assembly:
+            depth_ft = wall_data.get("framing_hint", {}).get("depth_ft", 0)
+            return AssemblyResolution(
+                assembly=assembly,
+                source="framing_hint",
+                confidence=confidence,
+                notes=f"Inferred from framing stud depth {depth_ft:.4f} ft -> '{hint_key}' (catalog mode)",
+                assembly_name=hint_key,
+            )
+
+    # 3. Infer from thickness + is_exterior
     inferred = _infer_assembly_from_thickness(wall_data)
     if inferred:
         inferred_key, confidence = inferred

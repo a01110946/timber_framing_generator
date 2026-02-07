@@ -213,9 +213,16 @@ def _group_close_endpoints(
     Uses a simple union-find approach: iterate all pairs, merge groups
     when two endpoints from different walls are close.
 
+    The tolerance parameter serves as a **minimum floor**. For each pair
+    of endpoints, the effective tolerance is:
+        max(tolerance, (thickness_i + thickness_j) / 2)
+    This accounts for Revit wall centerline offsets at corners, where
+    perpendicular walls have endpoints offset by approximately
+    sqrt((t1/2)^2 + (t2/2)^2).
+
     Args:
-        endpoints: List of endpoint dicts.
-        tolerance: Maximum distance to consider endpoints as connected.
+        endpoints: List of endpoint dicts (each must have "thickness" key).
+        tolerance: Minimum distance to consider endpoints as connected (feet).
 
     Returns:
         Dict mapping group_id to list of endpoints in that group.
@@ -241,12 +248,26 @@ def _group_close_endpoints(
         for j in range(i + 1, n):
             if endpoints[i]["wall_id"] == endpoints[j]["wall_id"]:
                 continue  # Skip same-wall endpoints
+
+            # Thickness-aware tolerance: accounts for Revit centerline offsets
+            thick_i = endpoints[i].get("thickness", 0.0)
+            thick_j = endpoints[j].get("thickness", 0.0)
+            pair_tol = max(tolerance, (thick_i + thick_j) / 2.0)
+
             if _points_close(
                 endpoints[i]["position"],
                 endpoints[j]["position"],
-                tolerance,
+                pair_tol,
             ):
                 union(i, j)
+                if pair_tol > tolerance:
+                    logger.debug(
+                        "Thickness-aware match: %s/%s <-> %s/%s "
+                        "(pair_tol=%.4f > base_tol=%.4f)",
+                        endpoints[i]["wall_id"], endpoints[i]["end"],
+                        endpoints[j]["wall_id"], endpoints[j]["end"],
+                        pair_tol, tolerance,
+                    )
 
     # Build groups
     groups: Dict[int, List[Dict]] = {}
@@ -277,11 +298,16 @@ def _detect_t_intersections(
     close to the mid-span of any other wall segment. If so, create a
     midspan connection and merge into or create a group.
 
+    The tolerance parameter serves as a **minimum floor**. For each
+    endpoint-segment pair, the effective tolerance is:
+        max(tolerance, (ep_thickness + wall_thickness) / 2)
+    This accounts for Revit wall centerline offsets at T-intersections.
+
     Args:
         endpoints: All endpoint dicts (modified in-place with group_id).
         walls_data: Original wall data list.
         groups: Existing groups from endpoint matching (modified in-place).
-        tolerance: Maximum distance for point-to-segment matching.
+        tolerance: Minimum distance for point-to-segment matching (feet).
         endpoint_exclusion_t: Exclude matches near segment endpoints
             (t < exclusion or t > 1-exclusion) to avoid double-counting
             as L-corners.
@@ -307,9 +333,14 @@ def _detect_t_intersections(
 
             dist, t = _point_to_segment_distance(ep_pos, seg_start, seg_end)
 
+            # Thickness-aware tolerance for T-intersection detection
+            ep_thickness = ep.get("thickness", 0.0)
+            wall_thickness = wall.get("wall_thickness", 0.0)
+            t_tol = max(tolerance, (ep_thickness + wall_thickness) / 2.0)
+
             # Must be close to segment AND not near endpoints
             if (
-                dist <= tolerance
+                dist <= t_tol
                 and endpoint_exclusion_t < t < (1.0 - endpoint_exclusion_t)
             ):
                 # T-intersection found!
@@ -317,12 +348,14 @@ def _detect_t_intersections(
                 direction = _extract_direction(wall)
 
                 logger.debug(
-                    "T-intersection: %s meets %s at u=%.2f (t=%.3f, dist=%.4f)",
+                    "T-intersection: %s meets %s at u=%.2f "
+                    "(t=%.3f, dist=%.4f, eff_tol=%.4f)",
                     ep["wall_id"],
                     wall["wall_id"],
                     midspan_u,
                     t,
                     dist,
+                    t_tol,
                 )
 
                 # Create a midspan connection for the continuous wall
@@ -454,7 +487,8 @@ def build_junction_graph(
         return {}
 
     logger.info(
-        "Building junction graph for %d walls (tol=%.3f, t_tol=%.3f)",
+        "Building junction graph for %d walls "
+        "(base_tol=%.3f, t_base_tol=%.3f, thickness-aware matching active)",
         len(walls_data),
         tolerance,
         t_intersection_tolerance,

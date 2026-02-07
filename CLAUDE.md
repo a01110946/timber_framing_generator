@@ -134,6 +134,20 @@ if num_studs == 0:
 actual_spacing = cell_width / num_studs  # Only if num_studs > 0
 ```
 
+### 8. CPython3 IFamilyLoadOptions Interface
+
+**Problem**: Implementing .NET interfaces (like `IFamilyLoadOptions`) in CPython3/pythonnet requires a `__namespace__` class attribute.
+
+**Symptom**: `TypeError: interface takes exactly one argument` when instantiating the class.
+
+**Solution** (in `src/timber_framing_generator/families/revit_loader.py`):
+```python
+class FamilyLoadOptions(DB.IFamilyLoadOptions):
+    __namespace__ = "TimberFramingFamilyLoader"  # REQUIRED for CPython3
+```
+
+**Reference**: [pyRevit Labs Discussion](https://discourse.pyrevitlabs.io/t/ifamilyloadoptions-cpython3-issue/2680)
+
 ## Framing Domain Knowledge
 
 ### Lumber Profile Orientation
@@ -172,11 +186,21 @@ src/timber_framing_generator/
 ├── materials/              # Material-specific implementations
 │   ├── timber/             # Timber strategy and profiles
 │   └── cfs/                # CFS strategy and profiles
+├── families/               # Family Resolver system (Issue #38)
+│   ├── manifest.py         # FamilyManifest schema (dataclasses)
+│   ├── providers.py        # FamilyProvider ABC + GitHubProvider
+│   ├── cache.py            # Local cache with SHA256 verification
+│   ├── resolver.py         # FamilyResolver orchestrator
+│   └── revit_loader.py     # Revit API: LoadFamily, Activate (CPython3)
 ├── cell_decomposition/     # Wall → cell decomposition
 ├── framing_elements/       # Element generators (studs, plates, headers)
 ├── wall_data/              # Revit data extraction
 ├── utils/                  # Helpers, geometry_factory
 └── config/                 # Configuration settings
+
+families/                   # Family registry (manifest + .rfa files)
+├── manifest.json           # Declares required families, types, checksums
+└── timber/                 # Timber family .rfa files (Phase A)
 
 scripts/
 ├── gh-main.py              # Legacy monolithic Grasshopper script
@@ -184,7 +208,8 @@ scripts/
 ├── gh_panel_decomposer.py  # Component 2: walls_json → panels_json (optional)
 ├── gh_cell_decomposer.py   # Component 3: walls_json + panels_json → cell_json
 ├── gh_framing_generator.py # Component 4: cell_json → framing_json
-└── gh_geometry_converter.py# Component 5: framing_json → Breps
+├── gh_family_resolver.py   # Component 5: framing_json → resolved_json (auto-loads families)
+└── gh_geometry_converter.py# Component 6: framing_json → Breps
 
 docs/ai/                    # AI-friendly documentation (READ THESE)
 tests/                      # Unit and integration tests
@@ -331,6 +356,7 @@ Wall Analyzer → walls_json → Panel Decomposer → panels_json → Cell Decom
 - `panels_json` - Panel decomposition from Panel Decomposer
 - `cell_json` - Cell decomposition from Cell Decomposer
 - `framing_json` - Framing elements from Framing Generator
+- `resolved_json` - Framing JSON enriched with Revit family references (from Family Resolver)
 
 Benefits:
 - Inspect data between components (jSwan, Panel)
@@ -344,8 +370,10 @@ Benefits:
 2. ✅ **Multi-Material Support**: Timber and CFS strategies with profile catalogs
 3. ✅ **Geometry Pipeline**: RhinoCommonFactory handles assembly mismatch
 4. ✅ **Framing Fixes**: Vertical element orientation, header cripple direction, bottom plate door splits, end studs on all walls
+5. ✅ **Family Resolver**: Cloud-based family resolver with GitHub provider, local cache, and Revit API integration (Issue #38)
 
 **Next Steps**:
+- Create actual .rfa family files in Revit (Phase A of Issue #38)
 - Implement CFS-specific elements (web stiffeners, bridging)
 - Full pipeline integration testing in Grasshopper
 - Documentation polish

@@ -82,6 +82,7 @@
       "types": {
         "362S162-33":   { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0346, "Return": 0.5,   "gauge": 20, "fy_ksi": 50 },
         "400S162-43":   { "width_in": 1.625, "depth_in": 4.0,   "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
+        "600S162-54":   { "width_in": 1.625, "depth_in": 6.0,   "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
         "800S162-54":   { "width_in": 1.625, "depth_in": 8.0,   "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
         "1200S162-68":  { "width_in": 1.625, "depth_in": 12.0,  "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
         "1200S250-68":  { "width_in": 2.5,   "depth_in": 12.0,  "tf": 0.0713, "Return": 0.625, "gauge": 14, "fy_ksi": 50 },
@@ -104,7 +105,8 @@
         "400T250-54_V": { "width_in": 2.5,  "depth_in": 4.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "550T125-54_V": { "width_in": 1.25, "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "550T200-54_V": { "width_in": 2.0,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
-        "550T250-54_V": { "width_in": 2.5,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 }
+        "550T250-54_V": { "width_in": 2.5,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
+        "600T125-54_V": { "width_in": 1.25, "depth_in": 6.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 }
       },
       "sha256": "placeholder_update_when_rfa_created"
     },
@@ -120,7 +122,8 @@
         "400T250-54": { "width_in": 2.5,  "depth_in": 4.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "550T125-54": { "width_in": 1.25, "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "550T200-54": { "width_in": 2.0,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
-        "550T250-54": { "width_in": 2.5,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 }
+        "550T250-54": { "width_in": 2.5,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
+        "600T125-54": { "width_in": 1.25, "depth_in": 6.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 }
       },
       "sha256": "placeholder_update_when_rfa_created"
     }

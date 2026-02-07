@@ -207,10 +207,10 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v1.8"
+COMPONENT_MESSAGE = "v1.9"
 
 # Version marker — confirms the updated script is running in GH
-print("[MLSheath] Script version v1.8 loaded (framing-informed assembly resolution)")
+print("[MLSheath] Script version v1.9 loaded (flip normalization + junction geometry fixes)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -330,6 +330,34 @@ def setup_component():
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
+def _normalize_flip(wall_data: dict) -> dict:
+    """Negate z_axis for flipped walls so +z always = physical exterior.
+
+    When Revit's is_flipped flag is True, the wall's z_axis points toward
+    the building interior instead of exterior. This function negates the
+    z_axis so that all downstream code can consistently assume
+    +z_axis = physical exterior direction.
+
+    Args:
+        wall_data: Wall dict from walls_json.
+
+    Returns:
+        Wall dict with z_axis negated if is_flipped, unchanged otherwise.
+    """
+    if not wall_data.get("is_flipped", False):
+        return wall_data
+    wall = dict(wall_data)
+    bp = dict(wall.get("base_plane", {}))
+    z = bp.get("z_axis", {})
+    bp["z_axis"] = {
+        "x": -z.get("x", 0),
+        "y": -z.get("y", 0),
+        "z": -z.get("z", 0),
+    }
+    wall["base_plane"] = bp
+    return wall
+
 
 def validate_inputs(walls_json, run):
     """Validate component inputs.
@@ -498,6 +526,11 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         log_error("walls_json must be a dict or list")
         return [], [], "Error: Invalid format", ["Invalid walls_json format"]
 
+    # Normalize flipped walls: negate z_axis so +z = physical exterior.
+    # Must happen before any downstream code reads z_axis for W-offsets,
+    # junction adjustments, or geometry extrusion direction.
+    walls_list = [_normalize_flip(w) for w in walls_list]
+
     # Inject framing_hint into wall dicts for assembly resolution (Option B).
     # When framing_json is connected, each wall gets a hint with its stud
     # profile depth, enabling the resolver to pick the correct assembly
@@ -575,18 +608,10 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                     f"  wall_thickness={wall_data.get('wall_thickness', '?')}"
                 )
 
-            # Determine actual face labels, accounting for wall flip state.
-            # When is_flipped=True, the wall's Z-axis (positive normal) points
-            # to the interior instead of the exterior. We swap face labels so
-            # panels are placed on the actual building exterior/interior.
+            # Face labels from config. Flip handling is now done upstream
+            # by _normalize_flip() which negates z_axis, so face labels
+            # remain unchanged regardless of is_flipped state.
             faces = base_config.get("faces", ["exterior", "interior"])
-            is_flipped = wall_data.get("is_flipped", False)
-            if is_flipped:
-                faces = [
-                    "interior" if f == "exterior" else "exterior"
-                    for f in faces
-                ]
-                log_info(f"  Wall {wall_id} is flipped - swapped faces to {faces}")
 
             wall_length = wall_data.get("wall_length", 0)
 
@@ -908,6 +933,9 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
                 walls_for_recompute = json.loads(walls_json_input)
                 if isinstance(walls_for_recompute, dict):
                     walls_for_recompute = [walls_for_recompute]
+
+                # Normalize flipped walls for Phase 2 recompute
+                walls_for_recompute = [_normalize_flip(w) for w in walls_for_recompute]
 
                 # Inject framing_hint for correct assembly resolution
                 if framing_data is not None:

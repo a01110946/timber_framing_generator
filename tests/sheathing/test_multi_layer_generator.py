@@ -1611,3 +1611,126 @@ class TestFramingJsonAutoDetectIntegration:
         osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
         core_half = 3.5 / 12 / 2.0
         assert osb_layer["w_offset"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
+
+
+# =============================================================================
+# Fix 1: Flip Normalization Tests (PRP-026)
+# =============================================================================
+
+
+def _normalize_flip(wall_data: dict) -> dict:
+    """Standalone copy of _normalize_flip for testing (from GH components).
+
+    Negates z_axis when is_flipped=True so +z = physical exterior.
+    """
+    if not wall_data.get("is_flipped", False):
+        return wall_data
+    wall = dict(wall_data)
+    bp = dict(wall.get("base_plane", {}))
+    z = bp.get("z_axis", {})
+    bp["z_axis"] = {
+        "x": -z.get("x", 0),
+        "y": -z.get("y", 0),
+        "z": -z.get("z", 0),
+    }
+    wall["base_plane"] = bp
+    return wall
+
+
+class TestFlipNormalization:
+    """Tests for _normalize_flip() — Fix 1 from PRP-026.
+
+    When Revit's is_flipped flag is True, z_axis points toward the
+    building interior. _normalize_flip negates z_axis so all downstream
+    code can consistently use +z_axis = physical exterior.
+    """
+
+    def test_flipped_wall_z_axis_negated(self) -> None:
+        """z_axis should be negated when is_flipped=True."""
+        wall = {
+            "wall_id": "W1",
+            "is_flipped": True,
+            "base_plane": {
+                "origin": {"x": 0, "y": 0, "z": 0},
+                "x_axis": {"x": 0, "y": 1, "z": 0},
+                "y_axis": {"x": 0, "y": 0, "z": 1},
+                "z_axis": {"x": 1, "y": 0, "z": 0},
+            },
+        }
+        result = _normalize_flip(wall)
+        z = result["base_plane"]["z_axis"]
+        assert z["x"] == -1
+        assert z["y"] == 0
+        assert z["z"] == 0
+
+    def test_non_flipped_wall_unchanged(self) -> None:
+        """z_axis should remain unchanged when is_flipped=False."""
+        wall = {
+            "wall_id": "W1",
+            "is_flipped": False,
+            "base_plane": {
+                "origin": {"x": 0, "y": 0, "z": 0},
+                "x_axis": {"x": 0, "y": 1, "z": 0},
+                "y_axis": {"x": 0, "y": 0, "z": 1},
+                "z_axis": {"x": 1, "y": 0, "z": 0},
+            },
+        }
+        result = _normalize_flip(wall)
+        z = result["base_plane"]["z_axis"]
+        assert z["x"] == 1
+        assert z["y"] == 0
+        assert z["z"] == 0
+
+    def test_missing_is_flipped_treated_as_false(self) -> None:
+        """Wall without is_flipped key should be unchanged."""
+        wall = {
+            "wall_id": "W1",
+            "base_plane": {
+                "z_axis": {"x": 0, "y": -1, "z": 0},
+            },
+        }
+        result = _normalize_flip(wall)
+        z = result["base_plane"]["z_axis"]
+        assert z["y"] == -1
+
+    def test_original_wall_not_mutated(self) -> None:
+        """Original wall dict should not be modified."""
+        wall = {
+            "wall_id": "W1",
+            "is_flipped": True,
+            "base_plane": {
+                "z_axis": {"x": 1, "y": 0, "z": 0},
+            },
+        }
+        _ = _normalize_flip(wall)
+        # Original z_axis should be unchanged
+        assert wall["base_plane"]["z_axis"]["x"] == 1
+
+    def test_flipped_wall_x_axis_preserved(self) -> None:
+        """Other base_plane axes should remain unchanged."""
+        wall = {
+            "wall_id": "W1",
+            "is_flipped": True,
+            "base_plane": {
+                "x_axis": {"x": 0, "y": 1, "z": 0},
+                "y_axis": {"x": 0, "y": 0, "z": 1},
+                "z_axis": {"x": 1, "y": 0, "z": 0},
+            },
+        }
+        result = _normalize_flip(wall)
+        assert result["base_plane"]["x_axis"]["y"] == 1
+        assert result["base_plane"]["y_axis"]["z"] == 1
+
+    def test_diagonal_z_axis_negated(self) -> None:
+        """Non-axis-aligned z_axis should be fully negated."""
+        wall = {
+            "wall_id": "W1",
+            "is_flipped": True,
+            "base_plane": {
+                "z_axis": {"x": 0.707, "y": 0.707, "z": 0},
+            },
+        }
+        result = _normalize_flip(wall)
+        z = result["base_plane"]["z_axis"]
+        assert abs(z["x"] - (-0.707)) < 0.001
+        assert abs(z["y"] - (-0.707)) < 0.001

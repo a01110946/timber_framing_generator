@@ -396,23 +396,54 @@ def parse_config(config_json_input: str) -> dict:
     return config
 
 
+def _normalize_flip(wall_data: dict) -> dict:
+    """Negate z_axis for flipped walls so +z always = physical exterior.
+
+    When ``is_flipped=True``, Revit's wall normal (z_axis) points toward the
+    building interior instead of exterior.  Negating z_axis restores the
+    convention ``+z = exterior`` so all downstream code (W-offsets, junction
+    resolver, geometry converter) works without per-consumer flip logic.
+
+    Args:
+        wall_data: Wall dict from walls_json.
+
+    Returns:
+        A shallow copy with negated z_axis if flipped, or the original dict.
+    """
+    if not wall_data.get("is_flipped", False):
+        return wall_data
+    wall = dict(wall_data)
+    bp = dict(wall.get("base_plane", {}))
+    z = bp.get("z_axis", {})
+    bp["z_axis"] = {
+        "x": -z.get("x", 0),
+        "y": -z.get("y", 0),
+        "z": -z.get("z", 0),
+    }
+    wall["base_plane"] = bp
+    return wall
+
+
 def parse_walls(walls_json_str: str) -> list:
     """Parse walls from JSON string.
 
     Handles both dict-with-key and bare-list formats.
+    Normalizes z_axis for flipped walls (negates so +z = physical exterior).
 
     Args:
         walls_json_str: JSON string with wall data.
 
     Returns:
-        List of wall dicts.
+        List of wall dicts (z_axis normalized for flipped walls).
     """
     data = json.loads(walls_json_str)
     if isinstance(data, dict):
-        return data.get("walls", [])
+        walls = data.get("walls", [])
     elif isinstance(data, list):
-        return data
-    return []
+        walls = data
+    else:
+        walls = []
+    return [_normalize_flip(w) for w in walls]
 
 
 def create_debug_geometry(graph, walls_data: list) -> tuple:

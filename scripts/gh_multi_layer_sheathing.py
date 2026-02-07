@@ -148,6 +148,24 @@ clr.AddReference("RhinoCommon")
 import Grasshopper
 
 # =============================================================================
+# Project Setup
+# =============================================================================
+
+# Primary: worktree / feature-branch path (contains wall_junctions, etc.)
+# Fallback: main repo path (for when this file is used from the main checkout)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+# Ensure worktree path has highest priority (index 0) in sys.path.
+# Other GH components may have already added the main repo path, so we
+# remove both and re-insert in correct priority order.
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
+
+# =============================================================================
 # Module Reload (Development Only)
 # =============================================================================
 
@@ -156,8 +174,13 @@ import Grasshopper
 FORCE_RELOAD = True
 
 if FORCE_RELOAD:
+    # Clear timber_framing_generator modules AND the 'src' package itself.
+    # Other GH components may have already imported 'src', caching its
+    # __path__ to the main repo.  Clearing it forces Python to re-resolve
+    # 'src' from the updated sys.path (worktree at index 0).
     modules_to_reload = [key for key in sys.modules.keys()
-                         if 'timber_framing_generator' in key]
+                         if 'timber_framing_generator' in key
+                         or key == 'src']
     for mod_name in modules_to_reload:
         del sys.modules[mod_name]
 
@@ -167,6 +190,7 @@ if FORCE_RELOAD:
 
 from src.timber_framing_generator.sheathing.multi_layer_generator import (
     generate_assembly_layers,
+    extract_max_framing_depth,
 )
 from src.timber_framing_generator.config.assembly import get_assembly_for_wall
 from src.timber_framing_generator.config.assembly_resolver import (
@@ -180,7 +204,10 @@ from src.timber_framing_generator.config.assembly_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v1.1"
+COMPONENT_MESSAGE = "v1.3"
+
+# Version marker — confirms the updated script is running in GH
+print("[MLSheath] Script version v1.3 loaded (framing_json auto-detect)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -260,6 +287,10 @@ def setup_component():
         ("Custom Map", "custom_map",
          'Per-Wall-Type assembly mapping JSON (e.g., {"My Wall Type": "2x6_exterior"})',
          Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Framing JSON", "framing_json",
+         "Optional JSON from Framing Generator — auto-detects framing profile depth "
+         "to prevent sheathing overlap with CFS or oversized framing",
+         Grasshopper.Kernel.GH_ParamAccess.item),
         ("Run", "run", "Boolean to trigger execution",
          Grasshopper.Kernel.GH_ParamAccess.item),
     ]
@@ -319,22 +350,24 @@ def validate_inputs(walls_json, run):
 def parse_config(config_json):
     """Parse configuration JSON with defaults.
 
-    Extracts include_functions, layer_configs, and base config from
-    the user-provided JSON. Keys not recognized as top-level control
-    keys are passed through as base config for all layers.
+    Extracts include_functions, layer_configs, framing_depth, and base
+    config from the user-provided JSON. Keys not recognized as top-level
+    control keys are passed through as base config for all layers.
 
     Args:
         config_json: Optional JSON string with config overrides.
 
     Returns:
-        tuple: (base_config, layer_configs, include_functions)
+        tuple: (base_config, layer_configs, include_functions, framing_depth)
             - base_config: Dict of settings applied to all layers.
             - layer_configs: Dict of per-layer overrides keyed by layer name.
             - include_functions: List of layer functions to generate, or None.
+            - framing_depth: Explicit framing profile depth in feet, or None.
     """
     base_config = dict(DEFAULT_CONFIG)
     layer_configs = {}
     include_functions = None
+    framing_depth = None
 
     if config_json and config_json.strip():
         try:
@@ -350,13 +383,17 @@ def parse_config(config_json):
                 layer_configs = user_config.pop("layer_configs")
                 log_info(f"Per-layer overrides for: {list(layer_configs.keys())}")
 
+            if "framing_depth" in user_config:
+                framing_depth = float(user_config.pop("framing_depth"))
+                log_info(f"Explicit framing_depth: {framing_depth:.4f} ft")
+
             # Remaining keys become the base config
             base_config.update(user_config)
 
         except json.JSONDecodeError as e:
             log_warning(f"Invalid config_json, using defaults: {e}")
 
-    return base_config, layer_configs, include_functions
+    return base_config, layer_configs, include_functions, framing_depth
 
 
 def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
@@ -409,7 +446,8 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
 
 
 def process_walls(walls_json, base_config, layer_configs, include_functions,
-                  junctions_data=None, assembly_mode="auto", custom_map=None):
+                  junctions_data=None, assembly_mode="auto", custom_map=None,
+                  framing_depth=None):
     """Process walls and generate multi-layer sheathing panels.
 
     For each wall, resolves the assembly (using the assembly resolver),
@@ -425,6 +463,9 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         junctions_data: Optional parsed junctions_json dict.
         assembly_mode: Assembly resolution mode (auto/revit_only/catalog/custom).
         custom_map: Per-Wall-Type assembly mapping dict for custom mode.
+        framing_depth: Optional explicit framing profile depth in feet.
+            Passed to generate_assembly_layers() to prevent sheathing
+            from starting inside the framing zone.
 
     Returns:
         tuple: (all_results, summary_lines, stats_text, log_lines)
@@ -498,6 +539,21 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         )
 
         try:
+            # Log wall direction for first 2 walls (angle diagnostic)
+            if walls_processed < 2:
+                bp = wall_data.get("base_plane", {})
+                zax = bp.get("z_axis", {})
+                xax = bp.get("x_axis", {})
+                log_info(
+                    f"  base_plane x_axis=({xax.get('x',0):.3f}, "
+                    f"{xax.get('y',0):.3f}, {xax.get('z',0):.3f}), "
+                    f"z_axis=({zax.get('x',0):.3f}, "
+                    f"{zax.get('y',0):.3f}, {zax.get('z',0):.3f})"
+                )
+                log_info(
+                    f"  wall_thickness={wall_data.get('wall_thickness', '?')}"
+                )
+
             # Determine actual face labels, accounting for wall flip state.
             # When is_flipped=True, the wall's Z-axis (positive normal) points
             # to the interior instead of the exterior. We swap face labels so
@@ -529,16 +585,55 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
             # Call multi-layer generator with per-face junction bounds.
             # Each layer uses the bounds matching its face (exterior or
             # interior), which may differ at wall corners.
-            result = generate_assembly_layers(
-                wall_data,
-                config=base_config,
-                layer_configs=layer_configs if layer_configs else None,
-                face_bounds=face_bounds if face_bounds else None,
-                include_functions=include_functions,
-            )
+            try:
+                result = generate_assembly_layers(
+                    wall_data,
+                    config=base_config,
+                    layer_configs=layer_configs if layer_configs else None,
+                    face_bounds=face_bounds if face_bounds else None,
+                    include_functions=include_functions,
+                    framing_depth=framing_depth,
+                )
+            except TypeError as _te:
+                # Fallback: if an older version of multi_layer_generator is
+                # loaded (missing framing_depth param), retry without it.
+                if "framing_depth" in str(_te):
+                    log_warning(
+                        f"Wall {wall_id}: stale module lacks framing_depth "
+                        f"param -- falling back (restart Rhino to fix)"
+                    )
+                    result = generate_assembly_layers(
+                        wall_data,
+                        config=base_config,
+                        layer_configs=layer_configs if layer_configs else None,
+                        face_bounds=face_bounds if face_bounds else None,
+                        include_functions=include_functions,
+                    )
+                else:
+                    raise
 
             all_results.append(result)
             walls_processed += 1
+
+            # W offset diagnostic: log per-layer W positions for first 2 walls
+            if walls_processed <= 2:
+                layer_results_diag = result.get("layer_results", [])
+                core_t = sum(
+                    l.get("thickness", 0)
+                    for l in wall_assembly.get("layers", [])
+                    if l.get("side") == "core"
+                )
+                log_info(
+                    f"  W-DIAG wall {wall_id}: core_t={core_t:.4f}, "
+                    f"core_half={core_t/2:.4f}"
+                )
+                for lr in layer_results_diag:
+                    w_off = lr.get("w_offset")
+                    log_info(
+                        f"    {lr.get('layer_name')}: w_offset={w_off}, "
+                        f"side={lr.get('layer_side')}, "
+                        f"panels={lr.get('panel_count', 0)}"
+                    )
 
             # Accumulate stats
             wall_panel_count = result.get("total_panel_count", 0)
@@ -610,7 +705,7 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
 # =============================================================================
 
 def main(walls_json_in, junctions_json_in, config_json_in, run_in,
-         assembly_mode_in=None, custom_map_in=None):
+         assembly_mode_in=None, custom_map_in=None, framing_json_in=None):
     """Main entry point for the component.
 
     Orchestrates the multi-layer sheathing generation workflow:
@@ -618,9 +713,10 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
     2. Validates inputs
     3. Parses configuration (base config, layer overrides, function filter)
     4. Parses optional junction data
-    5. Resolves assemblies for all walls (auto/revit_only/catalog/custom)
-    6. Processes all walls
-    7. Returns JSON results, summary, stats, and log
+    5. Auto-detects framing depth from framing_json (if connected)
+    6. Resolves assemblies for all walls (auto/revit_only/catalog/custom)
+    7. Processes all walls
+    8. Returns JSON results, summary, stats, and log
 
     Args:
         walls_json_in: JSON string from Wall Analyzer.
@@ -631,6 +727,10 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             ("auto", "revit_only", "catalog", "custom"). Default: "auto".
         custom_map_in: Optional JSON string with per-Wall-Type assembly
             mappings for custom mode.
+        framing_json_in: Optional JSON from Framing Generator. When
+            connected, the maximum profile depth is extracted and used
+            as framing_depth to prevent sheathing from overlapping
+            oversized framing (e.g., CFS profiles on a timber wall type).
 
     Returns:
         tuple: (multi_layer_json, layer_summary, stats, log)
@@ -666,9 +766,23 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             return "", error_msg, "", error_msg
 
         # Parse configuration
-        base_config, layer_configs, include_functions = parse_config(
+        base_config, layer_configs, include_functions, framing_depth = parse_config(
             config_json_input
         )
+
+        # Auto-detect framing depth from framing_json (unless explicit)
+        if framing_depth is None and framing_json_in and str(framing_json_in).strip():
+            try:
+                framing_data = json.loads(framing_json_in)
+                auto_depth = extract_max_framing_depth(framing_data)
+                if auto_depth is not None:
+                    framing_depth = auto_depth
+                    log_info(
+                        f"Auto-detected framing_depth={framing_depth:.4f} ft "
+                        f"({framing_depth * 12:.2f} in) from framing_json"
+                    )
+            except (json.JSONDecodeError, TypeError) as e:
+                log_warning(f"Invalid framing_json, ignoring: {e}")
 
         # Parse junctions data (optional)
         junctions_data = None
@@ -691,6 +805,7 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
         results, summary_lines, stats_text, log_lines = process_walls(
             walls_json_input, base_config, layer_configs, include_functions,
             junctions_data, assembly_mode=assembly_mode, custom_map=custom_map,
+            framing_depth=framing_depth,
         )
 
         # Serialize results to JSON
@@ -757,10 +872,11 @@ else:
     _config_json = _read_input(2)      # config_json
     _assembly_mode = _read_input(3)    # assembly_mode (optional)
     _custom_map = _read_input(4)       # custom_map (optional)
+    _framing_json = _read_input(5)     # framing_json (optional)
     _run_index = _input_count - 1      # run is always last
     _run = bool(_read_input(_run_index, False))
 
     multi_layer_json, layer_summary, stats, log = main(
         _walls_json, _junctions_json, _config_json, _run,
-        _assembly_mode, _custom_map,
+        _assembly_mode, _custom_map, _framing_json,
     )

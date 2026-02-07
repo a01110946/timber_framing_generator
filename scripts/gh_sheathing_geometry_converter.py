@@ -579,9 +579,24 @@ def main():
         sheathing_list = parse_sheathing_json(sheathing_json_input)
         walls_by_id = parse_walls_json(walls_json_input)
 
-        log_lines.append(f"Sheathing Geometry Converter v1.0")
+        log_lines.append(f"Sheathing Geometry Converter v1.1-diag")
         log_lines.append(f"Sheathing entries: {len(sheathing_list)}")
         log_lines.append(f"Walls available: {len(walls_by_id)}")
+
+        # Wall orientation diagnostic: print base_plane for each wall
+        for wid, wdata in walls_by_id.items():
+            bp = wdata.get("base_plane", {})
+            orig = bp.get("origin", {})
+            zax = bp.get("z_axis", {})
+            xax = bp.get("x_axis", {})
+            log_lines.append(
+                f"  Wall {wid}: origin=({orig.get('x',0):.4f}, "
+                f"{orig.get('y',0):.4f}, {orig.get('z',0):.4f}), "
+                f"x_axis=({xax.get('x',0):.3f}, {xax.get('y',0):.3f}, "
+                f"{xax.get('z',0):.3f}), "
+                f"z_axis=({zax.get('x',0):.3f}, {zax.get('y',0):.3f}, "
+                f"{zax.get('z',0):.3f})"
+            )
         log_lines.append("")
 
         # Parse filter_wall
@@ -624,6 +639,25 @@ def main():
         )
         if w_diag.get("sample"):
             log_lines.append(f"Sample: {w_diag['sample']}")
+
+        # === BBOX DIAGNOSTICS ===
+        # Show actual world-space bounding boxes to verify sheathing positions
+        log_lines.append("")
+        log_lines.append("=== Sheathing BBOX Diagnostic ===")
+        for pi, pbrep in enumerate(breps[:4]):
+            try:
+                bb = pbrep.GetBoundingBox(True)
+                pid = panel_ids[pi] if pi < len(panel_ids) else "?"
+                log_lines.append(
+                    f"  Panel[{pi}] ({pid}): "
+                    f"min=({bb.Min.X:.4f}, {bb.Min.Y:.4f}, {bb.Min.Z:.4f})  "
+                    f"max=({bb.Max.X:.4f}, {bb.Max.Y:.4f}, {bb.Max.Z:.4f})  "
+                    f"size=({bb.Max.X-bb.Min.X:.4f}, "
+                    f"{bb.Max.Y-bb.Min.Y:.4f}, "
+                    f"{bb.Max.Z-bb.Min.Z:.4f})"
+                )
+            except Exception as ex:
+                log_lines.append(f"  Panel[{pi}]: bbox error: {ex}")
 
     except Exception as e:
         log_error(f"Unexpected error: {str(e)}")

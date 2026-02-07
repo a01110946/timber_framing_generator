@@ -21,6 +21,7 @@ Usage:
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -75,6 +76,106 @@ MATERIAL_ALIASES: Dict[str, str] = {
     "densglass": "densglass_1_2",
     "smartside": "lp_smartside_7_16",
 }
+
+
+# Standard nominal-to-actual lumber depths (inches).
+# Used to infer the framing profile depth from the core material name
+# (e.g., "2x4 SPF @ 16\" OC" -> 3.5 inches -> 3.5/12 feet).
+_LUMBER_ACTUAL_DEPTHS: Dict[str, float] = {
+    "4": 3.5,
+    "6": 5.5,
+    "8": 7.25,
+    "10": 9.25,
+    "12": 11.25,
+}
+
+
+def extract_max_framing_depth(
+    framing_data: Any,
+    wall_id: Optional[str] = None,
+) -> Optional[float]:
+    """Extract the maximum profile depth from framing generator output.
+
+    Parses the framing_json structure (a FramingResults dict or list of
+    them) and returns the largest ``profile.depth`` across all elements.
+    This gives the actual framing depth regardless of what the assembly
+    catalog says — essential when CFS profiles are used on a wall whose
+    Revit type is a timber "2x4".
+
+    Args:
+        framing_data: Parsed framing_json — either a single
+            FramingResults dict with an ``elements`` list, or a list of
+            such dicts.
+        wall_id: Optional wall ID to filter elements. When provided,
+            only elements whose ``metadata.wall_id`` matches are
+            considered. When None, all elements are used.
+
+    Returns:
+        Maximum profile depth in feet, or None if no elements found.
+    """
+    if framing_data is None:
+        return None
+
+    # Normalise to a list of FramingResults dicts
+    if isinstance(framing_data, dict):
+        results_list = [framing_data]
+    elif isinstance(framing_data, list):
+        results_list = framing_data
+    else:
+        return None
+
+    max_depth: Optional[float] = None
+
+    for result in results_list:
+        if not isinstance(result, dict):
+            continue
+        elements = result.get("elements", [])
+        for elem in elements:
+            if not isinstance(elem, dict):
+                continue
+
+            # Optional wall_id filter
+            if wall_id is not None:
+                elem_wall_id = (elem.get("metadata") or {}).get("wall_id")
+                if elem_wall_id is not None and str(elem_wall_id) != str(wall_id):
+                    continue
+
+            profile = elem.get("profile")
+            if not isinstance(profile, dict):
+                continue
+            depth = profile.get("depth")
+            if depth is not None:
+                depth = float(depth)
+                if max_depth is None or depth > max_depth:
+                    max_depth = depth
+
+    return max_depth
+
+
+def _infer_framing_depth(wall_assembly: Dict[str, Any]) -> Optional[float]:
+    """Infer framing profile depth from core material name.
+
+    Parses "2xN" from material names like '2x4 SPF @ 16" OC' in the
+    assembly's core layer(s). Returns the actual lumber depth in feet,
+    or None if not determinable.
+
+    Args:
+        wall_assembly: Assembly dictionary with "layers" list.
+
+    Returns:
+        Framing depth in feet, or None if no standard lumber size found.
+    """
+    for layer in wall_assembly.get("layers", []):
+        if layer.get("side") != "core":
+            continue
+        material = layer.get("material", "")
+        match = re.search(r"2x(\d+)", str(material), re.IGNORECASE)
+        if match:
+            nominal = match.group(1)
+            actual_inches = _LUMBER_ACTUAL_DEPTHS.get(nominal)
+            if actual_inches is not None:
+                return actual_inches / 12.0
+    return None
 
 
 def _build_display_name_map() -> Dict[str, str]:
@@ -233,6 +334,7 @@ def generate_assembly_layers(
     u_end_bound: Optional[float] = None,
     include_functions: Optional[List[str]] = None,
     face_bounds: Optional[Dict[str, Tuple[Optional[float], Optional[float]]]] = None,
+    framing_depth: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Generate panels for all panelizable layers in a wall assembly.
 
@@ -257,6 +359,13 @@ def generate_assembly_layers(
             ("exterior"/"interior") to (u_start, u_end) tuple. When
             provided, each layer uses the bounds matching its face.
             Falls back to u_start_bound/u_end_bound if face not found.
+        framing_depth: Optional actual framing profile depth in feet
+            (e.g., 3.5/12 for a 2x4 stud). When provided, layer W
+            offsets use ``max(core_half, framing_depth / 2)`` so
+            sheathing never starts inside the framing zone. When None,
+            the depth is auto-inferred from the assembly core material
+            name (e.g., "2x4 SPF" -> 3.5/12). If inference fails, the
+            assembly core thickness is used as-is.
 
     Returns:
         Dict with:
@@ -279,8 +388,34 @@ def generate_assembly_layers(
     layers = wall_assembly.get("layers", [])
     allowed_funcs = set(include_functions) if include_functions else PANELIZABLE_FUNCTIONS
 
+    # Resolve framing depth: explicit > wall_thickness > auto-inferred > None
+    effective_framing_depth = framing_depth
+    if effective_framing_depth is None:
+        effective_framing_depth = _infer_framing_depth(wall_assembly)
+
+    # Also consider wall_thickness from Revit as a conservative bound.
+    # When the actual framing material (e.g., CFS 550S = 5.5") exceeds
+    # the assembly catalog's core_thickness (e.g., "2x4" = 3.5"),
+    # wall_thickness from Revit is often the most reliable indicator
+    # of the true framing depth.  Using it prevents sheathing from
+    # starting inside the framing zone.
+    wall_thickness = wall_data.get("wall_thickness", wall_data.get("thickness"))
+    if wall_thickness is not None:
+        if wall_thickness > 2.0:  # likely in inches
+            wall_thickness = wall_thickness / 12.0
+        if effective_framing_depth is None or wall_thickness > effective_framing_depth:
+            effective_framing_depth = wall_thickness
+
     # Compute per-layer W offsets
-    w_offsets = _safe_calculate_w_offsets(wall_assembly)
+    w_offsets = _safe_calculate_w_offsets(wall_assembly, effective_framing_depth)
+
+    # Diagnostic: print W offset details (visible in GH component output)
+    wall_id = wall_data.get("wall_id", "unknown")
+    print(
+        f"[W-DIAG] Wall {wall_id}: framing_depth={effective_framing_depth}, "
+        f"wall_thickness={wall_data.get('wall_thickness', wall_data.get('thickness'))}, "
+        f"w_offsets={w_offsets}"
+    )
 
     # Get rules for all layers
     rules_by_name = _safe_get_rules(wall_assembly)
@@ -392,6 +527,7 @@ def _add_assembly_metadata(
 
 def _safe_calculate_w_offsets(
     wall_assembly: Dict[str, Any],
+    framing_depth: Optional[float] = None,
 ) -> Dict[str, float]:
     """Calculate W offsets with fallback on failure.
 
@@ -401,6 +537,9 @@ def _safe_calculate_w_offsets(
 
     Args:
         wall_assembly: Assembly dictionary with "layers" list.
+        framing_depth: Optional actual framing profile depth in feet.
+            Passed through to the offset calculation so layers start
+            at ``max(core_half, framing_depth / 2)``.
 
     Returns:
         Dict mapping layer name to W offset (feet from centerline).
@@ -408,17 +547,18 @@ def _safe_calculate_w_offsets(
     """
     try:
         from .sheathing_geometry import calculate_layer_w_offsets
-        return calculate_layer_w_offsets(wall_assembly)
+        return calculate_layer_w_offsets(wall_assembly, framing_depth=framing_depth)
     except Exception as e:
         logger.warning(
             "Full W offset calculation failed: %s. "
             "Falling back to dict-based computation.", e
         )
-        return _compute_fallback_w_offsets(wall_assembly)
+        return _compute_fallback_w_offsets(wall_assembly, framing_depth=framing_depth)
 
 
 def _compute_fallback_w_offsets(
     wall_assembly: Dict[str, Any],
+    framing_depth: Optional[float] = None,
 ) -> Dict[str, float]:
     """Compute per-layer W offsets directly from assembly dict.
 
@@ -428,12 +568,17 @@ def _compute_fallback_w_offsets(
     junction_types imports.
 
     Layers are stacked outward from the structural core center:
-    - Exterior layers: +core_half, then increasingly positive
-    - Interior layers: -core_half, then increasingly negative
+    - Exterior layers: +effective_half, then increasingly positive
+    - Interior layers: -effective_half, then increasingly negative
+
+    When ``framing_depth`` is provided, ``effective_half`` is
+    ``max(core_half, framing_depth / 2)`` to prevent sheathing from
+    starting inside the framing zone.
 
     Args:
         wall_assembly: Assembly dictionary with "layers" list.
             Each layer has name, function, side, thickness.
+        framing_depth: Optional actual framing profile depth in feet.
 
     Returns:
         Dict mapping layer name to W offset (feet from centerline).
@@ -452,20 +597,29 @@ def _compute_fallback_w_offsets(
         return {}
 
     core_half = core_thickness / 2.0
+
+    # Use actual framing depth when it exceeds assembly core
+    effective_half = core_half
+    if framing_depth is not None:
+        effective_half = max(core_half, framing_depth / 2.0)
+
+    # Tiny outward nudge (matches SHEATHING_GAP in sheathing_geometry)
+    effective_half += 0.001
+
     offsets: Dict[str, float] = {}
 
-    # Exterior layers: stack outward from core.
+    # Exterior layers: stack outward from effective half.
     # Assembly order is outside-to-inside, so reverse to get core-outward.
     ext_layers = [l for l in layers if l.get("side") == "exterior"]
-    cumulative = core_half
+    cumulative = effective_half
     for layer in reversed(ext_layers):
         offsets[layer.get("name", "unknown")] = cumulative
         cumulative += layer.get("thickness", 0.0)
 
-    # Interior layers: stack inward from core.
+    # Interior layers: stack inward from effective half.
     # Assembly order has interior layers after core (closest to core first).
     int_layers = [l for l in layers if l.get("side") == "interior"]
-    cumulative = -core_half
+    cumulative = -effective_half
     for layer in int_layers:
         offsets[layer.get("name", "unknown")] = cumulative
         cumulative -= layer.get("thickness", 0.0)

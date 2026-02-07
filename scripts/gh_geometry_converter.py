@@ -541,6 +541,45 @@ def main():
         log_lines.append(f"Total Breps: {len(breps)}")
         log_lines.append(f"Total Centerlines: {len(centerlines)}")
 
+        # === BBOX DIAGNOSTICS ===
+        # Show actual world-space bounding boxes to verify framing positions
+        log_lines.append("")
+        log_lines.append("=== Framing BBOX Diagnostic ===")
+        stud_idx = TYPE_ORDER.index("stud")
+        if stud_idx in type_groups:
+            stud_breps = type_groups[stud_idx]
+            for si, sbrep in enumerate(stud_breps[:3]):
+                try:
+                    bb = sbrep.GetBoundingBox(True)
+                    log_lines.append(
+                        f"  Stud[{si}]: "
+                        f"min=({bb.Min.X:.4f}, {bb.Min.Y:.4f}, {bb.Min.Z:.4f})  "
+                        f"max=({bb.Max.X:.4f}, {bb.Max.Y:.4f}, {bb.Max.Z:.4f})  "
+                        f"size=({bb.Max.X-bb.Min.X:.4f}, "
+                        f"{bb.Max.Y-bb.Min.Y:.4f}, "
+                        f"{bb.Max.Z-bb.Min.Z:.4f})"
+                    )
+                except Exception as ex:
+                    log_lines.append(f"  Stud[{si}]: bbox error: {ex}")
+        else:
+            log_lines.append("  No studs found in type_groups")
+
+        plate_idx = TYPE_ORDER.index("bottom_plate")
+        if plate_idx in type_groups:
+            for pi, pbrep in enumerate(type_groups[plate_idx][:1]):
+                try:
+                    bb = pbrep.GetBoundingBox(True)
+                    log_lines.append(
+                        f"  Plate[{pi}]: "
+                        f"min=({bb.Min.X:.4f}, {bb.Min.Y:.4f}, {bb.Min.Z:.4f})  "
+                        f"max=({bb.Max.X:.4f}, {bb.Max.Y:.4f}, {bb.Max.Z:.4f})  "
+                        f"size=({bb.Max.X-bb.Min.X:.4f}, "
+                        f"{bb.Max.Y-bb.Min.Y:.4f}, "
+                        f"{bb.Max.Z-bb.Min.Z:.4f})"
+                    )
+                except Exception as ex:
+                    log_lines.append(f"  Plate[{pi}]: bbox error: {ex}")
+
     except Exception as e:
         log_error(f"Unexpected error: {str(e)}")
         log_lines.append(f"ERROR: {str(e)}")

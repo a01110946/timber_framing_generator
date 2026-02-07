@@ -16,6 +16,7 @@ import pytest
 
 from src.timber_framing_generator.sheathing.multi_layer_generator import (
     generate_assembly_layers,
+    extract_max_framing_depth,
     LayerPanelResult,
     PANELIZABLE_FUNCTIONS,
     DEFAULT_LAYER_MATERIALS,
@@ -23,7 +24,10 @@ from src.timber_framing_generator.sheathing.multi_layer_generator import (
     _get_layer_config,
     _determine_face,
     _resolve_material_key,
+    _infer_framing_depth,
+    _compute_fallback_w_offsets,
 )
+from src.timber_framing_generator.sheathing.sheathing_geometry import SHEATHING_GAP
 
 
 # =============================================================================
@@ -36,16 +40,20 @@ def _make_wall_data(
     wall_height: float = 8.0,
     layers: list = None,
     openings: list = None,
+    wall_thickness: float = None,
 ) -> dict:
     """Create minimal wall_data with an assembly."""
     assembly = {"layers": layers} if layers else None
-    return {
+    data = {
         "wall_id": "test_wall",
         "wall_length": wall_length,
         "wall_height": wall_height,
         "openings": openings or [],
         "wall_assembly": assembly,
     }
+    if wall_thickness is not None:
+        data["wall_thickness"] = wall_thickness
+    return data
 
 
 def _typical_exterior_assembly() -> list:
@@ -943,14 +951,14 @@ class TestPanelLayerWOffset:
         osb_layer = next(
             r for r in result["layer_results"] if r["layer_name"] == "OSB"
         )
-        # OSB is the innermost exterior layer: should start at core_half
-        assert osb_layer["w_offset"] == pytest.approx(core_half, abs=1e-6)
-        # Siding should be further out: core_half + osb_thickness
+        # OSB is the innermost exterior layer: should start at core_half + gap
+        assert osb_layer["w_offset"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
+        # Siding should be further out: core_half + gap + osb_thickness
         siding_layer = next(
             r for r in result["layer_results"] if r["layer_name"] == "Siding"
         )
         assert siding_layer["w_offset"] == pytest.approx(
-            core_half + osb_thickness, abs=1e-6
+            core_half + SHEATHING_GAP + osb_thickness, abs=1e-6
         )
 
     def test_no_overlap_with_framing_bounds(self) -> None:
@@ -1036,9 +1044,9 @@ class TestFallbackWOffsets:
         core_half = 3.5 / 12 / 2.0
         osb_t = 0.4375 / 12
 
-        assert offsets["structural_sheathing"] == pytest.approx(core_half, abs=1e-6)
-        assert offsets["exterior_finish"] == pytest.approx(core_half + osb_t, abs=1e-6)
-        assert offsets["interior_finish"] == pytest.approx(-core_half, abs=1e-6)
+        assert offsets["structural_sheathing"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
+        assert offsets["exterior_finish"] == pytest.approx(core_half + SHEATHING_GAP + osb_t, abs=1e-6)
+        assert offsets["interior_finish"] == pytest.approx(-(core_half + SHEATHING_GAP), abs=1e-6)
 
     def test_fallback_no_core_returns_empty(self) -> None:
         """Fallback returns empty if no core layer."""
@@ -1069,3 +1077,436 @@ class TestGenerateAssemblyLayersSummary:
         result = generate_assembly_layers(wall_data)
         per_layer_sum = sum(r["panel_count"] for r in result["layer_results"])
         assert result["total_panel_count"] == per_layer_sum
+
+
+# =============================================================================
+# _infer_framing_depth Tests
+# =============================================================================
+
+
+class TestInferFramingDepth:
+    """Tests for _infer_framing_depth helper."""
+
+    def test_2x4_material_name(self) -> None:
+        assembly = {"layers": [
+            {"name": "core", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12, "material": '2x4 SPF @ 16" OC'},
+        ]}
+        depth = _infer_framing_depth(assembly)
+        assert depth == pytest.approx(3.5 / 12, abs=1e-6)
+
+    def test_2x6_material_name(self) -> None:
+        assembly = {"layers": [
+            {"name": "core", "function": "structure", "side": "core",
+             "thickness": 5.5 / 12, "material": '2x6 SPF @ 16" OC'},
+        ]}
+        depth = _infer_framing_depth(assembly)
+        assert depth == pytest.approx(5.5 / 12, abs=1e-6)
+
+    def test_no_material_returns_none(self) -> None:
+        assembly = {"layers": [
+            {"name": "core", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12},
+        ]}
+        assert _infer_framing_depth(assembly) is None
+
+    def test_non_lumber_material_returns_none(self) -> None:
+        assembly = {"layers": [
+            {"name": "core", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12, "material": "Steel Studs 3.5 inch"},
+        ]}
+        assert _infer_framing_depth(assembly) is None
+
+    def test_ignores_non_core_layers(self) -> None:
+        assembly = {"layers": [
+            {"name": "osb", "function": "substrate", "side": "exterior",
+             "thickness": 0.036, "material": "2x4 something"},
+            {"name": "core", "function": "structure", "side": "core",
+             "thickness": 5.5 / 12, "material": '2x6 SPF'},
+        ]}
+        depth = _infer_framing_depth(assembly)
+        assert depth == pytest.approx(5.5 / 12, abs=1e-6)
+
+    def test_empty_assembly(self) -> None:
+        assert _infer_framing_depth({"layers": []}) is None
+        assert _infer_framing_depth({}) is None
+
+
+# =============================================================================
+# Framing Depth Override Tests
+# =============================================================================
+
+
+class TestFramingDepthOverride:
+    """Tests that framing_depth correctly prevents sheathing-framing overlap."""
+
+    def test_explicit_framing_depth_overrides_core(self) -> None:
+        """Explicit framing_depth=2x6 on 2x4 assembly pushes layers out."""
+        core_2x4 = 3.5 / 12
+        depth_2x6 = 5.5 / 12
+        framing_half = depth_2x6 / 2.0
+
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "Studs", "function": "structure", "side": "core",
+             "thickness": core_2x4, "material": '2x4 SPF @ 16" OC'},
+            {"name": "Gyp", "function": "finish", "side": "interior",
+             "thickness": 0.5 / 12},
+        ])
+        result = generate_assembly_layers(wall_data, framing_depth=depth_2x6)
+
+        osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
+        gyp_layer = next(r for r in result["layer_results"] if r["layer_name"] == "Gyp")
+
+        # OSB should start at framing_half + gap (2x6), not core_half (2x4)
+        assert osb_layer["w_offset"] == pytest.approx(framing_half + SHEATHING_GAP, abs=1e-6)
+        # Interior gyp at -(framing_half + gap)
+        assert gyp_layer["w_offset"] == pytest.approx(-(framing_half + SHEATHING_GAP), abs=1e-6)
+
+    def test_framing_depth_none_uses_auto_inference(self) -> None:
+        """framing_depth=None auto-infers from '2x4' in core material name."""
+        core_2x4 = 3.5 / 12
+        core_half = core_2x4 / 2.0
+
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "Studs", "function": "structure", "side": "core",
+             "thickness": core_2x4, "material": '2x4 SPF @ 16" OC'},
+        ])
+        result = generate_assembly_layers(wall_data, framing_depth=None)
+
+        osb_layer = result["layer_results"][0]
+        # Auto-inferred 2x4 -> 3.5/12. core_half == framing_half -> same result + gap
+        assert osb_layer["w_offset"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
+
+    def test_no_overlap_with_mismatched_framing(self) -> None:
+        """When framing is 2x6 but assembly says 2x4, no panel overlaps framing."""
+        core_2x4 = 3.5 / 12
+        depth_2x6 = 5.5 / 12
+        framing_half = depth_2x6 / 2.0
+
+        wall_data = _make_wall_data(layers=[
+            {"name": "Siding", "function": "finish", "side": "exterior",
+             "thickness": 0.5 / 12},
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "Studs", "function": "structure", "side": "core",
+             "thickness": core_2x4, "material": '2x4 SPF @ 16" OC'},
+            {"name": "Gyp", "function": "finish", "side": "interior",
+             "thickness": 0.5 / 12},
+        ])
+        result = generate_assembly_layers(wall_data, framing_depth=depth_2x6)
+
+        for layer_result in result["layer_results"]:
+            w = layer_result["w_offset"]
+            side = layer_result["layer_side"]
+            assert w is not None
+            if side == "exterior":
+                assert w >= framing_half - 1e-9, (
+                    f"Exterior layer {layer_result['layer_name']} "
+                    f"w_offset={w} overlaps framing at {framing_half}"
+                )
+            elif side == "interior":
+                assert w <= -framing_half + 1e-9, (
+                    f"Interior layer {layer_result['layer_name']} "
+                    f"w_offset={w} overlaps framing at {-framing_half}"
+                )
+
+    def test_panels_carry_corrected_w_offset(self) -> None:
+        """Individual panels should carry the framing-depth-corrected w_offset."""
+        depth_2x6 = 5.5 / 12
+        framing_half = depth_2x6 / 2.0
+
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "Studs", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12, "material": '2x4 SPF @ 16" OC'},
+        ])
+        result = generate_assembly_layers(wall_data, framing_depth=depth_2x6)
+
+        for panel in result["layer_results"][0]["panels"]:
+            assert panel["layer_w_offset"] == pytest.approx(framing_half + SHEATHING_GAP, abs=1e-6)
+
+
+class TestFallbackWOffsetsWithFramingDepth:
+    """Tests for _compute_fallback_w_offsets with framing_depth."""
+
+    def test_fallback_respects_framing_depth(self) -> None:
+        """Fallback should use max(core_half, framing_depth/2)."""
+        layers = [
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "core", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12},
+            {"name": "gyp", "function": "finish", "side": "interior",
+             "thickness": 0.5 / 12},
+        ]
+        assembly = {"layers": layers}
+
+        depth_2x6 = 5.5 / 12
+        framing_half = depth_2x6 / 2.0
+
+        offsets = _compute_fallback_w_offsets(assembly, framing_depth=depth_2x6)
+        assert offsets["OSB"] == pytest.approx(framing_half + SHEATHING_GAP, abs=1e-6)
+        assert offsets["gyp"] == pytest.approx(-(framing_half + SHEATHING_GAP), abs=1e-6)
+
+    def test_fallback_framing_depth_none_unchanged(self) -> None:
+        """Fallback with framing_depth=None should match default behavior."""
+        layers = [
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "core", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12},
+        ]
+        assembly = {"layers": layers}
+        core_half = 3.5 / 12 / 2.0
+
+        offsets_default = _compute_fallback_w_offsets(assembly)
+        offsets_none = _compute_fallback_w_offsets(assembly, framing_depth=None)
+        assert offsets_default["OSB"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
+        assert offsets_none["OSB"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
+
+
+class TestWallThicknessFramingDepthFallback:
+    """Tests that wall_thickness from Revit is used when it exceeds
+    the assembly's core_thickness (e.g., CFS profiles on a '2x4' assembly)."""
+
+    def _cfs_wall_data(self, wall_thickness: float = 0.5) -> dict:
+        """Wall with 2x4 assembly but CFS-scale wall_thickness (6 inches)."""
+        return _make_wall_data(
+            wall_thickness=wall_thickness,
+            layers=[
+                {"name": "OSB", "function": "substrate", "side": "exterior",
+                 "thickness": 7 / 16 / 12},
+                {"name": "Studs", "function": "structure", "side": "core",
+                 "thickness": 3.5 / 12, "material": '2x4 SPF @ 16" OC'},
+                {"name": "Gyp", "function": "finish", "side": "interior",
+                 "thickness": 0.5 / 12},
+            ],
+        )
+
+    def test_cfs_wall_uses_wall_thickness(self) -> None:
+        """wall_thickness=0.5 (6in CFS) overrides inferred 3.5in '2x4' depth."""
+        wall_data = self._cfs_wall_data(wall_thickness=0.5)
+        result = generate_assembly_layers(wall_data, framing_depth=None)
+
+        osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
+        # effective_half = max(core_half, wall_thickness/2) + gap
+        # = max(3.5/24, 0.5/2) + 0.001 = 0.25 + 0.001 = 0.251
+        expected = 0.5 / 2.0 + SHEATHING_GAP
+        assert osb_layer["w_offset"] == pytest.approx(expected, abs=1e-6)
+
+    def test_cfs_sheathing_clears_framing_zone(self) -> None:
+        """All exterior layers start past framing half-depth."""
+        wall_data = self._cfs_wall_data(wall_thickness=0.5)
+        framing_half = 0.5 / 2.0  # 6in / 2 = 3in = 0.25 ft
+
+        result = generate_assembly_layers(wall_data, framing_depth=None)
+
+        for lr in result["layer_results"]:
+            w = lr["w_offset"]
+            if lr["layer_side"] == "exterior":
+                assert w >= framing_half, (
+                    f"Exterior {lr['layer_name']} w_offset={w} "
+                    f"overlaps CFS framing at {framing_half}"
+                )
+            elif lr["layer_side"] == "interior":
+                assert w <= -framing_half, (
+                    f"Interior {lr['layer_name']} w_offset={w} "
+                    f"overlaps CFS framing at {-framing_half}"
+                )
+
+    def test_no_wall_thickness_uses_inferred_depth(self) -> None:
+        """Without wall_thickness, falls back to assembly inference."""
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "Studs", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12, "material": '2x4 SPF @ 16" OC'},
+        ])
+        # No wall_thickness key → falls back to _infer_framing_depth → 3.5/12
+        result = generate_assembly_layers(wall_data, framing_depth=None)
+
+        osb_layer = result["layer_results"][0]
+        core_half = 3.5 / 12 / 2.0
+        assert osb_layer["w_offset"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
+
+    def test_explicit_framing_depth_overrides_wall_thickness(self) -> None:
+        """Explicit framing_depth takes priority over wall_thickness."""
+        depth_2x8 = 7.25 / 12
+        wall_data = self._cfs_wall_data(wall_thickness=0.5)
+
+        result = generate_assembly_layers(wall_data, framing_depth=depth_2x8)
+
+        osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
+        # explicit 2x8 (7.25") > wall_thickness (6") → uses 2x8
+        expected = depth_2x8 / 2.0 + SHEATHING_GAP
+        assert osb_layer["w_offset"] == pytest.approx(expected, abs=1e-6)
+
+    def test_wall_thickness_in_inches_auto_converted(self) -> None:
+        """wall_thickness > 2.0 is treated as inches and converted to feet."""
+        wall_data = self._cfs_wall_data(wall_thickness=6.0)  # 6 inches
+
+        result = generate_assembly_layers(wall_data, framing_depth=None)
+
+        osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
+        # 6 inches > 2.0 → /12 → 0.5 ft → half = 0.25
+        expected = 0.5 / 2.0 + SHEATHING_GAP
+        assert osb_layer["w_offset"] == pytest.approx(expected, abs=1e-6)
+
+
+# =============================================================================
+# extract_max_framing_depth Tests
+# =============================================================================
+
+
+def _make_framing_element(depth: float, wall_id: str = "w1") -> dict:
+    """Create a minimal framing element dict with a profile depth."""
+    return {
+        "id": "elem_1",
+        "element_type": "stud",
+        "profile": {
+            "name": "test_profile",
+            "width": 0.125,
+            "depth": depth,
+            "material_system": "cfs",
+        },
+        "metadata": {"wall_id": wall_id},
+    }
+
+
+def _make_framing_data(elements: list) -> dict:
+    """Wrap elements in a FramingResults-like dict."""
+    return {
+        "wall_id": "all_walls",
+        "material_system": "cfs",
+        "elements": elements,
+    }
+
+
+class TestExtractMaxFramingDepth:
+    """Tests for extract_max_framing_depth()."""
+
+    def test_single_element(self) -> None:
+        """Returns the depth of the only element."""
+        data = _make_framing_data([_make_framing_element(0.458)])
+        assert extract_max_framing_depth(data) == pytest.approx(0.458)
+
+    def test_max_across_multiple_elements(self) -> None:
+        """Returns the maximum depth across studs and plates."""
+        data = _make_framing_data([
+            _make_framing_element(0.458),   # 5.5" stud
+            _make_framing_element(0.5),     # 6" plate
+            _make_framing_element(0.292),   # 3.5" misc
+        ])
+        assert extract_max_framing_depth(data) == pytest.approx(0.5)
+
+    def test_empty_elements(self) -> None:
+        """Returns None when there are no elements."""
+        data = _make_framing_data([])
+        assert extract_max_framing_depth(data) is None
+
+    def test_none_input(self) -> None:
+        """Returns None for None input."""
+        assert extract_max_framing_depth(None) is None
+
+    def test_list_of_results(self) -> None:
+        """Handles a list of FramingResults dicts."""
+        data = [
+            _make_framing_data([_make_framing_element(0.292)]),
+            _make_framing_data([_make_framing_element(0.5)]),
+        ]
+        assert extract_max_framing_depth(data) == pytest.approx(0.5)
+
+    def test_wall_id_filter(self) -> None:
+        """Filters elements by wall_id when specified."""
+        data = _make_framing_data([
+            _make_framing_element(0.5, wall_id="w1"),
+            _make_framing_element(0.292, wall_id="w2"),
+        ])
+        assert extract_max_framing_depth(data, wall_id="w2") == pytest.approx(0.292)
+
+    def test_wall_id_filter_no_match(self) -> None:
+        """Returns None when no elements match wall_id."""
+        data = _make_framing_data([_make_framing_element(0.5, wall_id="w1")])
+        assert extract_max_framing_depth(data, wall_id="w999") is None
+
+    def test_missing_profile(self) -> None:
+        """Skips elements without a profile dict."""
+        data = _make_framing_data([{"id": "bad", "element_type": "stud"}])
+        assert extract_max_framing_depth(data) is None
+
+    def test_missing_depth(self) -> None:
+        """Skips profiles without a depth key."""
+        data = _make_framing_data([{
+            "id": "bad",
+            "element_type": "stud",
+            "profile": {"name": "test", "width": 0.125},
+            "metadata": {},
+        }])
+        assert extract_max_framing_depth(data) is None
+
+
+class TestFramingJsonAutoDetectIntegration:
+    """Integration: framing_json auto-detection feeds generate_assembly_layers."""
+
+    def _cfs_wall_and_framing(self) -> tuple:
+        """Wall with 2x4 assembly + CFS framing data (6" plates)."""
+        wall_data = _make_wall_data(layers=[
+            {"name": "OSB", "function": "substrate", "side": "exterior",
+             "thickness": 7 / 16 / 12},
+            {"name": "Studs", "function": "structure", "side": "core",
+             "thickness": 3.5 / 12, "material": '2x4 SPF @ 16" OC'},
+            {"name": "Gyp", "function": "finish", "side": "interior",
+             "thickness": 0.5 / 12},
+        ])
+        # CFS framing: 5.5" studs and 6" plates
+        framing_data = _make_framing_data([
+            _make_framing_element(5.5 / 12),   # stud
+            _make_framing_element(6.0 / 12),   # plate (largest)
+        ])
+        return wall_data, framing_data
+
+    def test_auto_detected_depth_clears_cfs_framing(self) -> None:
+        """extract_max_framing_depth + generate_assembly_layers clears CFS plates."""
+        wall_data, framing_data = self._cfs_wall_and_framing()
+
+        auto_depth = extract_max_framing_depth(framing_data)
+        assert auto_depth == pytest.approx(6.0 / 12)
+
+        result = generate_assembly_layers(wall_data, framing_depth=auto_depth)
+
+        cfs_plate_half = 6.0 / 12 / 2.0  # 0.25 ft
+        for lr in result["layer_results"]:
+            w = lr["w_offset"]
+            if lr["layer_side"] == "exterior":
+                assert w >= cfs_plate_half, (
+                    f"Exterior {lr['layer_name']} w_offset={w} "
+                    f"overlaps CFS plate at {cfs_plate_half}"
+                )
+
+    def test_explicit_framing_depth_wins_over_auto(self) -> None:
+        """Explicit framing_depth from config takes priority over framing_json."""
+        wall_data, framing_data = self._cfs_wall_and_framing()
+
+        auto_depth = extract_max_framing_depth(framing_data)
+        explicit_depth = 7.25 / 12  # 2x8
+
+        # Explicit is bigger — should be used
+        result = generate_assembly_layers(wall_data, framing_depth=explicit_depth)
+        osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
+        expected = explicit_depth / 2.0 + SHEATHING_GAP
+        assert osb_layer["w_offset"] == pytest.approx(expected, abs=1e-6)
+
+    def test_without_framing_json_falls_back_to_inference(self) -> None:
+        """Without framing_json, falls back to _infer_framing_depth."""
+        wall_data, _ = self._cfs_wall_and_framing()
+
+        # No framing_depth passed → infers 3.5/12 from "2x4" in core name
+        result = generate_assembly_layers(wall_data, framing_depth=None)
+        osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
+        core_half = 3.5 / 12 / 2.0
+        assert osb_layer["w_offset"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)

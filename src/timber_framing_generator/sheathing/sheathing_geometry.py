@@ -25,6 +25,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Small outward nudge applied to layer W offsets so sheathing faces never
+# sit co-planar with framing faces.  Prevents Z-fighting and AABB overlap
+# artifacts in the Rhino viewport.  ~0.012 in ≈ 0.3 mm — invisible in practice.
+SHEATHING_GAP: float = 0.001
+
 
 @dataclass
 class SheathingPanelGeometry:
@@ -206,6 +211,7 @@ def _calculate_w_offset_from_assembly(
 
 def calculate_layer_w_offsets(
     wall_assembly: Dict[str, Any],
+    framing_depth: Optional[float] = None,
 ) -> Dict[str, float]:
     """
     Compute W offset for each layer's core-facing surface.
@@ -213,11 +219,16 @@ def calculate_layer_w_offsets(
     Returns a dictionary mapping layer name to its W position where
     the layer starts (the face closest to the structural core).
 
-    Useful for Phase 5 when placing individual layers (insulation,
-    drywall, cladding) at their precise positions.
+    When ``framing_depth`` is provided, the starting offset is
+    ``max(core_half, framing_depth / 2)`` so that sheathing layers
+    never start inside the framing zone even when the assembly
+    catalog core thickness differs from the actual framing profile.
 
     Args:
         wall_assembly: Assembly dictionary with "layers" list.
+        framing_depth: Optional actual framing profile depth in feet
+            (e.g., 3.5/12 for 2x4). When provided, layers are pushed
+            outward to at least ``framing_depth / 2`` from centerline.
 
     Returns:
         Dict mapping layer name to W offset (feet from centerline).
@@ -231,17 +242,26 @@ def calculate_layer_w_offsets(
     offsets: Dict[str, float] = {}
     core_half = assembly_def.core_thickness / 2.0
 
-    # Exterior layers: stack outward from core exterior face
+    # Use actual framing depth when it exceeds assembly core
+    effective_half = core_half
+    if framing_depth is not None:
+        effective_half = max(core_half, framing_depth / 2.0)
+
+    # Tiny outward nudge so sheathing faces never sit co-planar with
+    # framing faces (prevents Z-fighting and AABB overlap artifacts).
+    effective_half += SHEATHING_GAP
+
+    # Exterior layers: stack outward from effective exterior face
     ext_layers = assembly_def.get_layers_by_side(LayerSide.EXTERIOR)
-    cumulative = core_half
+    cumulative = effective_half
     for layer in reversed(ext_layers):  # closest to core first
         offsets[layer.name] = cumulative
         cumulative += layer.thickness
 
-    # Interior layers: stack inward from core interior face
+    # Interior layers: stack inward from effective interior face
     # Store core-facing surface (matching exterior convention)
     int_layers = assembly_def.get_layers_by_side(LayerSide.INTERIOR)
-    cumulative = -core_half
+    cumulative = -effective_half
     for layer in int_layers:  # order from assembly (closest to core first)
         offsets[layer.name] = cumulative  # Core-facing surface
         cumulative -= layer.thickness
@@ -249,7 +269,7 @@ def calculate_layer_w_offsets(
     # Core layer
     core_layers = assembly_def.get_layers_by_side(LayerSide.CORE)
     for layer in core_layers:
-        offsets[layer.name] = -core_half
+        offsets[layer.name] = -effective_half
 
     return offsets
 

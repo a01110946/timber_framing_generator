@@ -24,6 +24,8 @@ from src.timber_framing_generator.config.assembly_resolver import (
     _infer_assembly_from_thickness,
     _infer_from_framing_hint,
     _nearest_lumber_size,
+    _nearest_cfs_depth,
+    _nearest_framing_depth,
     _lookup_custom_map,
     CATALOG_KEYWORDS,
     VALID_MODES,
@@ -786,3 +788,256 @@ class TestFramingHintInPipeline:
         assert res_4.assembly_name == "2x4_exterior"
         assert res_6.assembly_name == "2x6_exterior"
         assert res_4.assembly_name != res_6.assembly_name
+
+
+# =============================================================================
+# CFS Depth Mapping Tests
+# =============================================================================
+
+
+class TestNearestCfsDepth:
+    """Tests for _nearest_cfs_depth() midpoint-based CFS mapping."""
+
+    def test_exact_4_0_maps_to_400s(self) -> None:
+        """4.0" exactly → 400S (4.0")."""
+        assert _nearest_cfs_depth(4.0) == 4.0
+
+    def test_exact_3_5_maps_to_350s(self) -> None:
+        """3.5" exactly → 350S (3.5")."""
+        assert _nearest_cfs_depth(3.5) == 3.5
+
+    def test_exact_6_0_maps_to_600s(self) -> None:
+        assert _nearest_cfs_depth(6.0) == 6.0
+
+    def test_exact_8_0_maps_to_800s(self) -> None:
+        assert _nearest_cfs_depth(8.0) == 8.0
+
+    def test_boundary_3_75_maps_to_400s(self) -> None:
+        """3.75" is above midpoint(3.5, 4.0)=3.75 → 400S."""
+        assert _nearest_cfs_depth(3.75) == 4.0
+
+    def test_boundary_below_3_75_maps_to_350s(self) -> None:
+        """3.74" is below midpoint(3.5, 4.0) → 350S."""
+        assert _nearest_cfs_depth(3.74) == 3.5
+
+    def test_5_0_maps_to_550s(self) -> None:
+        """5.0" is above midpoint(4.0, 5.5)=4.75 → 550S."""
+        assert _nearest_cfs_depth(5.0) == 5.5
+
+    def test_below_minimum_maps_to_250s(self) -> None:
+        """1.0" → smallest available: 250S (2.5")."""
+        assert _nearest_cfs_depth(1.0) == 2.5
+
+    def test_zero_maps_to_default(self) -> None:
+        assert _nearest_cfs_depth(0.0) == 3.5
+
+    def test_negative_maps_to_default(self) -> None:
+        assert _nearest_cfs_depth(-5.0) == 3.5
+
+    def test_10_inch_maps_to_1000s(self) -> None:
+        assert _nearest_cfs_depth(10.0) == 10.0
+
+    def test_very_large_maps_to_1000s(self) -> None:
+        """15" → caps at 1000S (10.0")."""
+        assert _nearest_cfs_depth(15.0) == 10.0
+
+
+# =============================================================================
+# Framing Depth Dispatch Tests
+# =============================================================================
+
+
+class TestNearestFramingDepth:
+    """Tests for _nearest_framing_depth() dispatch by framing system."""
+
+    def test_timber_4_inch_gives_3_5(self) -> None:
+        """4" wall → 2x4 actual = 3.5" (timber)."""
+        assert _nearest_framing_depth(4.0, "timber") == 3.5
+
+    def test_cfs_4_inch_gives_4_0(self) -> None:
+        """4" wall → 400S = 4.0" (CFS)."""
+        assert _nearest_framing_depth(4.0, "cfs") == 4.0
+
+    def test_timber_6_inch_gives_5_5(self) -> None:
+        """6" wall → 2x6 actual = 5.5" (timber)."""
+        assert _nearest_framing_depth(6.0, "timber") == 5.5
+
+    def test_cfs_6_inch_gives_6_0(self) -> None:
+        """6" wall → 600S = 6.0" (CFS)."""
+        assert _nearest_framing_depth(6.0, "cfs") == 6.0
+
+    def test_defaults_to_timber(self) -> None:
+        """No framing_system specified → timber behavior."""
+        assert _nearest_framing_depth(4.0) == 3.5
+
+
+# =============================================================================
+# Framing System in Pipeline Tests
+# =============================================================================
+
+
+class TestFramingSystemInPipeline:
+    """Tests that framing_system propagates through resolve_assembly."""
+
+    def test_auto_mode_timber_default(self) -> None:
+        """Default (timber): 4" wall → 2x4_exterior (3.5")."""
+        wall = _make_wall(
+            wall_type="CW 102",
+            is_exterior=True,
+            wall_thickness=0.333,  # ~4"
+        )
+        res = resolve_assembly(wall, mode="auto")
+        assert res.assembly_name == "2x4_exterior"
+
+    def test_auto_mode_cfs_4_inch_wall(self) -> None:
+        """CFS: 4" wall → depth 4.0" >= 5.5? No → still 2x4_exterior."""
+        wall = _make_wall(
+            wall_type="CW 102",
+            is_exterior=True,
+            wall_thickness=0.333,  # ~4"
+        )
+        res = resolve_assembly(wall, mode="auto", framing_system="cfs")
+        assert res.assembly_name == "2x4_exterior"
+
+    def test_cfs_5_inch_wall_gets_2x6(self) -> None:
+        """CFS: 5" wall → depth 5.5" (550S) >= 5.5 → 2x6_exterior."""
+        wall = _make_wall(
+            wall_type="CW 102",
+            is_exterior=True,
+            wall_thickness=5.0 / 12.0,  # 5" in feet
+        )
+        res = resolve_assembly(wall, mode="auto", framing_system="cfs")
+        assert res.assembly_name == "2x6_exterior"
+
+    def test_timber_5_inch_wall_gets_2x6(self) -> None:
+        """Timber: 5" wall → depth 5.5" (nearest 2x6) >= 5.5 → 2x6_exterior."""
+        wall = _make_wall(
+            wall_type="CW 102",
+            is_exterior=True,
+            wall_thickness=5.0 / 12.0,  # 5"
+        )
+        res = resolve_assembly(wall, mode="auto", framing_system="timber")
+        assert res.assembly_name == "2x6_exterior"
+
+    def test_revit_mode_ignores_framing_system(self) -> None:
+        """In 'revit' mode with explicit assembly, framing_system doesn't matter."""
+        wall = _make_wall(
+            wall_type="CW 102",
+            wall_assembly=_make_revit_assembly(),
+            is_exterior=True,
+        )
+        res_timber = resolve_assembly(wall, mode="revit", framing_system="timber")
+        res_cfs = resolve_assembly(wall, mode="revit", framing_system="cfs")
+        assert res_timber.source == "explicit"
+        assert res_cfs.source == "explicit"
+        assert res_timber.assembly == res_cfs.assembly
+
+    def test_assembly_overrides_both_modes(self) -> None:
+        """assembly_overrides takes priority regardless of mode."""
+        wall = _make_wall(wall_type="My Wall", is_exterior=True)
+        overrides = {"My Wall": "2x6_exterior"}
+
+        res_auto = resolve_assembly(wall, mode="auto", assembly_overrides=overrides)
+        res_revit = resolve_assembly(wall, mode="revit", assembly_overrides=overrides)
+
+        assert res_auto.source == "custom"
+        assert res_revit.source == "custom"
+        assert res_auto.assembly_name == "2x6_exterior"
+        assert res_revit.assembly_name == "2x6_exterior"
+
+    def test_framing_system_in_resolve_all_walls(self) -> None:
+        """framing_system propagates through resolve_all_walls."""
+        walls = [
+            _make_wall(
+                wall_type="CW 102",
+                is_exterior=True,
+                wall_thickness=5.0 / 12.0,
+                wall_id="w1",
+            ),
+        ]
+        enriched = resolve_all_walls(walls, mode="auto", framing_system="cfs")
+        assert enriched[0]["assembly_name"] == "2x6_exterior"
+
+
+# =============================================================================
+# "revit" Mode Tests (new simplified mode)
+# =============================================================================
+
+
+class TestResolveRevitMode:
+    """Tests for the new 'revit' mode (trust Revit, fallback to auto)."""
+
+    def test_explicit_assembly_used(self) -> None:
+        wall = _make_wall(wall_assembly=_make_revit_assembly())
+        res = resolve_assembly(wall, mode="revit")
+        assert res.source == "explicit"
+        assert res.confidence == 1.0
+
+    def test_no_assembly_falls_back_to_auto(self) -> None:
+        """Unlike revit_only, 'revit' mode falls back to auto."""
+        wall = _make_wall(
+            wall_type="2x6 Exterior",
+            is_exterior=True,
+        )
+        res = resolve_assembly(wall, mode="revit")
+        # Should fall back to auto → catalog match
+        assert res.source in ("catalog", "inferred", "default")
+        assert res.assembly is not None  # NOT skipped
+
+    def test_revit_mode_with_overrides(self) -> None:
+        """assembly_overrides should take priority even in revit mode."""
+        wall = _make_wall(
+            wall_type="My Wall",
+            wall_assembly=_make_revit_assembly(),
+            is_exterior=True,
+        )
+        overrides = {"My Wall": "2x4_interior"}
+        res = resolve_assembly(wall, mode="revit", assembly_overrides=overrides)
+        assert res.source == "custom"
+        assert res.assembly_name == "2x4_interior"
+
+
+# =============================================================================
+# Assembly Overrides Tests (cross-mode)
+# =============================================================================
+
+
+class TestAssemblyOverrides:
+    """Tests for assembly_overrides parameter across all modes."""
+
+    def test_overrides_in_auto_mode(self) -> None:
+        wall = _make_wall(wall_type="Special Wall", is_exterior=True)
+        overrides = {"Special Wall": "2x6_exterior"}
+        res = resolve_assembly(wall, mode="auto", assembly_overrides=overrides)
+        assert res.source == "custom"
+
+    def test_overrides_in_catalog_mode(self) -> None:
+        wall = _make_wall(wall_type="Special Wall", is_exterior=True)
+        overrides = {"Special Wall": "2x6_exterior"}
+        res = resolve_assembly(wall, mode="catalog", assembly_overrides=overrides)
+        assert res.source == "custom"
+
+    def test_overrides_in_revit_only_mode(self) -> None:
+        wall = _make_wall(wall_type="Special Wall", is_exterior=True)
+        overrides = {"Special Wall": "2x6_exterior"}
+        res = resolve_assembly(wall, mode="revit_only", assembly_overrides=overrides)
+        assert res.source == "custom"
+
+    def test_unmatched_override_falls_through(self) -> None:
+        """Wall Type not in overrides → normal mode behavior."""
+        wall = _make_wall(wall_type="Other Wall", is_exterior=True)
+        overrides = {"Special Wall": "2x6_exterior"}
+        res = resolve_assembly(wall, mode="auto", assembly_overrides=overrides)
+        assert res.source != "custom"
+
+    def test_overrides_take_priority_over_explicit_revit(self) -> None:
+        """Even with Revit CompoundStructure, overrides win."""
+        wall = _make_wall(
+            wall_type="Overridden Wall",
+            wall_assembly=_make_revit_assembly(),
+            is_exterior=True,
+        )
+        overrides = {"Overridden Wall": "2x4_interior"}
+        res = resolve_assembly(wall, mode="auto", assembly_overrides=overrides)
+        assert res.source == "custom"
+        assert res.assembly_name == "2x4_interior"

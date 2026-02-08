@@ -43,14 +43,13 @@ Performance Considerations:
     - Walls without wall_assembly are skipped with a warning
 
 Usage:
-    1. Connect 'walls_json' from Wall Analyzer component (must contain wall_assembly)
+    1. Connect 'walls_json' from Wall Analyzer component
     2. Optionally connect 'junctions_json' from Junction Analyzer
-    3. Optionally configure per-layer overrides via 'config_json'
-    4. Optionally set 'assembly_mode' (auto/revit_only/catalog/custom)
-    5. Optionally connect 'custom_map' JSON for per-Wall-Type mappings
-    6. Set 'run' (last input) to True to execute
-    7. Collect 'multi_layer_json' for downstream geometry conversion
-    8. View 'layer_summary' for per-layer panel counts
+    3. Connect 'config_json' from Config Builder (or manual JSON)
+    4. Optionally connect 'framing_json' from Framing Generator
+    5. Set 'run' (last input) to True to execute
+    6. Collect 'multi_layer_json' for downstream geometry conversion
+    7. View 'layer_summary' for per-layer panel counts
 
 Input Requirements:
     Walls JSON (walls_json) - str:
@@ -67,32 +66,22 @@ Input Requirements:
         Access: Item
 
     Config JSON (config_json) - str:
-        Optional JSON with configuration overrides:
-        - include_functions: List of layer functions to generate
-          (default: ["substrate", "finish", "thermal"])
-        - layer_configs: Per-layer config overrides keyed by layer name
-          (e.g., {"OSB Sheathing": {"panel_size": "4x10"}})
-        - panel_size: Default panel size for all layers (default "4x8")
+        Configuration JSON from Config Builder component. Contains:
+        - assembly_mode: "auto" or "revit" (default: "auto")
+        - framing_system: "timber" or "cfs" (default: "timber")
+        - assembly_overrides: Per-Wall-Type assembly mappings (optional)
         - faces: List of faces to process (default ["exterior", "interior"])
-        - Other keys become base config for all layers
+        - panel_size: Default panel size (default "4x8")
+        - include_functions: Layer function filter (optional)
+        - layer_configs: Per-layer config overrides (optional)
         Required: No
         Access: Item
 
-    Assembly Mode (assembly_mode) - str:
-        Assembly resolution mode controlling how wall assemblies are determined:
-        - "auto" (default): Best available (Revit > catalog > inferred > default)
-        - "revit_only": Only use explicit Revit CompoundStructure data
-        - "catalog": Ignore Revit layers, match Wall Type name to catalog
-        - "custom": Use per-Wall-Type mappings from Custom Map input
-        Required: No (defaults to "auto")
-        Access: Item
-
-    Custom Map (custom_map) - str:
-        Per-Wall-Type assembly mapping JSON for "custom" mode. Keys are
-        Revit Wall Type names, values are catalog keys or inline assembly dicts.
-        Example: {"Basic Wall - 2x6 Exterior": "2x6_exterior"}
-        Unmapped Wall Types fall back to "auto" behavior.
-        Required: No (only used in "custom" mode)
+    Framing JSON (framing_json) - str:
+        Optional JSON from Framing Generator. When connected, extracts
+        per-wall stud profile depth to prevent sheathing overlap with
+        CFS or oversized framing.
+        Required: No
         Access: Item
 
     Run (run) - bool:
@@ -207,10 +196,10 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v2.1"
+COMPONENT_MESSAGE = "v2.2"
 
 # Version marker — confirms the updated script is running in GH
-print("[MLSheath] Script version v2.1 loaded (scaled cumulative formula + adj_layer_names fix)")
+print("[MLSheath] Script version v2.2 loaded (config_json consolidation + framing_system)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -282,13 +271,8 @@ def setup_component():
          "Optional JSON from Junction Analyzer for per-layer adjustments",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Config JSON", "config_json",
-         "Optional configuration JSON with per-layer overrides",
-         Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Assembly Mode", "assembly_mode",
-         "Assembly resolution mode: auto, revit_only, catalog, custom (default: auto)",
-         Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Custom Map", "custom_map",
-         'Per-Wall-Type assembly mapping JSON (e.g., {"My Wall Type": "2x6_exterior"})',
+         "Configuration JSON from Config Builder (assembly_mode, framing_system, "
+         "faces, panel_size, include_functions, assembly_overrides, layer_configs)",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Framing JSON", "framing_json",
          "Optional JSON from Framing Generator — auto-detects framing profile depth "
@@ -353,31 +337,38 @@ def validate_inputs(walls_json, run):
 def parse_config(config_json):
     """Parse configuration JSON with defaults.
 
-    Extracts include_functions, layer_configs, framing_depth, and base
-    config from the user-provided JSON. Keys not recognized as top-level
-    control keys are passed through as base config for all layers.
+    Extracts control keys (assembly_mode, framing_system, assembly_overrides,
+    include_functions, layer_configs, framing_depth) and passes remaining
+    keys through as base config for all layers.
 
     Args:
         config_json: Optional JSON string with config overrides.
 
     Returns:
-        tuple: (base_config, layer_configs, include_functions, framing_depth)
+        tuple: (base_config, layer_configs, include_functions, framing_depth,
+                assembly_mode, framing_system, assembly_overrides)
             - base_config: Dict of settings applied to all layers.
             - layer_configs: Dict of per-layer overrides keyed by layer name.
             - include_functions: List of layer functions to generate, or None.
             - framing_depth: Explicit framing profile depth in feet, or None.
+            - assembly_mode: "auto" or "revit" (default "auto").
+            - framing_system: "timber" or "cfs" (default "timber").
+            - assembly_overrides: Dict of per-Wall-Type mappings, or None.
     """
     base_config = dict(DEFAULT_CONFIG)
     layer_configs = {}
     include_functions = None
     framing_depth = None
+    assembly_mode = "auto"
+    framing_system = "timber"
+    assembly_overrides = None
 
     if config_json and config_json.strip():
         try:
             user_config = json.loads(config_json)
             log_info(f"Applied user config: {list(user_config.keys())}")
 
-            # Extract top-level control keys
+            # Extract top-level control keys (not passed to base_config)
             if "include_functions" in user_config:
                 include_functions = user_config.pop("include_functions")
                 log_info(f"Filtering to functions: {include_functions}")
@@ -390,13 +381,32 @@ def parse_config(config_json):
                 framing_depth = float(user_config.pop("framing_depth"))
                 log_info(f"Explicit framing_depth: {framing_depth:.4f} ft")
 
+            if "assembly_mode" in user_config:
+                assembly_mode = str(user_config.pop("assembly_mode")).strip().lower()
+                log_info(f"Assembly mode: {assembly_mode}")
+
+            if "framing_system" in user_config:
+                framing_system = str(user_config.pop("framing_system")).strip().lower()
+                log_info(f"Framing system: {framing_system}")
+
+            if "assembly_overrides" in user_config:
+                assembly_overrides = user_config.pop("assembly_overrides")
+                if assembly_overrides and isinstance(assembly_overrides, dict):
+                    log_info(f"Assembly overrides: {len(assembly_overrides)} Wall Type mappings")
+                else:
+                    assembly_overrides = None
+
+            # Remove stud_spacing — not used by MLSheath (consumed by Framing Generator)
+            user_config.pop("stud_spacing", None)
+
             # Remaining keys become the base config
             base_config.update(user_config)
 
         except json.JSONDecodeError as e:
             log_warning(f"Invalid config_json, using defaults: {e}")
 
-    return base_config, layer_configs, include_functions, framing_depth
+    return (base_config, layer_configs, include_functions, framing_depth,
+            assembly_mode, framing_system, assembly_overrides)
 
 
 def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
@@ -473,14 +483,16 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
 
 
 def process_walls(walls_json, base_config, layer_configs, include_functions,
-                  junctions_data=None, assembly_mode="auto", custom_map=None,
-                  framing_depth=None, framing_data=None):
+                  junctions_data=None, assembly_mode="auto",
+                  assembly_overrides=None, framing_system="timber",
+                  framing_depth=None, framing_data=None,
+                  custom_map=None):
     """Process walls and generate multi-layer sheathing panels.
 
     For each wall, resolves the assembly (using the assembly resolver),
     determines faces from config, computes junction bounds per face,
-    handles wall flip state, and calls generate_assembly_layers() to
-    produce panels for all panelizable layers.
+    and calls generate_assembly_layers() to produce panels for all
+    panelizable layers.
 
     Args:
         walls_json: JSON string with wall data.
@@ -488,14 +500,16 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         layer_configs: Per-layer config overrides keyed by layer name.
         include_functions: List of layer functions to generate, or None for all.
         junctions_data: Optional parsed junctions_json dict.
-        assembly_mode: Assembly resolution mode (auto/revit_only/catalog/custom).
-        custom_map: Per-Wall-Type assembly mapping dict for custom mode.
+        assembly_mode: Assembly resolution mode (auto/revit/revit_only/catalog/custom).
+        assembly_overrides: Per-Wall-Type assembly mapping dict, applied in ALL modes.
+        framing_system: "timber" or "cfs" — determines thickness-to-depth mapping.
         framing_depth: Optional explicit framing profile depth in feet.
             When set, overrides per-wall detection and applies to ALL walls.
         framing_data: Optional parsed framing_json for per-wall depth
             extraction. When provided and framing_depth is None, each wall
             gets its own framing depth from the framing elements matching
             its wall_id.
+        custom_map: Deprecated — use assembly_overrides. Kept for backward compat.
 
     Returns:
         tuple: (all_results, summary_lines, stats_text, log_lines)
@@ -536,7 +550,12 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                 log_info(f"  Injected framing_hint for wall {wid}: depth_ft={depth:.4f}")
 
     # Resolve assemblies for all walls
-    walls_list = resolve_all_walls(walls_list, mode=assembly_mode, custom_map=custom_map)
+    walls_list = resolve_all_walls(
+        walls_list, mode=assembly_mode,
+        assembly_overrides=assembly_overrides,
+        custom_map=custom_map,
+        framing_system=framing_system,
+    )
     resolution_summary = summarize_resolutions(walls_list)
 
     log_info(f"Processing {len(walls_list)} walls for multi-layer sheathing")
@@ -827,28 +846,27 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
 # =============================================================================
 
 def main(walls_json_in, junctions_json_in, config_json_in, run_in,
-         assembly_mode_in=None, custom_map_in=None, framing_json_in=None):
+         framing_json_in=None):
     """Main entry point for the component.
 
     Orchestrates the multi-layer sheathing generation workflow:
     1. Sets up component metadata
     2. Validates inputs
-    3. Parses configuration (base config, layer overrides, function filter)
+    3. Parses configuration (assembly_mode, framing_system, assembly_overrides,
+       base config, layer overrides, function filter)
     4. Parses optional junction data
     5. Auto-detects framing depth from framing_json (if connected)
-    6. Resolves assemblies for all walls (auto/revit_only/catalog/custom)
+    6. Resolves assemblies for all walls
     7. Processes all walls
     8. Returns JSON results, summary, stats, and log
 
     Args:
         walls_json_in: JSON string from Wall Analyzer.
         junctions_json_in: Optional JSON from Junction Analyzer.
-        config_json_in: Optional configuration JSON.
+        config_json_in: Configuration JSON from Config Builder (or manual).
+            Contains assembly_mode, framing_system, assembly_overrides,
+            faces, panel_size, include_functions, layer_configs, etc.
         run_in: Boolean to trigger execution.
-        assembly_mode_in: Optional assembly resolution mode
-            ("auto", "revit_only", "catalog", "custom"). Default: "auto".
-        custom_map_in: Optional JSON string with per-Wall-Type assembly
-            mappings for custom mode.
         framing_json_in: Optional JSON from Framing Generator. When
             connected, the maximum profile depth is extracted and used
             as framing_depth to prevent sheathing from overlapping
@@ -867,28 +885,15 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
         config_json_input = config_json_in
         run_input = run_in
 
-        # Parse assembly mode (default: "auto")
-        assembly_mode = "auto"
-        if assembly_mode_in and str(assembly_mode_in).strip():
-            assembly_mode = str(assembly_mode_in).strip().lower()
-
-        # Parse custom map JSON (optional)
-        custom_map = None
-        if custom_map_in and str(custom_map_in).strip():
-            try:
-                custom_map = json.loads(custom_map_in)
-                log_info(f"Custom map loaded: {len(custom_map)} Wall Type mappings")
-            except (json.JSONDecodeError, TypeError) as e:
-                log_warning(f"Invalid custom_map JSON, ignoring: {e}")
-
         # Validate inputs
         is_valid, error_msg = validate_inputs(walls_json_input, run_input)
         if not is_valid:
             log_info(error_msg)
             return "", error_msg, "", error_msg
 
-        # Parse configuration
-        base_config, layer_configs, include_functions, framing_depth = parse_config(
+        # Parse configuration (now includes assembly_mode, framing_system, overrides)
+        (base_config, layer_configs, include_functions, framing_depth,
+         assembly_mode, framing_system, assembly_overrides) = parse_config(
             config_json_input
         )
 
@@ -954,7 +959,9 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
 
                 # Resolve assemblies on a copy for recompute
                 walls_for_recompute = resolve_all_walls(
-                    walls_for_recompute, mode=assembly_mode, custom_map=custom_map,
+                    walls_for_recompute, mode=assembly_mode,
+                    assembly_overrides=assembly_overrides,
+                    framing_system=framing_system,
                 )
 
                 recomputed = recompute_adjustments(junctions_data, walls_for_recompute)
@@ -997,7 +1004,9 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
         # Process walls
         results, summary_lines, stats_text, log_lines = process_walls(
             walls_json_input, base_config, layer_configs, include_functions,
-            junctions_data, assembly_mode=assembly_mode, custom_map=custom_map,
+            junctions_data, assembly_mode=assembly_mode,
+            assembly_overrides=assembly_overrides,
+            framing_system=framing_system,
             framing_depth=framing_depth, framing_data=framing_data,
         )
 
@@ -1048,7 +1057,7 @@ if _input_count < 4:
         "ERROR: Component has %d inputs but needs at least 4. "
         "Right-click component zoomable UI (ZUI) -> add inputs, "
         "then reconnect: walls_json, junctions_json, config_json, "
-        "[assembly_mode], [custom_map], run"
+        "[framing_json], run"
         % _input_count
     )
     print(_msg)
@@ -1058,18 +1067,16 @@ if _input_count < 4:
     log = _msg
 else:
     # Input order: data inputs first, run toggle last.
-    # Indices 3-4 (assembly_mode, custom_map) are optional -- _read_input
-    # returns None when the ZUI slot doesn't exist.
+    # v2.2: assembly_mode and custom_map removed as standalone inputs;
+    # now read from config_json (via Config Builder component).
     _walls_json = _read_input(0)       # walls_json
     _junctions_json = _read_input(1)   # junctions_json
     _config_json = _read_input(2)      # config_json
-    _assembly_mode = _read_input(3)    # assembly_mode (optional)
-    _custom_map = _read_input(4)       # custom_map (optional)
-    _framing_json = _read_input(5)     # framing_json (optional)
+    _framing_json = _read_input(3)     # framing_json (optional)
     _run_index = _input_count - 1      # run is always last
     _run = bool(_read_input(_run_index, False))
 
     multi_layer_json, layer_summary, stats, log = main(
         _walls_json, _junctions_json, _config_json, _run,
-        _assembly_mode, _custom_map, _framing_json,
+        _framing_json,
     )

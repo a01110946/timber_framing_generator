@@ -135,7 +135,14 @@ if PROJECT_PATH not in sys.path:
     sys.path.insert(0, PROJECT_PATH)
 
 # Import materials module to trigger strategy registration
+# Import material strategies to trigger registration.
+# Both timber and cfs are imported so the strategy is available
+# regardless of which framing_system the Config Builder sets.
 from src.timber_framing_generator.materials import timber  # noqa: F401
+try:
+    from src.timber_framing_generator.materials import cfs  # noqa: F401
+except ImportError:
+    pass  # CFS module may not exist yet
 
 from src.timber_framing_generator.core.material_system import (
     MaterialSystem, get_framing_strategy, list_available_materials
@@ -151,7 +158,7 @@ from src.timber_framing_generator.core.json_schemas import (
 
 COMPONENT_NAME = "Framing Generator"
 COMPONENT_NICKNAME = "FrameGen"
-COMPONENT_MESSAGE = "v1.1"
+COMPONENT_MESSAGE = "v1.2"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Framing"
 
@@ -480,8 +487,13 @@ def main():
                 log_warning(error_msg)
             return framing_json, element_count, error_msg
 
-        # Get material system and strategy
-        material_type_val = material_type if material_type else "timber"
+        # Get material system — framing_system from config_json overrides material_type input
+        framing_system = config.get("framing_system")
+        if framing_system and framing_system.strip():
+            material_type_val = framing_system.strip().lower()
+            log_info(f"Using framing_system from config_json: {material_type_val}")
+        else:
+            material_type_val = material_type if material_type else "timber"
         material_system = get_material_system(material_type_val)
 
         # Check if strategy is available
@@ -502,7 +514,7 @@ def main():
         wall_lookup = {w.get('wall_id'): w for w in wall_list}
         config = json.loads(config_json_input) if config_json_input else {}
 
-        log_lines.append(f"Framing Generator v1.1")
+        log_lines.append(f"Framing Generator v1.2")
         log_lines.append(f"Material System: {material_type_val}")
         log_lines.append(f"Walls to process: {len(cell_list)}")
         log_lines.append(f"Strategy: {strategy.__class__.__name__}")

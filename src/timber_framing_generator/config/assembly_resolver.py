@@ -3,12 +3,22 @@
 """Assembly resolution strategy for variable-quality Revit wall data.
 
 Resolves the correct wall assembly for each wall based on available data
-quality and user-selected override mode. Supports four resolution modes:
+quality and user-selected override mode. Supports two primary modes:
 
 - **auto** (default): Uses best available source (Revit > catalog > inferred > default).
-- **revit_only**: Only uses Revit CompoundStructure data. Skips walls without it.
-- **catalog**: Ignores Revit layers, matches Wall Type name to catalog using keywords.
-- **custom**: User provides per-Wall-Type assembly mappings. Unmapped types fall back to auto.
+- **revit** (trust Revit): Uses Revit CompoundStructure. Falls back to auto if absent.
+
+Legacy modes also supported for backward compatibility:
+- **revit_only**: Only uses Revit CompoundStructure. Skips walls without it.
+- **catalog**: Ignores Revit layers, matches Wall Type name to catalog.
+- **custom**: Per-Wall-Type mappings. Unmapped types fall back to auto.
+
+Both primary modes support ``assembly_overrides`` — per-Wall-Type
+mappings that take priority over the mode's default resolution.
+
+The ``framing_system`` parameter ("timber" or "cfs") determines how wall
+thickness is mapped to framing depth: timber uses nominal lumber sizes
+(3.5", 5.5", ...) while CFS uses actual web depths (4.0", 6.0", ...).
 
 Each resolved wall receives metadata: assembly_source, assembly_confidence,
 assembly_notes, and assembly_name for downstream transparency.
@@ -22,7 +32,9 @@ Usage:
     resolution = resolve_assembly(wall_data, mode="auto")
     print(resolution.source, resolution.confidence)
 
-    enriched = resolve_all_walls(walls_list, mode="custom", custom_map={...})
+    enriched = resolve_all_walls(walls_list, mode="auto",
+                                 assembly_overrides={"My Wall": "2x6_exterior"},
+                                 framing_system="timber")
 """
 
 import re
@@ -69,7 +81,7 @@ class AssemblyResolution:
 # Valid Modes
 # =============================================================================
 
-VALID_MODES = {"auto", "revit_only", "catalog", "custom"}
+VALID_MODES = {"auto", "revit", "revit_only", "catalog", "custom"}
 
 
 # =============================================================================
@@ -254,22 +266,76 @@ def _nearest_lumber_size(depth_inches: float) -> str:
 
 
 # =============================================================================
+# CFS Depth Mapping
+# =============================================================================
+
+# Standard CFS stud web depths (inches).
+_CFS_WEB_DEPTHS = [2.5, 3.5, 4.0, 5.5, 6.0, 8.0, 10.0]
+
+
+def _nearest_cfs_depth(depth_inches: float) -> float:
+    """Map a depth in inches to the nearest CFS stud web depth using midpoints.
+
+    CFS studs use nominal = actual web depth (unlike timber where nominal > actual).
+    Standard depths: 250S (2.5"), 350S (3.5"), 400S (4.0"), 550S (5.5"),
+    600S (6.0"), 800S (8.0"), 1000S (10.0").
+
+    Args:
+        depth_inches: Depth measurement in inches.
+
+    Returns:
+        Nearest CFS web depth in inches.
+    """
+    if depth_inches <= 0:
+        return 3.5  # default: 350S
+
+    best = _CFS_WEB_DEPTHS[0]
+    for i in range(1, len(_CFS_WEB_DEPTHS)):
+        midpoint = (_CFS_WEB_DEPTHS[i - 1] + _CFS_WEB_DEPTHS[i]) / 2.0
+        if depth_inches >= midpoint:
+            best = _CFS_WEB_DEPTHS[i]
+        else:
+            break
+    return best
+
+
+def _nearest_framing_depth(depth_inches: float, framing_system: str = "timber") -> float:
+    """Map a depth in inches to the nearest actual framing depth.
+
+    Dispatches to timber (_nearest_lumber_size → actual depth) or CFS
+    (_nearest_cfs_depth) based on framing_system.
+
+    Args:
+        depth_inches: Wall thickness or framing depth in inches.
+        framing_system: "timber" or "cfs".
+
+    Returns:
+        Actual framing depth in inches.
+    """
+    if framing_system == "cfs":
+        return _nearest_cfs_depth(depth_inches)
+    # Timber: _nearest_lumber_size returns nominal string, convert to actual depth
+    nominal = _nearest_lumber_size(depth_inches)
+    return _LUMBER_ACTUAL_DEPTHS.get(nominal, 3.5)
+
+
+# =============================================================================
 # Thickness-Based Inference (Option C — nearest lumber fallback)
 # =============================================================================
 
 
 def _infer_assembly_from_thickness(
     wall_data: Dict[str, Any],
+    framing_system: str = "timber",
 ) -> Optional[Tuple[str, float]]:
     """Infer a catalog assembly from wall thickness and is_exterior flag.
 
-    Uses nearest standard lumber size mapping: wall_thickness (in inches) is
-    matched to the closest standard actual depth (3.5", 5.5", 7.25", ...).
-    This is more reliable than a single threshold for generic Revit walls
-    where wall_thickness ≈ core-only thickness.
+    Uses the framing system's mapping table to determine the nominal framing
+    depth from wall thickness, then selects the appropriate catalog assembly.
 
     Args:
         wall_data: Wall dict with wall_thickness and is_exterior.
+        framing_system: "timber" or "cfs" — determines mapping table.
 
     Returns:
         Tuple of (catalog_key, confidence) or None.
@@ -280,12 +346,13 @@ def _infer_assembly_from_thickness(
     if not is_exterior:
         return ("2x4_interior", 0.4)
 
-    # Exterior wall — map thickness to nearest lumber size
+    # Exterior wall — map thickness to nearest framing depth
     if thickness > 0:
         depth_inches = thickness * 12.0 if thickness < 2.0 else thickness
-        nominal = _nearest_lumber_size(depth_inches)
+        actual_depth = _nearest_framing_depth(depth_inches, framing_system)
 
-        if nominal == "6" or int(nominal) >= 6:
+        # Map actual depth to catalog key (catalog uses timber naming)
+        if actual_depth >= 5.5:
             return ("2x6_exterior", 0.4)
         return ("2x4_exterior", 0.4)
 
@@ -393,17 +460,21 @@ def resolve_assembly(
     wall_data: Dict[str, Any],
     mode: str = "auto",
     custom_map: Optional[Dict[str, Any]] = None,
+    assembly_overrides: Optional[Dict[str, Any]] = None,
+    framing_system: str = "timber",
 ) -> AssemblyResolution:
     """Resolve the assembly for a single wall.
 
     Args:
         wall_data: Wall dict from walls_json with wall_type, wall_assembly,
             is_exterior, wall_thickness.
-        mode: Resolution mode ("auto", "revit_only", "catalog", "custom").
-        custom_map: Per-Wall-Type assembly mappings for "custom" mode.
-            Keys are Revit Wall Type names (case-sensitive match first,
-            then case-insensitive fallback).
-            Values are catalog key strings or inline assembly dicts.
+        mode: Resolution mode ("auto", "revit", "revit_only", "catalog", "custom").
+        custom_map: Per-Wall-Type assembly mappings for legacy "custom" mode.
+            Deprecated — use ``assembly_overrides`` instead.
+        assembly_overrides: Per-Wall-Type assembly mappings applied in ANY mode.
+            Keys are Revit Wall Type names. Values are catalog key strings or
+            inline assembly dicts. Takes priority over mode-specific resolution.
+        framing_system: "timber" or "cfs" — determines thickness-to-depth mapping.
 
     Returns:
         AssemblyResolution with the chosen assembly and metadata.
@@ -413,20 +484,36 @@ def resolve_assembly(
 
     wall_type = wall_data.get("wall_type", "")
 
-    # --- Custom mode: check per-Wall-Type map first ---
-    if mode == "custom" and custom_map:
-        custom_assembly = _lookup_custom_map(wall_type, custom_map)
-        if custom_assembly is not None:
+    # --- Assembly overrides: highest priority in ALL modes ---
+    overrides = assembly_overrides or custom_map
+    if overrides:
+        override_assembly = _lookup_custom_map(wall_type, overrides)
+        if override_assembly is not None:
             return AssemblyResolution(
-                assembly=custom_assembly,
+                assembly=override_assembly,
                 source="custom",
                 confidence=1.0,
                 notes=f"User-mapped Wall Type '{wall_type}'",
-                assembly_name=custom_assembly.get("name", "custom"),
+                assembly_name=override_assembly.get("name", "custom"),
             )
-        # Unmapped types fall through to auto behavior
 
-    # --- Revit-only mode ---
+    # --- Legacy custom mode (unmapped types fall through to auto) ---
+    # (kept for backward compat — assembly_overrides is the preferred path)
+
+    # --- Revit mode: trust Revit, fall back to auto if absent ---
+    if mode == "revit":
+        if _has_explicit_assembly(wall_data):
+            return AssemblyResolution(
+                assembly=wall_data["wall_assembly"],
+                source="explicit",
+                confidence=1.0,
+                notes="Revit CompoundStructure (revit mode)",
+                assembly_name=wall_data["wall_assembly"].get("name", "revit"),
+            )
+        # Fall back to auto for walls without CompoundStructure
+        return _resolve_auto(wall_data, wall_type, framing_system)
+
+    # --- Revit-only mode (legacy — no fallback) ---
     if mode == "revit_only":
         if _has_explicit_assembly(wall_data):
             return AssemblyResolution(
@@ -446,11 +533,10 @@ def resolve_assembly(
 
     # --- Catalog mode: ignore Revit layers, match by name ---
     if mode == "catalog":
-        return _resolve_catalog(wall_data, wall_type)
+        return _resolve_catalog(wall_data, wall_type, framing_system)
 
-    # --- Auto mode (or custom fallback for unmapped types) ---
-    # Priority: explicit Revit > catalog name match > framing hint > thickness > default
-    return _resolve_auto(wall_data, wall_type)
+    # --- Auto mode (default, or custom/revit fallback for unmapped types) ---
+    return _resolve_auto(wall_data, wall_type, framing_system)
 
 
 def _lookup_custom_map(
@@ -484,6 +570,7 @@ def _lookup_custom_map(
 def _resolve_auto(
     wall_data: Dict[str, Any],
     wall_type: str,
+    framing_system: str = "timber",
 ) -> AssemblyResolution:
     """Resolve assembly in auto mode (best available source).
 
@@ -492,6 +579,7 @@ def _resolve_auto(
     Args:
         wall_data: Wall dict.
         wall_type: Revit Wall Type name.
+        framing_system: "timber" or "cfs" — passed to thickness inference.
 
     Returns:
         AssemblyResolution with the best available assembly.
@@ -535,8 +623,8 @@ def _resolve_auto(
                 assembly_name=hint_key,
             )
 
-    # 4. Infer from thickness + is_exterior (Option C — nearest lumber fallback)
-    inferred = _infer_assembly_from_thickness(wall_data)
+    # 4. Infer from thickness + is_exterior (uses framing_system for mapping)
+    inferred = _infer_assembly_from_thickness(wall_data, framing_system)
     if inferred:
         inferred_key, confidence = inferred
         assembly = _get_catalog_assembly(inferred_key)
@@ -546,7 +634,7 @@ def _resolve_auto(
                 assembly=assembly,
                 source="inferred",
                 confidence=confidence,
-                notes=f"Inferred from is_exterior={is_exterior}, thickness={wall_data.get('wall_thickness', 'unknown')}",
+                notes=f"Inferred from is_exterior={is_exterior}, thickness={wall_data.get('wall_thickness', 'unknown')}, system={framing_system}",
                 assembly_name=inferred_key,
             )
 
@@ -566,6 +654,7 @@ def _resolve_auto(
 def _resolve_catalog(
     wall_data: Dict[str, Any],
     wall_type: str,
+    framing_system: str = "timber",
 ) -> AssemblyResolution:
     """Resolve assembly in catalog mode (ignore Revit layers).
 
@@ -574,6 +663,7 @@ def _resolve_catalog(
     Args:
         wall_data: Wall dict.
         wall_type: Revit Wall Type name.
+        framing_system: "timber" or "cfs" — passed to thickness inference.
 
     Returns:
         AssemblyResolution with catalog-based assembly.
@@ -608,7 +698,7 @@ def _resolve_catalog(
             )
 
     # 3. Infer from thickness + is_exterior
-    inferred = _infer_assembly_from_thickness(wall_data)
+    inferred = _infer_assembly_from_thickness(wall_data, framing_system)
     if inferred:
         inferred_key, confidence = inferred
         assembly = _get_catalog_assembly(inferred_key)
@@ -621,7 +711,7 @@ def _resolve_catalog(
                 assembly_name=inferred_key,
             )
 
-    # 3. Default fallback
+    # 4. Default fallback
     is_exterior = wall_data.get("is_exterior", False)
     default_key = "2x4_exterior" if is_exterior else "2x4_interior"
     assembly = _get_catalog_assembly(default_key)
@@ -643,6 +733,8 @@ def resolve_all_walls(
     walls_data: List[Dict[str, Any]],
     mode: str = "auto",
     custom_map: Optional[Dict[str, Any]] = None,
+    assembly_overrides: Optional[Dict[str, Any]] = None,
+    framing_system: str = "timber",
 ) -> List[Dict[str, Any]]:
     """Resolve assemblies for all walls, enriching each with metadata.
 
@@ -655,8 +747,10 @@ def resolve_all_walls(
 
     Args:
         walls_data: List of wall dicts from walls_json.
-        mode: Resolution mode ("auto", "revit_only", "catalog", "custom").
-        custom_map: Per-Wall-Type assembly mappings for "custom" mode.
+        mode: Resolution mode ("auto", "revit", "revit_only", "catalog", "custom").
+        custom_map: Per-Wall-Type assembly mappings (legacy — use assembly_overrides).
+        assembly_overrides: Per-Wall-Type assembly mappings, applied in ALL modes.
+        framing_system: "timber" or "cfs" — determines thickness-to-depth mapping.
 
     Returns:
         List of enriched wall dicts (new dicts, originals not mutated).
@@ -664,7 +758,13 @@ def resolve_all_walls(
     enriched: List[Dict[str, Any]] = []
 
     for wall_data in walls_data:
-        resolution = resolve_assembly(wall_data, mode=mode, custom_map=custom_map)
+        resolution = resolve_assembly(
+            wall_data,
+            mode=mode,
+            custom_map=custom_map,
+            assembly_overrides=assembly_overrides,
+            framing_system=framing_system,
+        )
 
         # Create enriched copy
         enriched_wall = dict(wall_data)

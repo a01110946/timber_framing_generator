@@ -8,7 +8,7 @@ Tests cover:
 - Miter join calculation
 - Priority strategies (longer_wall, exterior_first, alternate)
 - User overrides
-- Default layer thickness scaling
+- Unscaled catalog layer thicknesses (no scaling to Revit wall_thickness)
 - Full pipeline (analyze_junctions)
 """
 
@@ -556,21 +556,21 @@ class TestButtJoinDirections:
         assert core_adj[0].adjustment_type == AdjustmentType.TRIM
 
     def test_primary_exterior_amount(self, l_corner_walls):
-        """Primary ext extends by half_sec_core + sec_ext."""
+        """Primary ext extends by half_sec_core + sec_exterior_thickness."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
             priority_strategy="longer_wall",
         )
-        # Default layers for t=0.3958: ext=0.0625, core=0.2917, int=0.0417
         wall_a_adjs = graph.get_adjustments_for_wall("wall_A")
         ext_adj = [a for a in wall_a_adjs if a.layer_name == "exterior"][0]
-        layers = build_default_wall_layers("wall_B", 0.3958)
-        expected = layers.core_thickness / 2.0 + layers.exterior_thickness
+        # Fallback (no assembly): half_sec_core + sec_ext
+        sec_layers = build_default_wall_layers("wall_B", 0.3958)
+        expected = sec_layers.core_thickness / 2.0 + sec_layers.exterior_thickness
         assert abs(ext_adj.amount - expected) < 0.001
 
     def test_secondary_interior_trim_amount(self, l_corner_walls):
-        """Secondary int trims by half_pri_core + pri_int."""
+        """Secondary int trims by half_pri_core + pri_interior_thickness."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -578,8 +578,9 @@ class TestButtJoinDirections:
         )
         wall_b_adjs = graph.get_adjustments_for_wall("wall_B")
         int_adj = [a for a in wall_b_adjs if a.layer_name == "interior"][0]
-        layers = build_default_wall_layers("wall_A", 0.3958)
-        expected = layers.core_thickness / 2.0 + layers.interior_thickness
+        # Fallback (no assembly): half_pri_core + pri_int
+        pri_layers = build_default_wall_layers("wall_A", 0.3958)
+        expected = pri_layers.core_thickness / 2.0 + pri_layers.interior_thickness
         assert abs(int_adj.amount - expected) < 0.001
 
     def test_directions_with_four_room_layout(self, four_room_layout):
@@ -624,10 +625,9 @@ class TestPerLayerCumulativeAdjustments:
 
     When walls have wall_assembly with individual layers, the resolver
     emits per-layer adjustments with cumulative amounts:
-      primary ext[i]:  EXTEND  half_sec_core + sum(sec_ext[0:i+1])
-      primary int[i]:  TRIM    half_sec_core + sum(sec_int[0:i+1])
-      secondary ext[i]: TRIM   half_pri_core + sum(pri_ext[0:i+1])
-      secondary int[i]: TRIM   half_pri_core + sum(pri_int[0:i+1])
+      - Each layer amount = half_opposing_core + sum(unscaled opposing layers up to i)
+      - Layer thicknesses are used as-is from the catalog (no scaling).
+      - The outermost layer has the largest amount; inner layers have smaller.
     """
 
     @pytest.fixture
@@ -708,45 +708,49 @@ class TestPerLayerCumulativeAdjustments:
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Primary ext layers extend by half_sec_core + cumulative."""
+        """Primary ext layers extend by half_sec_core + cumulative unscaled sec_ext."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        half_sec_core = (3.5 / 12) / 2.0  # secondary has 3.5" core
-        sec_ext_1 = 1.0 / 24  # secondary sheathing (closest to core)
-        sec_ext_2 = 1.0 / 24  # secondary siding
+        half_sec_core = layers_3_5in.core_thickness / 2.0
+        sec_ext_thick = 1.0 / 24  # each sec ext layer is 0.5"
 
         pri_ext = [a for a in adjs if a.wall_id == "wall_A"
                    and a.layer_name in ("sheathing", "siding")]
-        # Order: sheathing (closest to core) then siding
         sheathing_adj = [a for a in pri_ext if a.layer_name == "sheathing"][0]
         siding_adj = [a for a in pri_ext if a.layer_name == "siding"][0]
 
         assert sheathing_adj.adjustment_type == AdjustmentType.EXTEND
-        assert abs(sheathing_adj.amount - (half_sec_core + sec_ext_1)) < 0.0001
+        expected_sheathing = half_sec_core + sec_ext_thick
+        assert abs(sheathing_adj.amount - expected_sheathing) < 0.001
 
         assert siding_adj.adjustment_type == AdjustmentType.EXTEND
-        assert abs(siding_adj.amount - (half_sec_core + sec_ext_1 + sec_ext_2)) < 0.0001
+        expected_siding = half_sec_core + 2 * sec_ext_thick
+        assert abs(siding_adj.amount - expected_siding) < 0.001
+
+        # Cumulative: siding amount > sheathing amount
+        assert siding_adj.amount > sheathing_adj.amount
 
     def test_primary_int_cumulative_amounts(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Primary int layers trim by half_sec_core + cumulative."""
+        """Primary int layers trim by half_sec_core + cumulative unscaled sec_int."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        half_sec_core = (3.5 / 12) / 2.0
-        sec_int_1 = 1.0 / 24  # secondary gypsum
+        half_sec_core = layers_3_5in.core_thickness / 2.0
+        sec_int_thick = 1.0 / 24  # gypsum = 0.5"
 
         gypsum_adj = [a for a in adjs if a.wall_id == "wall_A"
                       and a.layer_name == "gypsum"][0]
         assert gypsum_adj.adjustment_type == AdjustmentType.TRIM
-        assert abs(gypsum_adj.amount - (half_sec_core + sec_int_1)) < 0.0001
+        expected = half_sec_core + sec_int_thick
+        assert abs(gypsum_adj.amount - expected) < 0.001
 
     def test_secondary_all_trim(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
@@ -765,43 +769,56 @@ class TestPerLayerCumulativeAdjustments:
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Secondary ext layers trim by half_pri_core + cumulative."""
+        """Secondary ext layers trim by half_pri_core + cumulative unscaled pri_ext."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        half_pri_core = (6.0 / 12) / 2.0  # primary has 6" core
-        pri_ext_1 = 1.0 / 24  # primary sheathing
-        pri_ext_2 = 1.0 / 24  # primary siding
+        half_pri_core = layers_6in.core_thickness / 2.0
+        pri_ext_thick = 1.0 / 24  # each pri ext layer is 0.5"
 
         sec_ext = [a for a in adjs if a.wall_id == "wall_B"
                    and a.layer_name in ("sheathing", "siding")]
         sheathing_adj = [a for a in sec_ext if a.layer_name == "sheathing"][0]
         siding_adj = [a for a in sec_ext if a.layer_name == "siding"][0]
 
-        assert abs(sheathing_adj.amount - (half_pri_core + pri_ext_1)) < 0.0001
-        assert abs(siding_adj.amount - (half_pri_core + pri_ext_1 + pri_ext_2)) < 0.0001
+        expected_sheathing = half_pri_core + pri_ext_thick
+        assert abs(sheathing_adj.amount - expected_sheathing) < 0.001
+
+        expected_siding = half_pri_core + 2 * pri_ext_thick
+        assert abs(siding_adj.amount - expected_siding) < 0.001
+
+        # Cumulative: siding amount > sheathing amount
+        assert siding_adj.amount > sheathing_adj.amount
 
     def test_secondary_int_cumulative_amounts(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Secondary int trims by half_pri_core + cumulative."""
+        """Secondary int trims by half_pri_core + cumulative unscaled pri_int."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        half_pri_core = (6.0 / 12) / 2.0
-        pri_int_1 = 1.0 / 24  # primary gypsum
+        half_pri_core = layers_6in.core_thickness / 2.0
+        pri_int_thick = 1.0 / 24  # gypsum = 0.5"
 
         gypsum_adj = [a for a in adjs if a.wall_id == "wall_B"
                       and a.layer_name == "gypsum"][0]
-        assert abs(gypsum_adj.amount - (half_pri_core + pri_int_1)) < 0.0001
+        expected = half_pri_core + pri_int_thick
+        assert abs(gypsum_adj.amount - expected) < 0.001
 
     def test_asymmetric_layer_counts(self):
-        """Wall with 3 ext layers vs wall with 1 ext layer."""
+        """Wall with 3 ext layers vs wall with 1 ext layer.
+
+        The secondary has only 1 ext layer (osb). Primary ext layers:
+        - foam (i=0): half_sec_core + 1 * osb_scaled
+        - sheathing (i=1): half_sec_core + 1 * osb_scaled (no more sec_ext)
+        - siding (i=2): half_sec_core + 1 * osb_scaled (no more sec_ext)
+        All three get the same amount because sec_ext runs out after the first.
+        """
         conn_a = WallConnection(
             wall_id="wall_A", end="end", direction=(1, 0, 0),
             angle_at_junction=0.0, wall_thickness=0.5, wall_length=20.0,
@@ -839,12 +856,9 @@ class TestPerLayerCumulativeAdjustments:
             secondary_assembly_layers=assembly_b,
         )
 
-        # Primary (wall_A) has 3 ext layers.  Secondary (wall_B) has 1.
-        # pri ext[0] "foam":      half_sec_core + sec_osb_thickness
-        # pri ext[1] "sheathing": half_sec_core + sec_osb_thickness
-        # pri ext[2] "siding":    half_sec_core + sec_osb_thickness
-        half_sec_core = (3.5 / 12) / 2.0
-        osb_t = 1.0 / 24
+        # Compute expected: half_sec_core + unscaled osb thickness
+        half_sec_core = layers_b.core_thickness / 2.0
+        osb_thick = 1.0 / 24  # raw catalog thickness
 
         pri_foam = [a for a in adjs if a.wall_id == "wall_A"
                     and a.layer_name == "foam"][0]
@@ -853,12 +867,11 @@ class TestPerLayerCumulativeAdjustments:
         pri_siding = [a for a in adjs if a.wall_id == "wall_A"
                       and a.layer_name == "siding"][0]
 
-        # foam (ext[0]): cumulative = osb_t
-        assert abs(pri_foam.amount - (half_sec_core + osb_t)) < 0.0001
-        # sheathing (ext[1]): no sec_ext[1], cumulative stays osb_t
-        assert abs(pri_sheathing.amount - (half_sec_core + osb_t)) < 0.0001
-        # siding (ext[2]): same
-        assert abs(pri_siding.amount - (half_sec_core + osb_t)) < 0.0001
+        # All three get the same amount (sec only has 1 ext layer)
+        expected = half_sec_core + osb_thick
+        assert abs(pri_foam.amount - expected) < 0.001
+        assert abs(pri_sheathing.amount - expected) < 0.001
+        assert abs(pri_siding.amount - expected) < 0.001
 
     def test_fallback_without_assembly(self):
         """Without assembly layers, falls back to 3-aggregate."""
@@ -922,11 +935,12 @@ class TestBuildLayersFromAssembly:
     """Tests for _build_layers_from_assembly and updated build_wall_layers_map."""
 
     def test_assembly_layers_used_over_defaults(self):
-        """When wall has wall_assembly, use real layer thicknesses.
+        """When wall has wall_assembly, use real (unscaled) layer thicknesses.
 
-        Fix 3: If catalog total != Revit wall_thickness, layers are
-        scaled proportionally. Here assembly total = 0.4 ft but
-        wall_thickness = 0.5 ft → scale = 1.25.
+        Layer thicknesses represent real physical material dimensions and
+        are NOT scaled to match Revit wall_thickness.  Here assembly
+        total = 0.4 ft but wall_thickness = 0.5 ft -- the mismatch is
+        logged as a warning but values remain unscaled.
         """
         walls = [{
             "wall_id": "W1",
@@ -943,10 +957,10 @@ class TestBuildLayersFromAssembly:
         result = build_wall_layers_map(walls)
         info = result["W1"]
         assert info.source == "assembly"
-        # Assembly total = 0.4 ft, wall_thickness = 0.5 ft → scale = 1.25
-        assert abs(info.exterior_thickness - 0.066 * 1.25) < 0.001
-        assert abs(info.core_thickness - 0.292 * 1.25) < 0.001
-        assert abs(info.interior_thickness - 0.042 * 1.25) < 0.001
+        # Raw catalog sums (no scaling applied)
+        assert abs(info.exterior_thickness - 0.066) < 0.001  # 0.03 + 0.036
+        assert abs(info.core_thickness - 0.292) < 0.001
+        assert abs(info.interior_thickness - 0.042) < 0.001
 
     def test_no_assembly_falls_back_to_defaults(self):
         """Without wall_assembly, use proportionally scaled defaults."""
@@ -1093,56 +1107,46 @@ class TestRecomputeAdjustments:
         assert "OSB Sheathing" in pri_names
         assert "Gypsum Board" in pri_names
 
-    def test_recompute_uses_real_thicknesses(self):
-        """Adjustment amounts should use scaled assembly core thickness.
+    def test_recompute_uses_unscaled_core(self):
+        """Core amounts use unscaled catalog core_thickness / 2.
 
-        Fix 3 scales assembly layers to match Revit wall_thickness.
+        The WallLayerInfo is built by build_wall_layers_map which now
+        uses raw catalog thicknesses (no scaling). The core amount
+        is half of the raw catalog core thickness.
         """
         junctions_data = self._make_l_corner_junctions_data()
         walls = self._make_enriched_walls()
         result = recompute_adjustments(junctions_data, walls)
 
-        # W_SEC: assembly total = (7/16/12) + (5.5/12) + (0.5/12) = 0.5365 ft
-        # wall_thickness = 0.5 → scale = 0.5 / 0.5365 = 0.9320
-        # Scaled sec_core = (5.5/12) * scale
-        sec_asm_total = (7.0 / 16 / 12) + (5.5 / 12) + (0.5 / 12)
-        sec_scale = 0.5 / sec_asm_total
-        scaled_sec_core = (5.5 / 12) * sec_scale
+        # Raw catalog core values (no scaling)
+        sec_core_thick = 5.5 / 12   # W_SEC core
+        pri_core_thick = 3.5 / 12   # W_PRI core
 
+        # Primary core extends by half_sec_core (unscaled)
         pri_core = [a for a in result["W_PRI"]
                      if a["layer_name"] == "core"][0]
         assert pri_core["adjustment_type"] == "extend"
-        expected_pri_core = scaled_sec_core / 2.0
-        assert abs(pri_core["amount"] - expected_pri_core) < 0.001
+        assert abs(pri_core["amount"] - sec_core_thick / 2.0) < 0.001
 
-        # W_PRI: assembly total = (7/16/12) + (3.5/12) + (0.5/12) = 0.3698 ft
-        # wall_thickness = 0.333 → scale = 0.333 / 0.3698 = 0.9005
-        pri_asm_total = (7.0 / 16 / 12) + (3.5 / 12) + (0.5 / 12)
-        pri_scale = 0.333 / pri_asm_total
-        scaled_pri_core = (3.5 / 12) * pri_scale
-
+        # Secondary core trims by half_pri_core (unscaled)
         sec_core = [a for a in result["W_SEC"]
                      if a["layer_name"] == "core"][0]
         assert sec_core["adjustment_type"] == "trim"
-        expected_sec_core = scaled_pri_core / 2.0
-        assert abs(sec_core["amount"] - expected_sec_core) < 0.001
+        assert abs(sec_core["amount"] - pri_core_thick / 2.0) < 0.001
 
     def test_recompute_primary_ext_cumulative(self):
-        """Primary ext extends by half_sec_core + sec_ext."""
+        """Primary ext extends by half_sec_core + cumulative unscaled sec_ext."""
         junctions_data = self._make_l_corner_junctions_data()
         walls = self._make_enriched_walls()
         result = recompute_adjustments(junctions_data, walls)
 
-        # W_SEC: scale = 0.5 / assembly_total
-        sec_asm_total = (7.0 / 16 / 12) + (5.5 / 12) + (0.5 / 12)
-        sec_scale = 0.5 / sec_asm_total
-        scaled_sec_half_core = ((5.5 / 12) * sec_scale) / 2.0
-        # Raw (unscaled) sec ext thickness for cumulative
-        sec_osb_t = 7.0 / 16 / 12
+        # Raw catalog values (no scaling)
+        sec_core_thick = 5.5 / 12
+        sec_osb_thick = 7 / 16 / 12
 
         pri_osb = [a for a in result["W_PRI"]
                     if a["layer_name"] == "OSB Sheathing"][0]
-        expected = scaled_sec_half_core + sec_osb_t
+        expected = sec_core_thick / 2.0 + sec_osb_thick
         assert pri_osb["adjustment_type"] == "extend"
         assert abs(pri_osb["amount"] - expected) < 0.001
 
@@ -1275,27 +1279,30 @@ class TestRecomputeAdjustments:
         for adj in result["TERM"]:
             assert adj["adjustment_type"] == "trim"
 
-        # TERM core trims by half of continuous scaled core
-        # CONT: assembly total = 0.036 + 0.292 + 0.042 = 0.370
-        # wall_thickness = 0.333, scale = 0.333/0.370 = 0.9005
-        cont_asm_total = 0.036 + 0.292 + 0.042
-        cont_scale = 0.333 / cont_asm_total
-        scaled_cont_core = 0.292 * cont_scale
+        # TERM core trims by half_cont_core (unscaled catalog value)
+        cont_core_thick = 0.292  # raw catalog core
+
         term_core = [a for a in result["TERM"] if a["layer_name"] == "core"][0]
-        expected = scaled_cont_core / 2.0
+        expected = cont_core_thick / 2.0
         assert abs(term_core["amount"] - expected) < 0.001
 
 
 # =============================================================================
-# Fix 3: Thickness Scaling Tests (PRP-026)
+# Unscaled Thickness Tests (catalog thicknesses used as-is)
 # =============================================================================
 
 
-class TestThicknessScaling:
-    """Tests for catalog-to-Revit thickness scaling in _build_layers_from_assembly."""
+class TestUnscaledThickness:
+    """Tests verifying that _build_layers_from_assembly uses raw catalog thicknesses.
 
-    def test_scaling_applied_when_mismatch(self):
-        """Layers are scaled when catalog total != Revit wall_thickness."""
+    Layer thicknesses represent real physical material dimensions and
+    are NOT compressed to fit within the Revit wall_thickness.  When
+    the catalog total differs from Revit, a warning is logged but
+    values remain unscaled.
+    """
+
+    def test_layers_use_catalog_values_when_mismatch(self):
+        """Layers keep raw catalog thicknesses even when total != Revit."""
         walls = [{
             "wall_id": "W1",
             "wall_thickness": 0.5,  # Revit says 6"
@@ -1307,30 +1314,17 @@ class TestThicknessScaling:
                 ],
             },
         }]
-        # Assembly total = 0.536 ft, Revit = 0.5 ft → scale = 0.5/0.536
+        # Assembly total = 0.536 ft, Revit = 0.5 ft -- no scaling applied
         result = build_wall_layers_map(walls)
         info = result["W1"]
         assert info.source == "assembly"
-        # Layers should sum to Revit wall_thickness
+        # Layers should sum to catalog total (0.536), NOT Revit (0.5)
         total = info.exterior_thickness + info.core_thickness + info.interior_thickness
-        assert abs(total - 0.5) < 0.01
+        catalog_total = 0.036 + 0.458 + 0.042  # 0.536
+        assert abs(total - catalog_total) < 0.001
 
-    def test_no_scaling_when_close(self):
-        """No scaling when catalog total is within 0.01 ft of Revit."""
-        walls = [{
-            "wall_id": "W1",
-            "wall_thickness": 0.396,  # Close to catalog total
-            "wall_assembly": {
-                "layers": [
-                    {"name": "osb", "side": "exterior", "thickness": 0.036},
-                    {"name": "studs", "side": "core", "thickness": 0.292},
-                    {"name": "gyp", "side": "interior", "thickness": 0.042},
-                    # Total: 0.036+0.292+0.042 = 0.370
-                    # Diff = |0.396 - 0.370| = 0.026 > 0.01 → still scales
-                ],
-            },
-        }]
-        # For no scaling, the assembly total must be within 0.01 of wall_thickness
+    def test_raw_values_when_close(self):
+        """Raw catalog values are always used regardless of proximity to Revit."""
         walls_no_scale = [{
             "wall_id": "W2",
             "wall_thickness": 0.375,  # Within 0.01 of 0.370
@@ -1344,14 +1338,16 @@ class TestThicknessScaling:
         }]
         result = build_wall_layers_map(walls_no_scale)
         info = result["W2"]
-        # Diff = |0.375 - 0.370| = 0.005 < 0.01 → no scaling
+        # Raw catalog values used as-is
         assert abs(info.core_thickness - 0.292) < 0.001
+        assert abs(info.exterior_thickness - 0.036) < 0.001
+        assert abs(info.interior_thickness - 0.042) < 0.001
 
-    def test_scaled_layers_sum_to_revit_thickness(self):
-        """After scaling, layer thicknesses should sum to Revit thickness."""
+    def test_unscaled_layers_sum_to_catalog_total(self):
+        """Layer thicknesses sum to catalog total, not Revit thickness."""
         walls = [{
             "wall_id": "W1",
-            "wall_thickness": 0.333,  # 4" wall
+            "wall_thickness": 0.333,  # 4" wall (Revit)
             "wall_assembly": {
                 "layers": [
                     {"name": "stucco", "side": "exterior", "thickness": 0.052},
@@ -1365,10 +1361,11 @@ class TestThicknessScaling:
         result = build_wall_layers_map(walls)
         info = result["W1"]
         total = info.exterior_thickness + info.core_thickness + info.interior_thickness
-        assert abs(total - 0.333) < 0.001
+        catalog_total = 0.052 + 0.036 + 0.292 + 0.042  # 0.422
+        assert abs(total - catalog_total) < 0.001
 
-    def test_scaled_adjustments_match_revit_geometry(self):
-        """Extension amounts with scaling match Revit wall dimensions."""
+    def test_unscaled_adjustments_use_catalog_geometry(self):
+        """Fallback amounts use unscaled half_opposing_core + opposing layer thicknesses."""
         conn_a = WallConnection(
             wall_id="A", end="end", direction=(1, 0, 0),
             angle_at_junction=0, wall_thickness=0.5, wall_length=20.0,
@@ -1394,13 +1391,43 @@ class TestThicknessScaling:
         ]
         layers = build_wall_layers_map(walls)
 
+        # No assembly_layers passed -> uses fallback (aggregate) path
         adjs = _calculate_butt_adjustments(
             "j0", conn_a, conn_b, layers["A"], layers["B"],
         )
 
-        # Primary core extends. Max extension should be reasonable
-        # (not exceeding opposing wall total thickness + margin)
+        half_sec_core = layers["B"].core_thickness / 2.0
+        half_pri_core = layers["A"].core_thickness / 2.0
+
+        # Primary core extends by half_sec_core only
         core_ext = [a for a in adjs if a.wall_id == "A"
                     and a.layer_name == "core"][0]
-        assert core_ext.amount > 0
-        assert core_ext.amount < conn_b.wall_thickness * 2  # Sanity check
+        assert abs(core_ext.amount - half_sec_core) < 0.001
+
+        # Primary ext extends by half_sec_core + sec_ext (cumulative)
+        ext_ext = [a for a in adjs if a.wall_id == "A"
+                   and a.layer_name == "exterior"][0]
+        assert abs(ext_ext.amount - (half_sec_core + layers["B"].exterior_thickness)) < 0.001
+
+        # Primary int trims by half_sec_core + sec_int
+        int_trim = [a for a in adjs if a.wall_id == "A"
+                    and a.layer_name == "interior"][0]
+        assert abs(int_trim.amount - (half_sec_core + layers["B"].interior_thickness)) < 0.001
+
+        # Secondary core trims by half_pri_core
+        sec_core = [a for a in adjs if a.wall_id == "B"
+                    and a.layer_name == "core"][0]
+        assert abs(sec_core.amount - half_pri_core) < 0.001
+
+        # Secondary ext trims by half_pri_core + pri_ext
+        sec_ext = [a for a in adjs if a.wall_id == "B"
+                   and a.layer_name == "exterior"][0]
+        assert abs(sec_ext.amount - (half_pri_core + layers["A"].exterior_thickness)) < 0.001
+
+        # Unscaled layers sum to catalog total, not Revit wall_thickness
+        total_a = layers["A"].exterior_thickness + layers["A"].core_thickness + layers["A"].interior_thickness
+        catalog_a = 0.036 + 0.458 + 0.042  # 0.536
+        assert abs(total_a - catalog_a) < 0.001
+        total_b = layers["B"].exterior_thickness + layers["B"].core_thickness + layers["B"].interior_thickness
+        catalog_b = 0.036 + 0.292 + 0.042  # 0.370
+        assert abs(total_b - catalog_b) < 0.001

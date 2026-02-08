@@ -207,10 +207,10 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v1.9"
+COMPONENT_MESSAGE = "v2.1"
 
 # Version marker — confirms the updated script is running in GH
-print("[MLSheath] Script version v1.9 loaded (flip normalization + junction geometry fixes)")
+print("[MLSheath] Script version v2.1 loaded (scaled cumulative formula + adj_layer_names fix)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -331,34 +331,6 @@ def setup_component():
 # Helper Functions
 # =============================================================================
 
-def _normalize_flip(wall_data: dict) -> dict:
-    """Negate z_axis for flipped walls so +z always = physical exterior.
-
-    When Revit's is_flipped flag is True, the wall's z_axis points toward
-    the building interior instead of exterior. This function negates the
-    z_axis so that all downstream code can consistently assume
-    +z_axis = physical exterior direction.
-
-    Args:
-        wall_data: Wall dict from walls_json.
-
-    Returns:
-        Wall dict with z_axis negated if is_flipped, unchanged otherwise.
-    """
-    if not wall_data.get("is_flipped", False):
-        return wall_data
-    wall = dict(wall_data)
-    bp = dict(wall.get("base_plane", {}))
-    z = bp.get("z_axis", {})
-    bp["z_axis"] = {
-        "x": -z.get("x", 0),
-        "y": -z.get("y", 0),
-        "z": -z.get("z", 0),
-    }
-    wall["base_plane"] = bp
-    return wall
-
-
 def validate_inputs(walls_json, run):
     """Validate component inputs.
 
@@ -433,6 +405,11 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
     Looks up the junction adjustments for a specific wall and face,
     and returns the adjusted u_start_bound and u_end_bound.
 
+    ASSUMPTION: Adjustment 'amount' is measured from the wall's Revit
+    centerline endpoint along the U-axis.
+    ASSUMPTION: u=0 is the wall's centerline start, u=wall_length is
+    the wall's centerline end.
+
     Args:
         wall_id: Wall identifier.
         wall_length: Original wall length in feet.
@@ -451,16 +428,18 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
         return u_start_bound, u_end_bound
 
     # Use face directly as layer_name — the junction resolver emits
-    # adjustments keyed by "exterior", "core", and "interior".
+    # adjustments keyed by individual layer names OR aggregate face names.
     layer_name = face
 
     # Get adjustments for this wall
     wall_adjustments = junctions_data.get("wall_adjustments", {}).get(wall_id, [])
 
+    matched_any = False
     for adj in wall_adjustments:
         if adj.get("layer_name") != layer_name:
             continue
 
+        matched_any = True
         end = adj.get("end")
         adj_type = adj.get("adjustment_type")
         amount = adj.get("amount", 0.0)
@@ -475,6 +454,20 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
                 u_end_bound = wall_length + amount  # Extend past wall end
             elif adj_type == "trim":
                 u_end_bound = wall_length - amount  # Trim before wall end
+
+        log_info(
+            f"    BOUNDS-APPLY wall={wall_id} layer='{layer_name}' "
+            f"end={end} {adj_type} amount={amount:.6f} ft ({amount*12:.4f} in) "
+            f"-> u_start={u_start_bound:.6f} u_end={u_end_bound:.6f} "
+            f"(wall_length={wall_length:.6f})"
+        )
+
+    if not matched_any and wall_adjustments:
+        log_info(
+            f"    BOUNDS-APPLY wall={wall_id} layer='{layer_name}': "
+            f"NO matching adjustment found among {len(wall_adjustments)} adjustments. "
+            f"Available layer_names: {sorted(set(a.get('layer_name') for a in wall_adjustments))}"
+        )
 
     return u_start_bound, u_end_bound
 
@@ -526,10 +519,9 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         log_error("walls_json must be a dict or list")
         return [], [], "Error: Invalid format", ["Invalid walls_json format"]
 
-    # Normalize flipped walls: negate z_axis so +z = physical exterior.
-    # Must happen before any downstream code reads z_axis for W-offsets,
-    # junction adjustments, or geometry extrusion direction.
-    walls_list = [_normalize_flip(w) for w in walls_list]
+    # z_axis in walls_json is already set to Revit's wall.Orientation
+    # (the geometric exterior normal, independent of flip state).
+    # No flip correction needed — +z_axis = building-layout exterior.
 
     # Inject framing_hint into wall dicts for assembly resolution (Option B).
     # When framing_json is connected, each wall gets a hint with its stud
@@ -593,24 +585,28 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         )
 
         try:
-            # Log wall direction for first 2 walls (angle diagnostic)
-            if walls_processed < 2:
-                bp = wall_data.get("base_plane", {})
-                zax = bp.get("z_axis", {})
-                xax = bp.get("x_axis", {})
-                log_info(
-                    f"  base_plane x_axis=({xax.get('x',0):.3f}, "
-                    f"{xax.get('y',0):.3f}, {xax.get('z',0):.3f}), "
-                    f"z_axis=({zax.get('x',0):.3f}, "
-                    f"{zax.get('y',0):.3f}, {zax.get('z',0):.3f})"
-                )
-                log_info(
-                    f"  wall_thickness={wall_data.get('wall_thickness', '?')}"
-                )
+            # Log wall geometry diagnostic for all walls
+            bp = wall_data.get("base_plane", {})
+            zax = bp.get("z_axis", {})
+            xax = bp.get("x_axis", {})
+            log_info(
+                f"  base_plane x_axis=({xax.get('x',0):.3f}, "
+                f"{xax.get('y',0):.3f}, {xax.get('z',0):.3f}), "
+                f"z_axis=({zax.get('x',0):.3f}, "
+                f"{zax.get('y',0):.3f}, {zax.get('z',0):.3f})"
+            )
+            log_info(
+                f"  wall_thickness={wall_data.get('wall_thickness', '?')}, "
+                f"is_flipped={wall_data.get('is_flipped', '?')}, "
+                f"wall_type='{wall_data.get('wall_type', '?')}'"
+            )
+            log_info(
+                f"  +z_axis = 'exterior' face, -z_axis = 'interior' face"
+            )
 
-            # Face labels from config. Flip handling is now done upstream
-            # by _normalize_flip() which negates z_axis, so face labels
-            # remain unchanged regardless of is_flipped state.
+            # Face labels from config. z_axis is set by the Wall Analyzer
+            # using Revit's wall.Orientation, so +z = exterior regardless
+            # of the wall's is_flipped state.
             faces = base_config.get("faces", ["exterior", "interior"])
 
             wall_length = wall_data.get("wall_length", 0)
@@ -628,6 +624,7 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
             wall_adjs = (junctions_data or {}).get(
                 "wall_adjustments", {}
             ).get(wall_id, [])
+            adj_layer_names = set()
             if wall_adjs:
                 adj_layer_names = set(a.get("layer_name") for a in wall_adjs)
                 log_info(
@@ -678,6 +675,16 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                 )
 
             log_info(f"  BOUNDS-DIAG final face_bounds keys: {sorted(face_bounds.keys())}")
+            log_info(f"  BOUNDS-DIAG final face_bounds values:")
+            for bk, bv in sorted(face_bounds.items()):
+                u_s, u_e = bv
+                changed_start = "ADJUSTED" if abs(u_s) > 0.0001 else "default"
+                changed_end = "ADJUSTED" if abs(u_e - wall_length) > 0.0001 else "default"
+                log_info(
+                    f"    '{bk}': u_start={u_s:.6f} ({changed_start}), "
+                    f"u_end={u_e:.6f} ({changed_end}), "
+                    f"effective_length={u_e - u_s:.6f} ft ({(u_e - u_s)*12:.4f} in)"
+                )
 
             # Resolve per-wall framing depth.
             # Explicit framing_depth (from config) overrides per-wall detection.
@@ -934,8 +941,8 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
                 if isinstance(walls_for_recompute, dict):
                     walls_for_recompute = [walls_for_recompute]
 
-                # Normalize flipped walls for Phase 2 recompute
-                walls_for_recompute = [_normalize_flip(w) for w in walls_for_recompute]
+                # z_axis already set by Wall Analyzer (wall.Orientation),
+                # no flip correction needed for Phase 2 recompute.
 
                 # Inject framing_hint for correct assembly resolution
                 if framing_data is not None:

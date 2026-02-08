@@ -268,34 +268,6 @@ def setup_component():
 # Helper Functions
 # =============================================================================
 
-def _normalize_flip(wall_data: dict) -> dict:
-    """Negate z_axis for flipped walls so +z always = physical exterior.
-
-    When Revit's is_flipped flag is True, the wall's z_axis points toward
-    the building interior instead of exterior. This function negates the
-    z_axis so that all downstream code can consistently assume
-    +z_axis = physical exterior direction.
-
-    Args:
-        wall_data: Wall dict from walls_json.
-
-    Returns:
-        Wall dict with z_axis negated if is_flipped, unchanged otherwise.
-    """
-    if not wall_data.get("is_flipped", False):
-        return wall_data
-    wall = dict(wall_data)
-    bp = dict(wall.get("base_plane", {}))
-    z = bp.get("z_axis", {})
-    bp["z_axis"] = {
-        "x": -z.get("x", 0),
-        "y": -z.get("y", 0),
-        "z": -z.get("z", 0),
-    }
-    wall["base_plane"] = bp
-    return wall
-
-
 def validate_inputs(sheathing_json, walls_json, run):
     """Validate component inputs.
 
@@ -434,22 +406,23 @@ def parse_walls_json(walls_json):
 
     walls_by_id = {}
 
+    # z_axis in walls_json is already set by the Wall Analyzer using
+    # Revit's wall.Orientation (geometric exterior normal, flip-independent).
+    # No flip correction needed — +z_axis = building-layout exterior.
+
     # If it's a list of walls
     if isinstance(data, list):
         for wall in data:
-            wall = _normalize_flip(wall)
             wall_id = str(wall.get("wall_id", wall.get("id", "unknown")))
             walls_by_id[wall_id] = wall
     # If it's a single wall
     elif isinstance(data, dict):
         if "wall_id" in data or "id" in data:
-            data = _normalize_flip(data)
             wall_id = str(data.get("wall_id", data.get("id", "unknown")))
             walls_by_id[wall_id] = data
         # Check if it has a "walls" key
         elif "walls" in data and isinstance(data["walls"], list):
             for wall in data["walls"]:
-                wall = _normalize_flip(wall)
                 wall_id = str(wall.get("wall_id", wall.get("id", "unknown")))
                 walls_by_id[wall_id] = wall
 

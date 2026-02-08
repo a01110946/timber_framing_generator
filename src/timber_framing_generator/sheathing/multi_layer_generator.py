@@ -448,13 +448,24 @@ def generate_assembly_layers(
         # Resolve per-layer junction bounds.
         # Try individual layer name first (per-layer cumulative
         # adjustments), then fall back to aggregate face key.
+        bounds_source = "default(no face_bounds)"
         if face_bounds and name in face_bounds:
             layer_u_start, layer_u_end = face_bounds[name]
+            bounds_source = f"individual_layer_name='{name}'"
         elif face_bounds and face in face_bounds:
             layer_u_start, layer_u_end = face_bounds[face]
+            bounds_source = f"aggregate_face='{face}'"
         else:
             layer_u_start = u_start_bound
             layer_u_end = u_end_bound
+            bounds_source = f"fallback(u_start_bound={u_start_bound}, u_end_bound={u_end_bound})"
+
+        print(
+            f"[MLG-DIAG] Wall {wall_id} layer '{name}' (side={side}, face={face}): "
+            f"bounds_source={bounds_source} -> "
+            f"u_start={layer_u_start if layer_u_start is not None else 'None'}, "
+            f"u_end={layer_u_end if layer_u_end is not None else 'None'}"
+        )
 
         # Generate panels using SheathingGenerator
         try:

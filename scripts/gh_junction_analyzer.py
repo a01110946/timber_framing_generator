@@ -171,10 +171,10 @@ from src.timber_framing_generator.config.assembly_resolver import (
 
 COMPONENT_NAME = "Junction Analyzer"
 COMPONENT_NICKNAME = "JnxAnl"
-COMPONENT_MESSAGE = "v1.2-diag"
+COMPONENT_MESSAGE = "v1.3-diag"
 
 # Version marker — confirms the updated script is running in GH
-print("[JnxAnl] Script version v1.1-diag loaded (worktree path + assembly resolution + diagnostics)")
+print("[JnxAnl] Script version v1.3-diag loaded (worktree path + assembly resolution + diagnostics)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "0-Analysis"
 
@@ -396,45 +396,20 @@ def parse_config(config_json_input: str) -> dict:
     return config
 
 
-def _normalize_flip(wall_data: dict) -> dict:
-    """Negate z_axis for flipped walls so +z always = physical exterior.
-
-    When ``is_flipped=True``, Revit's wall normal (z_axis) points toward the
-    building interior instead of exterior.  Negating z_axis restores the
-    convention ``+z = exterior`` so all downstream code (W-offsets, junction
-    resolver, geometry converter) works without per-consumer flip logic.
-
-    Args:
-        wall_data: Wall dict from walls_json.
-
-    Returns:
-        A shallow copy with negated z_axis if flipped, or the original dict.
-    """
-    if not wall_data.get("is_flipped", False):
-        return wall_data
-    wall = dict(wall_data)
-    bp = dict(wall.get("base_plane", {}))
-    z = bp.get("z_axis", {})
-    bp["z_axis"] = {
-        "x": -z.get("x", 0),
-        "y": -z.get("y", 0),
-        "z": -z.get("z", 0),
-    }
-    wall["base_plane"] = bp
-    return wall
-
-
 def parse_walls(walls_json_str: str) -> list:
     """Parse walls from JSON string.
 
     Handles both dict-with-key and bare-list formats.
-    Normalizes z_axis for flipped walls (negates so +z = physical exterior).
+    The z_axis in walls_json is set by the Wall Analyzer using Revit's
+    ``wall.Orientation`` property — the geometric exterior normal that
+    does NOT change when the wall is flipped.  No flip correction is
+    needed here; +z_axis already = building-layout exterior direction.
 
     Args:
         walls_json_str: JSON string with wall data.
 
     Returns:
-        List of wall dicts (z_axis normalized for flipped walls).
+        List of wall dicts.
     """
     data = json.loads(walls_json_str)
     if isinstance(data, dict):
@@ -443,7 +418,7 @@ def parse_walls(walls_json_str: str) -> list:
         walls = data
     else:
         walls = []
-    return [_normalize_flip(w) for w in walls]
+    return walls
 
 
 def create_debug_geometry(graph, walls_data: list) -> tuple:
@@ -650,6 +625,148 @@ def build_summary_text(graph, walls_data: list = None) -> str:
                     f"({adj.amount * 12:.4f} in)"
                 )
 
+    # ==================================================================
+    # WALL GEOMETRY DIAGNOSTIC (in summary so it's always visible)
+    # ==================================================================
+    if walls_data:
+        lines.append("")
+        lines.append("=== WALL GEOMETRY DIAGNOSTIC ===")
+        lines.append("ASSUMPTIONS:")
+        lines.append("  - base_curve_start/end = Revit centerline endpoints (wall.Location.Curve)")
+        lines.append("  - z_axis = Revit wall.Orientation (geometric exterior normal, flip-independent)")
+        lines.append("  - x_axis = wall U direction (start -> end)")
+        lines.append("  - Walls with 'Disallow Join': endpoints manually placed")
+        lines.append("  - Primary wall may extend past virtual corner")
+        lines.append("  - Secondary wall may be trimmed back from virtual corner")
+        lines.append("")
+
+        for w in walls_data:
+            wid = w.get("wall_id", "?")
+            wt = w.get("wall_thickness", 0)
+            wl = w.get("wall_length", 0)
+            is_flipped = w.get("is_flipped", False)
+            s = w.get("base_curve_start", {})
+            e = w.get("base_curve_end", {})
+            sx, sy, sz = s.get("x", 0), s.get("y", 0), s.get("z", 0)
+            ex, ey, ez = e.get("x", 0), e.get("y", 0), e.get("z", 0)
+            bp = w.get("base_plane", {})
+            xax = bp.get("x_axis", {})
+            zax = bp.get("z_axis", {})
+            wa = w.get("wall_assembly")
+            has_asm = "YES" if (wa and wa.get("layers")) else "NO"
+            asm_name = wa.get("name", "?") if wa else "NONE"
+            asm_count = len(wa.get("layers", [])) if wa else 0
+
+            lines.append(f"  Wall {wid}: thick={wt:.4f} ft ({wt*12:.2f} in) len={wl:.4f} ft")
+            lines.append(f"    is_flipped={is_flipped}")
+            lines.append(f"    centerline_start=({sx:.6f}, {sy:.6f}, {sz:.6f})")
+            lines.append(f"    centerline_end  =({ex:.6f}, {ey:.6f}, {ez:.6f})")
+            lines.append(
+                f"    x_axis (U-dir)=({xax.get('x',0):.6f}, {xax.get('y',0):.6f}, {xax.get('z',0):.6f})"
+            )
+            lines.append(
+                f"    z_axis (wall.Orientation)=({zax.get('x',0):.6f}, {zax.get('y',0):.6f}, {zax.get('z',0):.6f})"
+            )
+            lines.append(f"    +z_axis direction = what code labels 'exterior' face")
+            lines.append(f"    -z_axis direction = what code labels 'interior' face")
+            lines.append(f"    assembly={has_asm} name='{asm_name}' ({asm_count} layers)")
+            if wa and wa.get("layers"):
+                for al in wa["layers"]:
+                    lines.append(
+                        f"      {al.get('name','?')} side={al.get('side','?')} "
+                        f"func={al.get('function','?')} "
+                        f"thick={al.get('thickness',0):.6f} ft ({al.get('thickness',0)*12:.4f} in)"
+                    )
+            lines.append("")
+
+        # Pairwise endpoint distances
+        lines.append("=== PAIRWISE ENDPOINT DISTANCES ===")
+        for i in range(len(walls_data)):
+            for j in range(i + 1, len(walls_data)):
+                wi = walls_data[i]
+                wj = walls_data[j]
+                for ei_name in ("start", "end"):
+                    for ej_name in ("start", "end"):
+                        pi = wi.get(f"base_curve_{ei_name}", {})
+                        pj = wj.get(f"base_curve_{ej_name}", {})
+                        dx = pi.get("x", 0) - pj.get("x", 0)
+                        dy = pi.get("y", 0) - pj.get("y", 0)
+                        dz = pi.get("z", 0) - pj.get("z", 0)
+                        dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                        ti = wi.get("wall_thickness", 0)
+                        tj = wj.get("wall_thickness", 0)
+                        pair_tol = max(0.1, (ti + tj) / 2.0)
+                        match_str = "MATCH" if dist <= pair_tol else "no match"
+                        lines.append(
+                            f"  {wi.get('wall_id','?')}/{ei_name} <-> "
+                            f"{wj.get('wall_id','?')}/{ej_name}: "
+                            f"dist={dist:.6f} ft ({dist*12:.4f} in) "
+                            f"tol={pair_tol:.4f} -> {match_str}"
+                        )
+
+        # Virtual centerline intersection
+        lines.append("")
+        lines.append("=== VIRTUAL CENTERLINE INTERSECTION ===")
+        lines.append("Where wall centerlines would cross if extended infinitely")
+        lines.append("This is the reference point adjustments SHOULD be measured from")
+
+        for i in range(len(walls_data)):
+            for j in range(i + 1, len(walls_data)):
+                wi = walls_data[i]
+                wj = walls_data[j]
+                wid_i = wi.get("wall_id", "?")
+                wid_j = wj.get("wall_id", "?")
+
+                si = wi.get("base_curve_start", {})
+                bp_i = wi.get("base_plane", {})
+                xax_i = bp_i.get("x_axis", {})
+                p_i = (si.get("x", 0), si.get("y", 0))
+                d_i = (xax_i.get("x", 0), xax_i.get("y", 0))
+
+                sj = wj.get("base_curve_start", {})
+                bp_j = wj.get("base_plane", {})
+                xax_j = bp_j.get("x_axis", {})
+                p_j = (sj.get("x", 0), sj.get("y", 0))
+                d_j = (xax_j.get("x", 0), xax_j.get("y", 0))
+
+                det = d_i[0] * (-d_j[1]) - d_i[1] * (-d_j[0])
+                if abs(det) < 1e-10:
+                    lines.append(f"  {wid_i} x {wid_j}: PARALLEL (no intersection)")
+                    continue
+
+                rhs_x = p_j[0] - p_i[0]
+                rhs_y = p_j[1] - p_i[1]
+                t_i = (rhs_x * (-d_j[1]) - rhs_y * (-d_j[0])) / det
+                t_j = (d_i[0] * rhs_y - d_i[1] * rhs_x) / det
+
+                vx = p_i[0] + t_i * d_i[0]
+                vy = p_i[1] + t_i * d_i[1]
+
+                lines.append(f"  {wid_i} x {wid_j}: virtual_corner=({vx:.6f}, {vy:.6f})")
+                lines.append(f"    t_i={t_i:.6f} ft along {wid_i} (U-param from start)")
+                lines.append(f"    t_j={t_j:.6f} ft along {wid_j} (U-param from start)")
+
+                len_i = wi.get("wall_length", 0)
+                len_j = wj.get("wall_length", 0)
+
+                for ep_name in ("start", "end"):
+                    ep_u = 0.0 if ep_name == "start" else len_i
+                    offset = ep_u - t_i
+                    label = "[PAST corner]" if offset > 0.01 else "[BEFORE corner]" if offset < -0.01 else "[AT corner]"
+                    lines.append(
+                        f"    {wid_i}/{ep_name}: ep_u={ep_u:.6f}, virtual_u={t_i:.6f}, "
+                        f"offset={offset:.6f} ft ({offset*12:.4f} in) {label}"
+                    )
+
+                for ep_name in ("start", "end"):
+                    ep_u = 0.0 if ep_name == "start" else len_j
+                    offset = ep_u - t_j
+                    label = "[PAST corner]" if offset > 0.01 else "[BEFORE corner]" if offset < -0.01 else "[AT corner]"
+                    lines.append(
+                        f"    {wid_j}/{ep_name}: ep_u={ep_u:.6f}, virtual_u={t_j:.6f}, "
+                        f"offset={offset:.6f} ft ({offset*12:.4f} in) {label}"
+                    )
+
     return "\n".join(lines)
 
 # =============================================================================
@@ -726,35 +843,81 @@ def main(
             log_warning(f"Assembly resolution failed: {e}")
             log_lines.append(f"Assembly resolution failed: {e} (using raw wall data)")
 
-        # Diagnostic: show each wall's endpoints, thickness, assembly
+        # ==================================================================
+        # DIAGNOSTIC: Wall geometry, z_axis, flip state, face assignment
+        # ==================================================================
+        log_lines.append("")
+        log_lines.append("=== WALL GEOMETRY DIAGNOSTIC ===")
+        log_lines.append("ASSUMPTIONS:")
+        log_lines.append("  - base_curve_start/end are Revit centerline endpoints (wall.Location.Curve)")
+        log_lines.append("  - z_axis = wall normal direction")
+        log_lines.append("  - z_axis = Revit wall.Orientation (geometric exterior normal, flip-independent)")
+        log_lines.append("  - x_axis = wall U direction (start → end)")
+        log_lines.append("  - Walls may have 'Disallow Join' → endpoints manually placed")
+        log_lines.append("  - Primary wall may already extend past virtual corner")
+        log_lines.append("  - Secondary wall may already be trimmed back from virtual corner")
+        log_lines.append("")
+
         for w in walls_data:
             wid = w.get("wall_id", "?")
             wt = w.get("wall_thickness", 0)
             wl = w.get("wall_length", 0)
+            is_flipped = w.get("is_flipped", False)
             s = w.get("base_curve_start", {})
             e = w.get("base_curve_end", {})
             sx, sy, sz = s.get("x", 0), s.get("y", 0), s.get("z", 0)
             ex, ey, ez = e.get("x", 0), e.get("y", 0), e.get("z", 0)
+            bp = w.get("base_plane", {})
+            xax = bp.get("x_axis", {})
+            zax = bp.get("z_axis", {})
             wa = w.get("wall_assembly")
             has_asm = "YES" if (wa and wa.get("layers")) else "NO"
             asm_count = len(wa.get("layers", [])) if wa else 0
+
             log_lines.append(
-                f"  Wall {wid}: thick={wt:.4f} len={wl:.4f} "
-                f"start=({sx:.4f},{sy:.4f},{sz:.4f}) "
-                f"end=({ex:.4f},{ey:.4f},{ez:.4f}) "
-                f"assembly={has_asm} ({asm_count} layers)"
+                f"  Wall {wid}: thick={wt:.4f} ft ({wt*12:.2f} in) len={wl:.4f} ft"
+            )
+            log_lines.append(
+                f"    is_flipped={is_flipped}"
+            )
+            log_lines.append(
+                f"    centerline_start=({sx:.6f}, {sy:.6f}, {sz:.6f})"
+            )
+            log_lines.append(
+                f"    centerline_end  =({ex:.6f}, {ey:.6f}, {ez:.6f})"
+            )
+            log_lines.append(
+                f"    x_axis (U-dir)=({xax.get('x',0):.6f}, {xax.get('y',0):.6f}, {xax.get('z',0):.6f})"
+            )
+            log_lines.append(
+                f"    z_axis (wall.Orientation)=({zax.get('x',0):.6f}, {zax.get('y',0):.6f}, {zax.get('z',0):.6f})"
+            )
+            # Determine what our code considers "exterior" vs "interior"
+            log_lines.append(
+                f"    +z_axis direction = what code labels 'exterior' face"
+            )
+            log_lines.append(
+                f"    -z_axis direction = what code labels 'interior' face"
+            )
+            log_lines.append(
+                f"    assembly={has_asm} ({asm_count} layers)"
             )
             if wa and wa.get("layers"):
                 for al in wa["layers"]:
                     log_lines.append(
-                        f"    layer: {al.get('name','?')} "
+                        f"      layer: {al.get('name','?')} "
                         f"side={al.get('side','?')} "
                         f"func={al.get('function','?')} "
-                        f"thick={al.get('thickness',0):.4f}"
+                        f"thick={al.get('thickness',0):.6f} ft ({al.get('thickness',0)*12:.4f} in)"
                     )
 
-        # Diagnostic: show pairwise endpoint distances
+        # ==================================================================
+        # DIAGNOSTIC: Pairwise endpoint distances + virtual corner
+        # ==================================================================
         import math as _math
+        log_lines.append("")
+        log_lines.append("=== PAIRWISE ENDPOINT DISTANCES ===")
+
         for i in range(len(walls_data)):
             for j in range(i + 1, len(walls_data)):
                 wi = walls_data[i]
@@ -774,9 +937,91 @@ def main(
                         log_lines.append(
                             f"  dist {wi.get('wall_id','?')}/{ei_name} <-> "
                             f"{wj.get('wall_id','?')}/{ej_name}: "
-                            f"{dist:.4f} ft ({dist*12:.2f} in) "
+                            f"{dist:.6f} ft ({dist*12:.4f} in) "
                             f"pair_tol={pair_tol:.4f} -> {match}"
                         )
+
+        # Virtual centerline intersection computation
+        log_lines.append("")
+        log_lines.append("=== VIRTUAL CENTERLINE INTERSECTION ===")
+        log_lines.append("Computes where wall centerlines would cross if extended infinitely")
+        log_lines.append("This is the reference point adjustments SHOULD be measured from")
+
+        for i in range(len(walls_data)):
+            for j in range(i + 1, len(walls_data)):
+                wi = walls_data[i]
+                wj = walls_data[j]
+                wid_i = wi.get("wall_id", "?")
+                wid_j = wj.get("wall_id", "?")
+
+                # Wall i: line from start_i in direction x_axis_i
+                si = wi.get("base_curve_start", {})
+                bp_i = wi.get("base_plane", {})
+                xax_i = bp_i.get("x_axis", {})
+                p_i = (si.get("x", 0), si.get("y", 0))
+                d_i = (xax_i.get("x", 0), xax_i.get("y", 0))
+
+                # Wall j: line from start_j in direction x_axis_j
+                sj = wj.get("base_curve_start", {})
+                bp_j = wj.get("base_plane", {})
+                xax_j = bp_j.get("x_axis", {})
+                p_j = (sj.get("x", 0), sj.get("y", 0))
+                d_j = (xax_j.get("x", 0), xax_j.get("y", 0))
+
+                # 2D line-line intersection: p_i + t*d_i = p_j + s*d_j
+                # Solve: t*d_i.x - s*d_j.x = p_j.x - p_i.x
+                #        t*d_i.y - s*d_j.y = p_j.y - p_i.y
+                det = d_i[0] * (-d_j[1]) - d_i[1] * (-d_j[0])
+                if abs(det) < 1e-10:
+                    log_lines.append(
+                        f"  {wid_i} x {wid_j}: PARALLEL (det={det:.10f}), no intersection"
+                    )
+                    continue
+
+                rhs_x = p_j[0] - p_i[0]
+                rhs_y = p_j[1] - p_i[1]
+                t_i = (rhs_x * (-d_j[1]) - rhs_y * (-d_j[0])) / det
+                t_j = (d_i[0] * rhs_y - d_i[1] * rhs_x) / det
+
+                # Virtual intersection point
+                vx = p_i[0] + t_i * d_i[0]
+                vy = p_i[1] + t_i * d_i[1]
+
+                log_lines.append(
+                    f"  {wid_i} x {wid_j}: virtual_corner=({vx:.6f}, {vy:.6f})"
+                )
+                log_lines.append(
+                    f"    t_i={t_i:.6f} ft along {wid_i} (U-param from start)"
+                )
+                log_lines.append(
+                    f"    t_j={t_j:.6f} ft along {wid_j} (U-param from start)"
+                )
+
+                # Compare with wall lengths and endpoints
+                len_i = wi.get("wall_length", 0)
+                len_j = wj.get("wall_length", 0)
+
+                # Wall i: how far is each endpoint from virtual corner?
+                for ep_name in ("start", "end"):
+                    ep = wi.get(f"base_curve_{ep_name}", {})
+                    ep_u = 0.0 if ep_name == "start" else len_i
+                    offset = ep_u - t_i  # positive = endpoint past virtual corner
+                    log_lines.append(
+                        f"    {wid_i}/{ep_name}: ep_u={ep_u:.6f}, virtual_u={t_i:.6f}, "
+                        f"offset={offset:.6f} ft ({offset*12:.4f} in) "
+                        f"{'[PAST corner]' if offset > 0.01 else '[BEFORE corner]' if offset < -0.01 else '[AT corner]'}"
+                    )
+
+                # Wall j: how far is each endpoint from virtual corner?
+                for ep_name in ("start", "end"):
+                    ep = wj.get(f"base_curve_{ep_name}", {})
+                    ep_u = 0.0 if ep_name == "start" else len_j
+                    offset = ep_u - t_j
+                    log_lines.append(
+                        f"    {wid_j}/{ep_name}: ep_u={ep_u:.6f}, virtual_u={t_j:.6f}, "
+                        f"offset={offset:.6f} ft ({offset*12:.4f} in) "
+                        f"{'[PAST corner]' if offset > 0.01 else '[BEFORE corner]' if offset < -0.01 else '[AT corner]'}"
+                    )
 
         # Run junction analysis pipeline
         graph = analyze_junctions(

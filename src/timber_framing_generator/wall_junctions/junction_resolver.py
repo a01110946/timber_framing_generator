@@ -31,6 +31,17 @@ from .junction_detector import _outward_direction_at_junction, _calculate_angle
 
 logger = logging.getLogger(__name__)
 
+# =============================================================================
+# Diagnostic Logging (set True to enable verbose per-layer trace)
+# =============================================================================
+DIAG_ENABLED = True
+
+
+def _diag(msg: str) -> None:
+    """Print diagnostic message when DIAG_ENABLED is True."""
+    if DIAG_ENABLED:
+        print(f"[JUNC-DIAG] {msg}")
+
 
 # =============================================================================
 # Default Layer Info
@@ -131,8 +142,15 @@ def _build_layers_from_assembly(
 ) -> WallLayerInfo:
     """Build WallLayerInfo from resolved assembly layers.
 
-    Sums actual layer thicknesses by side (exterior/core/interior)
-    instead of proportionally scaling from defaults.
+    Sums actual (unscaled) layer thicknesses by side
+    (exterior/core/interior).  The catalog thicknesses represent
+    real physical material dimensions and must NOT be compressed
+    to fit within ``total_thickness``.
+
+    If the catalog total differs from the Revit wall thickness,
+    a warning is logged but no scaling is applied.  The mismatch
+    should be resolved via better assembly selection or user
+    configuration, not by compressing material dimensions.
 
     Args:
         wall_id: Wall identifier.
@@ -140,31 +158,26 @@ def _build_layers_from_assembly(
         total_thickness: Total wall thickness from Revit (feet).
 
     Returns:
-        WallLayerInfo with actual layer thicknesses.
+        WallLayerInfo with actual (unscaled) layer thicknesses.
     """
     layers = wall_assembly.get("layers", [])
     ext_t = sum(l.get("thickness", 0.0) for l in layers if l.get("side") == "exterior")
     core_t = sum(l.get("thickness", 0.0) for l in layers if l.get("side") == "core")
     int_t = sum(l.get("thickness", 0.0) for l in layers if l.get("side") == "interior")
 
-    # Fix 3: Scale catalog layer thicknesses to match Revit wall_thickness.
-    # The catalog assembly may have a different total (e.g., 0.594 ft for
-    # 2x6_exterior) than the Revit wall (e.g., 0.500 ft). Scale
-    # proportionally so adjustment calculations match physical geometry.
     assembly_total = ext_t + core_t + int_t
     if (
         assembly_total > 0
         and total_thickness > 0
         and abs(assembly_total - total_thickness) > 0.01
     ):
-        scale = total_thickness / assembly_total
-        logger.debug(
-            "Scaling wall %s layers: catalog=%.4f ft, revit=%.4f ft, scale=%.3f",
-            wall_id, assembly_total, total_thickness, scale,
+        logger.warning(
+            "Wall %s: catalog assembly total (%.4f ft / %.2f in) differs from "
+            "Revit wall_thickness (%.4f ft / %.2f in). Using unscaled catalog "
+            "thicknesses for junction adjustments.",
+            wall_id, assembly_total, assembly_total * 12,
+            total_thickness, total_thickness * 12,
         )
-        ext_t *= scale
-        core_t *= scale
-        int_t *= scale
 
     return WallLayerInfo(
         wall_id=wall_id,
@@ -340,10 +353,15 @@ def _calculate_butt_adjustments(
     position in the stack.  This ensures each layer stops exactly at
     the face of the corresponding opposing layer.
 
+    All thicknesses (both ``half_core`` from ``WallLayerInfo`` and the
+    per-layer cumulative values) are **scaled** to match the Revit
+    ``wall_thickness``, avoiding the mismatch between scaled aggregates
+    and raw catalog values.
+
     When ``primary_assembly_layers`` / ``secondary_assembly_layers``
     are provided, adjustments are emitted per individual layer name.
     Otherwise, falls back to 3-aggregate (exterior/core/interior)
-    adjustments using aggregate thicknesses.
+    adjustments using aggregate thicknesses from ``WallLayerInfo``.
 
     Args:
         junction_id: Junction identifier.
@@ -364,17 +382,58 @@ def _calculate_butt_adjustments(
     half_sec_core = secondary_layers.core_thickness / 2.0
     half_pri_core = primary_layers.core_thickness / 2.0
 
+    # ===== DIAGNOSTIC: Butt adjustment inputs =====
+    _diag(f"=== _calculate_butt_adjustments [{junction_id}] ===")
+    _diag(f"  ASSUMPTION: amounts are distances from each wall's Revit centerline endpoint along its U-axis")
+    _diag(f"  ASSUMPTION: wall endpoints meet at/near the virtual centerline corner")
+    _diag(f"  ASSUMPTION: +z_axis = physical exterior face (after flip normalization)")
+    _diag(f"  PRIMARY: wall={primary.wall_id} end={primary.end} "
+           f"thick={primary.wall_thickness:.6f} ft ({primary.wall_thickness*12:.4f} in) "
+           f"len={primary.wall_length:.4f} ft")
+    _diag(f"    layers: ext={primary_layers.exterior_thickness:.6f} ft ({primary_layers.exterior_thickness*12:.4f} in), "
+           f"core={primary_layers.core_thickness:.6f} ft ({primary_layers.core_thickness*12:.4f} in), "
+           f"int={primary_layers.interior_thickness:.6f} ft ({primary_layers.interior_thickness*12:.4f} in) "
+           f"[source={primary_layers.source}]")
+    _diag(f"    half_pri_core={half_pri_core:.6f} ft ({half_pri_core*12:.4f} in)")
+    _diag(f"  SECONDARY: wall={secondary.wall_id} end={secondary.end} "
+           f"thick={secondary.wall_thickness:.6f} ft ({secondary.wall_thickness*12:.4f} in) "
+           f"len={secondary.wall_length:.4f} ft")
+    _diag(f"    layers: ext={secondary_layers.exterior_thickness:.6f} ft ({secondary_layers.exterior_thickness*12:.4f} in), "
+           f"core={secondary_layers.core_thickness:.6f} ft ({secondary_layers.core_thickness*12:.4f} in), "
+           f"int={secondary_layers.interior_thickness:.6f} ft ({secondary_layers.interior_thickness*12:.4f} in) "
+           f"[source={secondary_layers.source}]")
+    _diag(f"    half_sec_core={half_sec_core:.6f} ft ({half_sec_core*12:.4f} in)")
+    _diag(f"  has_primary_assembly_layers={primary_assembly_layers is not None and len(primary_assembly_layers or []) > 0}")
+    _diag(f"  has_secondary_assembly_layers={secondary_assembly_layers is not None and len(secondary_assembly_layers or []) > 0}")
+    if primary_assembly_layers:
+        for al in primary_assembly_layers:
+            _diag(f"    pri_asm: name={al.get('name')} side={al.get('side')} "
+                   f"thick={al.get('thickness', 0):.6f} ft ({al.get('thickness', 0)*12:.4f} in)")
+    if secondary_assembly_layers:
+        for al in secondary_assembly_layers:
+            _diag(f"    sec_asm: name={al.get('name')} side={al.get('side')} "
+                   f"thick={al.get('thickness', 0):.6f} ft ({al.get('thickness', 0)*12:.4f} in)")
+
     if primary_assembly_layers and secondary_assembly_layers:
         # ----------------------------------------------------------
-        # Per-individual-layer cumulative adjustments
+        # Per-individual-layer cumulative adjustments (unscaled)
         # ----------------------------------------------------------
+        # Layer thicknesses are used as-is from the catalog.  They
+        # represent real physical material dimensions and are NOT
+        # compressed to fit within the Revit wall_thickness.
         sec_ext = _ordered_layers_core_outward(secondary_assembly_layers, "exterior")
         sec_int = _ordered_layers_core_outward(secondary_assembly_layers, "interior")
         pri_ext = _ordered_layers_core_outward(primary_assembly_layers, "exterior")
         pri_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
 
+        _diag("  PER-LAYER PATH active (unscaled catalog thicknesses)")
+        _diag("  sec_ext (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in sec_ext]))
+        _diag("  sec_int (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in sec_int]))
+        _diag("  pri_ext (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in pri_ext]))
+        _diag("  pri_int (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in pri_int]))
+
         # --- PRIMARY WALL ---
-        # Core: EXTEND by half_sec_core (centerline to core edge)
+        # Core: EXTEND by half_sec_core (centerline to opposing core edge)
         adjustments.append(LayerAdjustment(
             wall_id=primary.wall_id, end=primary.end,
             junction_id=junction_id, layer_name="core",
@@ -382,39 +441,55 @@ def _calculate_butt_adjustments(
             amount=half_sec_core,
             connecting_wall_id=secondary.wall_id,
         ))
+        _diag(f"  ADJ PRIMARY core: EXTEND {half_sec_core:.6f} ft ({half_sec_core*12:.4f} in) "
+               f"= half_sec_core at end={primary.end}")
 
-        # Primary exterior: each EXTENDS by half_sec_core + cumulative
+        # Primary exterior: each EXTENDS by half_sec_core + cumulative(sec_ext)
         p_ext = _ordered_layers_core_outward(primary_assembly_layers, "exterior")
         cumulative = 0.0
         for i, p_layer in enumerate(p_ext):
+            sec_layer_name = sec_ext[i].get("name", "?") if i < len(sec_ext) else "NONE(sec ran out)"
+            sec_layer_thick = sec_ext[i].get("thickness", 0.0) if i < len(sec_ext) else 0.0
             if i < len(sec_ext):
-                cumulative += sec_ext[i].get("thickness", 0.0)
+                cumulative += sec_layer_thick
+            amount = half_sec_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
                 junction_id=junction_id,
                 layer_name=p_layer.get("name", f"exterior_{i}"),
                 adjustment_type=AdjustmentType.EXTEND,
-                amount=half_sec_core + cumulative,
+                amount=amount,
                 connecting_wall_id=secondary.wall_id,
             ))
+            _diag(f"  ADJ PRIMARY ext[{i}] '{p_layer.get('name')}': EXTEND {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_sec_core({half_sec_core:.6f}) + cumulative({cumulative:.6f}) "
+                   f"[added sec_ext[{i}] '{sec_layer_name}'={sec_layer_thick:.6f} ft ({sec_layer_thick*12:.4f} in)] "
+                   f"at end={primary.end}")
 
-        # Primary interior: each TRIMS by half_sec_core + cumulative
+        # Primary interior: each TRIMS by half_sec_core + cumulative(sec_int)
         p_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
         cumulative = 0.0
         for i, p_layer in enumerate(p_int):
+            sec_layer_name = sec_int[i].get("name", "?") if i < len(sec_int) else "NONE(sec ran out)"
+            sec_layer_thick = sec_int[i].get("thickness", 0.0) if i < len(sec_int) else 0.0
             if i < len(sec_int):
-                cumulative += sec_int[i].get("thickness", 0.0)
+                cumulative += sec_layer_thick
+            amount = half_sec_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
                 junction_id=junction_id,
                 layer_name=p_layer.get("name", f"interior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=half_sec_core + cumulative,
+                amount=amount,
                 connecting_wall_id=secondary.wall_id,
             ))
+            _diag(f"  ADJ PRIMARY int[{i}] '{p_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_sec_core({half_sec_core:.6f}) + cumulative({cumulative:.6f}) "
+                   f"[added sec_int[{i}] '{sec_layer_name}'={sec_layer_thick:.6f} ft ({sec_layer_thick*12:.4f} in)] "
+                   f"at end={primary.end}")
 
         # --- SECONDARY WALL (all TRIM) ---
-        # Core: TRIM by half_pri_core (centerline to core edge)
+        # Core: TRIM by half_pri_core (centerline to opposing core edge)
         adjustments.append(LayerAdjustment(
             wall_id=secondary.wall_id, end=secondary.end,
             junction_id=junction_id, layer_name="core",
@@ -422,41 +497,60 @@ def _calculate_butt_adjustments(
             amount=half_pri_core,
             connecting_wall_id=primary.wall_id,
         ))
+        _diag(f"  ADJ SECONDARY core: TRIM {half_pri_core:.6f} ft ({half_pri_core*12:.4f} in) "
+               f"= half_pri_core at end={secondary.end}")
 
-        # Secondary exterior: each TRIMS by half_pri_core + cumulative
+        # Secondary exterior: each TRIMS by half_pri_core + cumulative(pri_ext)
         s_ext = _ordered_layers_core_outward(secondary_assembly_layers, "exterior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_ext):
+            pri_layer_name = pri_ext[i].get("name", "?") if i < len(pri_ext) else "NONE(pri ran out)"
+            pri_layer_thick = pri_ext[i].get("thickness", 0.0) if i < len(pri_ext) else 0.0
             if i < len(pri_ext):
-                cumulative += pri_ext[i].get("thickness", 0.0)
+                cumulative += pri_layer_thick
+            amount = half_pri_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
                 junction_id=junction_id,
                 layer_name=s_layer.get("name", f"exterior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=half_pri_core + cumulative,
+                amount=amount,
                 connecting_wall_id=primary.wall_id,
             ))
+            _diag(f"  ADJ SECONDARY ext[{i}] '{s_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_pri_core({half_pri_core:.6f}) + cumulative({cumulative:.6f}) "
+                   f"[added pri_ext[{i}] '{pri_layer_name}'={pri_layer_thick:.6f} ft ({pri_layer_thick*12:.4f} in)] "
+                   f"at end={secondary.end}")
 
-        # Secondary interior: each TRIMS by half_pri_core + cumulative
+        # Secondary interior: each TRIMS by half_pri_core + cumulative(pri_int)
         s_int = _ordered_layers_core_outward(secondary_assembly_layers, "interior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_int):
+            pri_layer_name = pri_int[i].get("name", "?") if i < len(pri_int) else "NONE(pri ran out)"
+            pri_layer_thick = pri_int[i].get("thickness", 0.0) if i < len(pri_int) else 0.0
             if i < len(pri_int):
-                cumulative += pri_int[i].get("thickness", 0.0)
+                cumulative += pri_layer_thick
+            amount = half_pri_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
                 junction_id=junction_id,
                 layer_name=s_layer.get("name", f"interior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=half_pri_core + cumulative,
+                amount=amount,
                 connecting_wall_id=primary.wall_id,
             ))
+            _diag(f"  ADJ SECONDARY int[{i}] '{s_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_pri_core({half_pri_core:.6f}) + cumulative({cumulative:.6f}) "
+                   f"[added pri_int[{i}] '{pri_layer_name}'={pri_layer_thick:.6f} ft ({pri_layer_thick*12:.4f} in)] "
+                   f"at end={secondary.end}")
 
     else:
         # ----------------------------------------------------------
         # Fallback: 3-aggregate adjustments (no individual layers)
+        # Uses WallLayerInfo which is already scaled to wall_thickness.
         # ----------------------------------------------------------
+        _diag(f"  FALLBACK PATH (no individual assembly layers)")
+        _diag(f"  WARNING: all layers on same side get identical adjustment amount")
         # PRIMARY wall
         for layer_name, adj_type, amount in [
             ("core", AdjustmentType.EXTEND,
@@ -578,8 +672,8 @@ def _calculate_t_intersection_adjustments(
     The terminating wall trims all layers at the junction end.
 
     Each terminating layer trims by ``half_cont_core`` plus the
-    cumulative thickness of the continuous wall's layers on the
-    same side up to that layer's stack position.
+    cumulative **scaled** thickness of the continuous wall's layers on
+    the same side up to that layer's stack position.
 
     Args:
         junction_id: Junction identifier.
@@ -599,12 +693,31 @@ def _calculate_t_intersection_adjustments(
 
     half_cont_core = continuous_layers.core_thickness / 2.0
 
+    _diag(f"\n=== T-INTERSECTION ADJUSTMENTS (junction={junction_id}) ===")
+    _diag(f"  ASSUMPTION: Terminating wall endpoint is AT the virtual centerline corner")
+    _diag(f"  ASSUMPTION: half_cont_core is the distance from centerline to continuous core face")
+    _diag(f"  Continuous wall: {continuous.wall_id} (passes through, NO adjustments)")
+    _diag(f"    wall_thickness={continuous.wall_thickness:.6f} ft ({continuous.wall_thickness*12:.4f} in)")
+    _diag(f"    layers: ext={continuous_layers.exterior_thickness:.6f}, "
+           f"core={continuous_layers.core_thickness:.6f}, "
+           f"int={continuous_layers.interior_thickness:.6f}")
+    _diag(f"  Terminating wall: {terminating.wall_id} end={terminating.end} (ALL layers TRIM)")
+    _diag(f"    wall_thickness={terminating.wall_thickness:.6f} ft ({terminating.wall_thickness*12:.4f} in)")
+    _diag(f"    layers: ext={terminating_layers.exterior_thickness:.6f}, "
+           f"core={terminating_layers.core_thickness:.6f}, "
+           f"int={terminating_layers.interior_thickness:.6f}")
+    _diag(f"  half_cont_core = {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in)")
+
     if continuous_assembly_layers and terminating_assembly_layers:
-        # Per-layer cumulative adjustments
+        # Per-layer cumulative adjustments (unscaled catalog thicknesses)
         cont_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
         cont_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
 
-        # Core: TRIM by half_cont_core (centerline to core edge)
+        _diag("  PER-LAYER PATH active (unscaled catalog thicknesses)")
+        _diag("  cont_ext (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_ext]))
+        _diag("  cont_int (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_int]))
+
+        # Core: TRIM by half_cont_core
         adjustments.append(LayerAdjustment(
             wall_id=terminating.wall_id, end=terminating.end,
             junction_id=junction_id, layer_name="core",
@@ -612,39 +725,54 @@ def _calculate_t_intersection_adjustments(
             amount=half_cont_core,
             connecting_wall_id=continuous.wall_id,
         ))
+        _diag(f"  ADJ TERM core: TRIM {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in) "
+               f"= half_cont_core")
 
-        # Terminating exterior: each TRIMS by half_cont_core + cumulative
+        # Terminating exterior: each TRIMS by half_cont_core + cumulative(cont_ext)
         t_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
         cumulative = 0.0
         for i, t_layer in enumerate(t_ext):
+            cont_layer_name = cont_ext[i].get("name", "?") if i < len(cont_ext) else "NONE(cont ran out)"
+            cont_layer_thick = cont_ext[i].get("thickness", 0.0) if i < len(cont_ext) else 0.0
             if i < len(cont_ext):
                 cumulative += cont_ext[i].get("thickness", 0.0)
+            amount = half_cont_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=terminating.wall_id, end=terminating.end,
                 junction_id=junction_id,
                 layer_name=t_layer.get("name", f"exterior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=half_cont_core + cumulative,
+                amount=amount,
                 connecting_wall_id=continuous.wall_id,
             ))
+            _diag(f"  ADJ TERM ext[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
+                   f"[opposing: '{cont_layer_name}' thick={cont_layer_thick:.6f} ft ({cont_layer_thick*12:.4f} in)]")
 
-        # Terminating interior: each TRIMS by half_cont_core + cumulative
+        # Terminating interior: each TRIMS by half_cont_core + cumulative(cont_int)
         t_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
         cumulative = 0.0
         for i, t_layer in enumerate(t_int):
+            cont_layer_name = cont_int[i].get("name", "?") if i < len(cont_int) else "NONE(cont ran out)"
+            cont_layer_thick = cont_int[i].get("thickness", 0.0) if i < len(cont_int) else 0.0
             if i < len(cont_int):
                 cumulative += cont_int[i].get("thickness", 0.0)
+            amount = half_cont_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=terminating.wall_id, end=terminating.end,
                 junction_id=junction_id,
                 layer_name=t_layer.get("name", f"interior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=half_cont_core + cumulative,
+                amount=amount,
                 connecting_wall_id=continuous.wall_id,
             ))
+            _diag(f"  ADJ TERM int[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
+                   f"[opposing: '{cont_layer_name}' thick={cont_layer_thick:.6f} ft ({cont_layer_thick*12:.4f} in)]")
 
     else:
-        # Fallback: 3-aggregate adjustments
+        # Fallback: 3-aggregate adjustments (unscaled WallLayerInfo)
+        _diag("  FALLBACK PATH (no assembly layers) — 3 aggregate adjustments")
         for layer_name, amount in [
             ("core", half_cont_core),
             ("exterior",
@@ -658,7 +786,9 @@ def _calculate_t_intersection_adjustments(
                 adjustment_type=AdjustmentType.TRIM, amount=amount,
                 connecting_wall_id=continuous.wall_id,
             ))
+            _diag(f"  ADJ TERM '{layer_name}': TRIM {amount:.6f} ft ({amount*12:.4f} in)")
 
+    _diag(f"  Total T-intersection adjustments: {len(adjustments)}")
     return adjustments
 
 
@@ -1060,11 +1190,24 @@ def recompute_adjustments(
         Drop-in replacement for ``junctions_data["wall_adjustments"]``.
     """
     # Build lookup maps from enriched walls
+    _diag("=== recompute_adjustments (Phase 2) ===")
+    _diag(f"  walls_data count: {len(walls_data)}")
     wall_layers = build_wall_layers_map(walls_data)
     wall_assemblies = _build_wall_assemblies_map(walls_data)
     wall_lookup: Dict[str, Dict] = {
         w.get("wall_id", ""): w for w in walls_data
     }
+    _diag(f"  wall_layers: {list(wall_layers.keys())}")
+    _diag(f"  wall_assemblies: {list(wall_assemblies.keys())}")
+    for wid, wli in wall_layers.items():
+        _diag(f"    WallLayerInfo[{wid}]: ext={wli.exterior_thickness:.6f} "
+               f"core={wli.core_thickness:.6f} int={wli.interior_thickness:.6f} "
+               f"total={wli.total_thickness:.6f} source={wli.source}")
+    for wid, asm in wall_assemblies.items():
+        _diag(f"    Assembly[{wid}]: {len(asm)} layers")
+        for al in asm:
+            _diag(f"      {al.get('name')} side={al.get('side')} "
+                   f"thick={al.get('thickness', 0):.6f} ft func={al.get('function')}")
 
     # Read topology from junctions_data
     resolutions_data = junctions_data.get("resolutions", [])

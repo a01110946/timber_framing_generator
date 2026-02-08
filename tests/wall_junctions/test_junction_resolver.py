@@ -556,7 +556,7 @@ class TestButtJoinDirections:
         assert core_adj[0].adjustment_type == AdjustmentType.TRIM
 
     def test_primary_exterior_amount(self, l_corner_walls):
-        """Primary ext extends by sec_half_wt + half_sec_core + sec_ext."""
+        """Primary ext extends by half_sec_core + sec_ext."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -566,13 +566,11 @@ class TestButtJoinDirections:
         wall_a_adjs = graph.get_adjustments_for_wall("wall_A")
         ext_adj = [a for a in wall_a_adjs if a.layer_name == "exterior"][0]
         layers = build_default_wall_layers("wall_B", 0.3958)
-        # Fix 2: includes wall_thickness/2 offset (face-to-center)
-        sec_half_wt = 0.3958 / 2.0
-        expected = sec_half_wt + layers.core_thickness / 2.0 + layers.exterior_thickness
+        expected = layers.core_thickness / 2.0 + layers.exterior_thickness
         assert abs(ext_adj.amount - expected) < 0.001
 
     def test_secondary_interior_trim_amount(self, l_corner_walls):
-        """Secondary int trims by pri_half_wt + half_pri_core + pri_int."""
+        """Secondary int trims by half_pri_core + pri_int."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -581,9 +579,7 @@ class TestButtJoinDirections:
         wall_b_adjs = graph.get_adjustments_for_wall("wall_B")
         int_adj = [a for a in wall_b_adjs if a.layer_name == "interior"][0]
         layers = build_default_wall_layers("wall_A", 0.3958)
-        # Fix 2: includes wall_thickness/2 offset (face-to-center)
-        pri_half_wt = 0.3958 / 2.0
-        expected = pri_half_wt + layers.core_thickness / 2.0 + layers.interior_thickness
+        expected = layers.core_thickness / 2.0 + layers.interior_thickness
         assert abs(int_adj.amount - expected) < 0.001
 
     def test_directions_with_four_room_layout(self, four_room_layout):
@@ -712,13 +708,12 @@ class TestPerLayerCumulativeAdjustments:
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Primary ext layers extend by sec_half_wt + half_sec_core + cumulative."""
+        """Primary ext layers extend by half_sec_core + cumulative."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        sec_half_wt = 0.50 / 2.0  # secondary wall_thickness / 2
         half_sec_core = (3.5 / 12) / 2.0  # secondary has 3.5" core
         sec_ext_1 = 1.0 / 24  # secondary sheathing (closest to core)
         sec_ext_2 = 1.0 / 24  # secondary siding
@@ -730,29 +725,28 @@ class TestPerLayerCumulativeAdjustments:
         siding_adj = [a for a in pri_ext if a.layer_name == "siding"][0]
 
         assert sheathing_adj.adjustment_type == AdjustmentType.EXTEND
-        assert abs(sheathing_adj.amount - (sec_half_wt + half_sec_core + sec_ext_1)) < 0.0001
+        assert abs(sheathing_adj.amount - (half_sec_core + sec_ext_1)) < 0.0001
 
         assert siding_adj.adjustment_type == AdjustmentType.EXTEND
-        assert abs(siding_adj.amount - (sec_half_wt + half_sec_core + sec_ext_1 + sec_ext_2)) < 0.0001
+        assert abs(siding_adj.amount - (half_sec_core + sec_ext_1 + sec_ext_2)) < 0.0001
 
     def test_primary_int_cumulative_amounts(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Primary int layers trim by sec_half_wt + half_sec_core + cumulative."""
+        """Primary int layers trim by half_sec_core + cumulative."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        sec_half_wt = 0.50 / 2.0
         half_sec_core = (3.5 / 12) / 2.0
         sec_int_1 = 1.0 / 24  # secondary gypsum
 
         gypsum_adj = [a for a in adjs if a.wall_id == "wall_A"
                       and a.layer_name == "gypsum"][0]
         assert gypsum_adj.adjustment_type == AdjustmentType.TRIM
-        assert abs(gypsum_adj.amount - (sec_half_wt + half_sec_core + sec_int_1)) < 0.0001
+        assert abs(gypsum_adj.amount - (half_sec_core + sec_int_1)) < 0.0001
 
     def test_secondary_all_trim(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
@@ -771,13 +765,12 @@ class TestPerLayerCumulativeAdjustments:
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Secondary ext layers trim by pri_half_wt + half_pri_core + cumulative."""
+        """Secondary ext layers trim by half_pri_core + cumulative."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        pri_half_wt = 0.50 / 2.0  # primary wall_thickness / 2
         half_pri_core = (6.0 / 12) / 2.0  # primary has 6" core
         pri_ext_1 = 1.0 / 24  # primary sheathing
         pri_ext_2 = 1.0 / 24  # primary siding
@@ -787,26 +780,25 @@ class TestPerLayerCumulativeAdjustments:
         sheathing_adj = [a for a in sec_ext if a.layer_name == "sheathing"][0]
         siding_adj = [a for a in sec_ext if a.layer_name == "siding"][0]
 
-        assert abs(sheathing_adj.amount - (pri_half_wt + half_pri_core + pri_ext_1)) < 0.0001
-        assert abs(siding_adj.amount - (pri_half_wt + half_pri_core + pri_ext_1 + pri_ext_2)) < 0.0001
+        assert abs(sheathing_adj.amount - (half_pri_core + pri_ext_1)) < 0.0001
+        assert abs(siding_adj.amount - (half_pri_core + pri_ext_1 + pri_ext_2)) < 0.0001
 
     def test_secondary_int_cumulative_amounts(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Secondary int trims by pri_half_wt + half_pri_core + cumulative."""
+        """Secondary int trims by half_pri_core + cumulative."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
-        pri_half_wt = 0.50 / 2.0
         half_pri_core = (6.0 / 12) / 2.0
         pri_int_1 = 1.0 / 24  # primary gypsum
 
         gypsum_adj = [a for a in adjs if a.wall_id == "wall_B"
                       and a.layer_name == "gypsum"][0]
-        assert abs(gypsum_adj.amount - (pri_half_wt + half_pri_core + pri_int_1)) < 0.0001
+        assert abs(gypsum_adj.amount - (half_pri_core + pri_int_1)) < 0.0001
 
     def test_asymmetric_layer_counts(self):
         """Wall with 3 ext layers vs wall with 1 ext layer."""
@@ -848,11 +840,9 @@ class TestPerLayerCumulativeAdjustments:
         )
 
         # Primary (wall_A) has 3 ext layers.  Secondary (wall_B) has 1.
-        # Fix 2: amounts include sec_half_wt offset
-        # pri ext[0] "foam":      sec_half_wt + half_sec_core + sec_osb_thickness
-        # pri ext[1] "sheathing": sec_half_wt + half_sec_core + sec_osb_thickness
-        # pri ext[2] "siding":    sec_half_wt + half_sec_core + sec_osb_thickness
-        sec_half_wt = 0.5 / 2.0
+        # pri ext[0] "foam":      half_sec_core + sec_osb_thickness
+        # pri ext[1] "sheathing": half_sec_core + sec_osb_thickness
+        # pri ext[2] "siding":    half_sec_core + sec_osb_thickness
         half_sec_core = (3.5 / 12) / 2.0
         osb_t = 1.0 / 24
 
@@ -864,11 +854,11 @@ class TestPerLayerCumulativeAdjustments:
                       and a.layer_name == "siding"][0]
 
         # foam (ext[0]): cumulative = osb_t
-        assert abs(pri_foam.amount - (sec_half_wt + half_sec_core + osb_t)) < 0.0001
+        assert abs(pri_foam.amount - (half_sec_core + osb_t)) < 0.0001
         # sheathing (ext[1]): no sec_ext[1], cumulative stays osb_t
-        assert abs(pri_sheathing.amount - (sec_half_wt + half_sec_core + osb_t)) < 0.0001
+        assert abs(pri_sheathing.amount - (half_sec_core + osb_t)) < 0.0001
         # siding (ext[2]): same
-        assert abs(pri_siding.amount - (sec_half_wt + half_sec_core + osb_t)) < 0.0001
+        assert abs(pri_siding.amount - (half_sec_core + osb_t)) < 0.0001
 
     def test_fallback_without_assembly(self):
         """Without assembly layers, falls back to 3-aggregate."""
@@ -1104,9 +1094,8 @@ class TestRecomputeAdjustments:
         assert "Gypsum Board" in pri_names
 
     def test_recompute_uses_real_thicknesses(self):
-        """Adjustment amounts should use assembly core thickness + offset.
+        """Adjustment amounts should use scaled assembly core thickness.
 
-        Fix 2 adds wall_thickness/2 offset.
         Fix 3 scales assembly layers to match Revit wall_thickness.
         """
         junctions_data = self._make_l_corner_junctions_data()
@@ -1119,12 +1108,11 @@ class TestRecomputeAdjustments:
         sec_asm_total = (7.0 / 16 / 12) + (5.5 / 12) + (0.5 / 12)
         sec_scale = 0.5 / sec_asm_total
         scaled_sec_core = (5.5 / 12) * sec_scale
-        sec_half_wt = 0.5 / 2.0
 
         pri_core = [a for a in result["W_PRI"]
                      if a["layer_name"] == "core"][0]
         assert pri_core["adjustment_type"] == "extend"
-        expected_pri_core = sec_half_wt + scaled_sec_core / 2.0
+        expected_pri_core = scaled_sec_core / 2.0
         assert abs(pri_core["amount"] - expected_pri_core) < 0.001
 
         # W_PRI: assembly total = (7/16/12) + (3.5/12) + (0.5/12) = 0.3698 ft
@@ -1132,16 +1120,15 @@ class TestRecomputeAdjustments:
         pri_asm_total = (7.0 / 16 / 12) + (3.5 / 12) + (0.5 / 12)
         pri_scale = 0.333 / pri_asm_total
         scaled_pri_core = (3.5 / 12) * pri_scale
-        pri_half_wt = 0.333 / 2.0
 
         sec_core = [a for a in result["W_SEC"]
                      if a["layer_name"] == "core"][0]
         assert sec_core["adjustment_type"] == "trim"
-        expected_sec_core = pri_half_wt + scaled_pri_core / 2.0
+        expected_sec_core = scaled_pri_core / 2.0
         assert abs(sec_core["amount"] - expected_sec_core) < 0.001
 
     def test_recompute_primary_ext_cumulative(self):
-        """Primary ext extends by sec_half_wt + half_sec_core + sec_ext."""
+        """Primary ext extends by half_sec_core + sec_ext."""
         junctions_data = self._make_l_corner_junctions_data()
         walls = self._make_enriched_walls()
         result = recompute_adjustments(junctions_data, walls)
@@ -1150,13 +1137,12 @@ class TestRecomputeAdjustments:
         sec_asm_total = (7.0 / 16 / 12) + (5.5 / 12) + (0.5 / 12)
         sec_scale = 0.5 / sec_asm_total
         scaled_sec_half_core = ((5.5 / 12) * sec_scale) / 2.0
-        sec_half_wt = 0.5 / 2.0
         # Raw (unscaled) sec ext thickness for cumulative
         sec_osb_t = 7.0 / 16 / 12
 
         pri_osb = [a for a in result["W_PRI"]
                     if a["layer_name"] == "OSB Sheathing"][0]
-        expected = sec_half_wt + scaled_sec_half_core + sec_osb_t
+        expected = scaled_sec_half_core + sec_osb_t
         assert pri_osb["adjustment_type"] == "extend"
         assert abs(pri_osb["amount"] - expected) < 0.001
 
@@ -1289,151 +1275,15 @@ class TestRecomputeAdjustments:
         for adj in result["TERM"]:
             assert adj["adjustment_type"] == "trim"
 
-        # TERM core trims by cont_half_wt + half of continuous scaled core
+        # TERM core trims by half of continuous scaled core
         # CONT: assembly total = 0.036 + 0.292 + 0.042 = 0.370
         # wall_thickness = 0.333, scale = 0.333/0.370 = 0.9005
         cont_asm_total = 0.036 + 0.292 + 0.042
         cont_scale = 0.333 / cont_asm_total
         scaled_cont_core = 0.292 * cont_scale
-        cont_half_wt = 0.333 / 2.0
         term_core = [a for a in result["TERM"] if a["layer_name"] == "core"][0]
-        expected = cont_half_wt + scaled_cont_core / 2.0
+        expected = scaled_cont_core / 2.0
         assert abs(term_core["amount"] - expected) < 0.001
-
-
-# =============================================================================
-# Fix 2: Extension Offset Tests (PRP-026)
-# =============================================================================
-
-
-class TestExtensionOffset:
-    """Tests verifying that extension amounts include wall_thickness/2 offset.
-
-    In Revit, the primary wall's endpoint is at the secondary wall's face,
-    not its centerline. The offset (sec.wall_thickness/2) is added to all
-    extension and trim amounts so panels reach the correct position.
-    """
-
-    def test_core_extend_includes_offset(self):
-        """Primary core extend includes face-to-center offset."""
-        conn_a = WallConnection(
-            wall_id="A", end="end", direction=(1, 0, 0),
-            angle_at_junction=0, wall_thickness=0.5, wall_length=20.0,
-        )
-        conn_b = WallConnection(
-            wall_id="B", end="start", direction=(0, 1, 0),
-            angle_at_junction=90, wall_thickness=0.333, wall_length=15.0,
-        )
-        layers_a = build_default_wall_layers("A", 0.5)
-        layers_b = build_default_wall_layers("B", 0.333)
-
-        adjs = _calculate_butt_adjustments("j0", conn_a, conn_b, layers_a, layers_b)
-
-        # Primary core: sec_half_wt + half_sec_core
-        sec_half_wt = 0.333 / 2.0
-        half_sec_core = layers_b.core_thickness / 2.0
-        core_adj = [a for a in adjs if a.wall_id == "A" and a.layer_name == "core"][0]
-        assert abs(core_adj.amount - (sec_half_wt + half_sec_core)) < 0.001
-
-    def test_offset_differs_for_different_thicknesses(self):
-        """Offset is proportional to opposing wall's thickness."""
-        conn_a = WallConnection(
-            wall_id="A", end="end", direction=(1, 0, 0),
-            angle_at_junction=0, wall_thickness=0.5, wall_length=20.0,
-        )
-
-        layers_a = build_default_wall_layers("A", 0.5)
-
-        # Thin secondary wall (4")
-        conn_thin = WallConnection(
-            wall_id="B_thin", end="start", direction=(0, 1, 0),
-            angle_at_junction=90, wall_thickness=0.333, wall_length=15.0,
-        )
-        layers_thin = build_default_wall_layers("B_thin", 0.333)
-        adjs_thin = _calculate_butt_adjustments(
-            "j0", conn_a, conn_thin, layers_a, layers_thin
-        )
-
-        # Thick secondary wall (8")
-        conn_thick = WallConnection(
-            wall_id="B_thick", end="start", direction=(0, 1, 0),
-            angle_at_junction=90, wall_thickness=0.667, wall_length=15.0,
-        )
-        layers_thick = build_default_wall_layers("B_thick", 0.667)
-        adjs_thick = _calculate_butt_adjustments(
-            "j0", conn_a, conn_thick, layers_a, layers_thick
-        )
-
-        # Core extend for thick should be larger than thin
-        core_thin = [a for a in adjs_thin if a.wall_id == "A" and a.layer_name == "core"][0]
-        core_thick = [a for a in adjs_thick if a.wall_id == "A" and a.layer_name == "core"][0]
-        assert core_thick.amount > core_thin.amount
-
-    def test_extension_exceeds_half_wall_thickness(self):
-        """All extensions should be >= opposing wall_thickness/2.
-
-        This ensures panels extend at least to the opposing wall's centerline.
-        """
-        conn_a = WallConnection(
-            wall_id="A", end="end", direction=(1, 0, 0),
-            angle_at_junction=0, wall_thickness=0.5, wall_length=20.0,
-        )
-        conn_b = WallConnection(
-            wall_id="B", end="start", direction=(0, 1, 0),
-            angle_at_junction=90, wall_thickness=0.333, wall_length=10.0,
-        )
-        layers_a = build_default_wall_layers("A", 0.5)
-        layers_b = build_default_wall_layers("B", 0.333)
-
-        adjs = _calculate_butt_adjustments("j0", conn_a, conn_b, layers_a, layers_b)
-
-        # All primary extends should be >= sec_half_wt
-        sec_half_wt = 0.333 / 2.0
-        pri_extends = [a for a in adjs if a.wall_id == "A"
-                       and a.adjustment_type == AdjustmentType.EXTEND]
-        for adj in pri_extends:
-            assert adj.amount >= sec_half_wt, (
-                f"Primary {adj.layer_name} extend {adj.amount:.4f} "
-                f"< sec_half_wt {sec_half_wt:.4f}"
-            )
-
-        # All secondary trims should be >= pri_half_wt
-        pri_half_wt = 0.5 / 2.0
-        sec_trims = [a for a in adjs if a.wall_id == "B"
-                     and a.adjustment_type == AdjustmentType.TRIM]
-        for adj in sec_trims:
-            assert adj.amount >= pri_half_wt, (
-                f"Secondary {adj.layer_name} trim {adj.amount:.4f} "
-                f"< pri_half_wt {pri_half_wt:.4f}"
-            )
-
-    def test_t_intersection_trim_includes_offset(self):
-        """T-intersection trims include face-to-center offset."""
-        from src.timber_framing_generator.wall_junctions.junction_resolver import (
-            _calculate_t_intersection_adjustments,
-        )
-
-        cont = WallConnection(
-            wall_id="CONT", end="midspan", direction=(1, 0, 0),
-            angle_at_junction=0, wall_thickness=0.5, wall_length=30.0,
-            is_midspan=True, midspan_u=15.0,
-        )
-        term = WallConnection(
-            wall_id="TERM", end="start", direction=(0, 1, 0),
-            angle_at_junction=90, wall_thickness=0.333, wall_length=10.0,
-        )
-        cont_layers = build_default_wall_layers("CONT", 0.5)
-        term_layers = build_default_wall_layers("TERM", 0.333)
-
-        adjs = _calculate_t_intersection_adjustments(
-            "j0", cont, term, cont_layers, term_layers
-        )
-
-        cont_half_wt = 0.5 / 2.0
-        half_cont_core = cont_layers.core_thickness / 2.0
-
-        core_trim = [a for a in adjs if a.layer_name == "core"][0]
-        assert abs(core_trim.amount - (cont_half_wt + half_cont_core)) < 0.001
 
 
 # =============================================================================

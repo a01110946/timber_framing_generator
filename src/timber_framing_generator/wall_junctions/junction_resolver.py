@@ -364,14 +364,6 @@ def _calculate_butt_adjustments(
     half_sec_core = secondary_layers.core_thickness / 2.0
     half_pri_core = primary_layers.core_thickness / 2.0
 
-    # Fix 2: Endpoint-to-centerline offset.
-    # In Revit, the primary wall's endpoint is at the secondary wall's
-    # FACE, not its centerline. The offset from face to centerline is
-    # half the Revit wall_thickness. We add this to all extension/trim
-    # amounts so panels reach the correct position.
-    sec_half_wt = secondary.wall_thickness / 2.0
-    pri_half_wt = primary.wall_thickness / 2.0
-
     if primary_assembly_layers and secondary_assembly_layers:
         # ----------------------------------------------------------
         # Per-individual-layer cumulative adjustments
@@ -382,17 +374,16 @@ def _calculate_butt_adjustments(
         pri_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
 
         # --- PRIMARY WALL ---
-        # Core: EXTEND by sec_half_wt + half_sec_core
-        # (face-to-center offset + half core)
+        # Core: EXTEND by half_sec_core (centerline to core edge)
         adjustments.append(LayerAdjustment(
             wall_id=primary.wall_id, end=primary.end,
             junction_id=junction_id, layer_name="core",
             adjustment_type=AdjustmentType.EXTEND,
-            amount=sec_half_wt + half_sec_core,
+            amount=half_sec_core,
             connecting_wall_id=secondary.wall_id,
         ))
 
-        # Primary exterior: each EXTENDS by sec_half_wt + half_sec_core + cumulative
+        # Primary exterior: each EXTENDS by half_sec_core + cumulative
         p_ext = _ordered_layers_core_outward(primary_assembly_layers, "exterior")
         cumulative = 0.0
         for i, p_layer in enumerate(p_ext):
@@ -403,11 +394,11 @@ def _calculate_butt_adjustments(
                 junction_id=junction_id,
                 layer_name=p_layer.get("name", f"exterior_{i}"),
                 adjustment_type=AdjustmentType.EXTEND,
-                amount=sec_half_wt + half_sec_core + cumulative,
+                amount=half_sec_core + cumulative,
                 connecting_wall_id=secondary.wall_id,
             ))
 
-        # Primary interior: each TRIMS by sec_half_wt + half_sec_core + cumulative
+        # Primary interior: each TRIMS by half_sec_core + cumulative
         p_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
         cumulative = 0.0
         for i, p_layer in enumerate(p_int):
@@ -418,21 +409,21 @@ def _calculate_butt_adjustments(
                 junction_id=junction_id,
                 layer_name=p_layer.get("name", f"interior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=sec_half_wt + half_sec_core + cumulative,
+                amount=half_sec_core + cumulative,
                 connecting_wall_id=secondary.wall_id,
             ))
 
         # --- SECONDARY WALL (all TRIM) ---
-        # Core: TRIM by pri_half_wt + half_pri_core
+        # Core: TRIM by half_pri_core (centerline to core edge)
         adjustments.append(LayerAdjustment(
             wall_id=secondary.wall_id, end=secondary.end,
             junction_id=junction_id, layer_name="core",
             adjustment_type=AdjustmentType.TRIM,
-            amount=pri_half_wt + half_pri_core,
+            amount=half_pri_core,
             connecting_wall_id=primary.wall_id,
         ))
 
-        # Secondary exterior: each TRIMS by pri_half_wt + half_pri_core + cumulative
+        # Secondary exterior: each TRIMS by half_pri_core + cumulative
         s_ext = _ordered_layers_core_outward(secondary_assembly_layers, "exterior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_ext):
@@ -443,11 +434,11 @@ def _calculate_butt_adjustments(
                 junction_id=junction_id,
                 layer_name=s_layer.get("name", f"exterior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=pri_half_wt + half_pri_core + cumulative,
+                amount=half_pri_core + cumulative,
                 connecting_wall_id=primary.wall_id,
             ))
 
-        # Secondary interior: each TRIMS by pri_half_wt + half_pri_core + cumulative
+        # Secondary interior: each TRIMS by half_pri_core + cumulative
         s_int = _ordered_layers_core_outward(secondary_assembly_layers, "interior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_int):
@@ -458,7 +449,7 @@ def _calculate_butt_adjustments(
                 junction_id=junction_id,
                 layer_name=s_layer.get("name", f"interior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=pri_half_wt + half_pri_core + cumulative,
+                amount=half_pri_core + cumulative,
                 connecting_wall_id=primary.wall_id,
             ))
 
@@ -466,14 +457,14 @@ def _calculate_butt_adjustments(
         # ----------------------------------------------------------
         # Fallback: 3-aggregate adjustments (no individual layers)
         # ----------------------------------------------------------
-        # PRIMARY wall (offset = sec_half_wt for face-to-center)
+        # PRIMARY wall
         for layer_name, adj_type, amount in [
             ("core", AdjustmentType.EXTEND,
-             sec_half_wt + half_sec_core),
+             half_sec_core),
             ("exterior", AdjustmentType.EXTEND,
-             sec_half_wt + half_sec_core + secondary_layers.exterior_thickness),
+             half_sec_core + secondary_layers.exterior_thickness),
             ("interior", AdjustmentType.TRIM,
-             sec_half_wt + half_sec_core + secondary_layers.interior_thickness),
+             half_sec_core + secondary_layers.interior_thickness),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
@@ -482,14 +473,14 @@ def _calculate_butt_adjustments(
                 connecting_wall_id=secondary.wall_id,
             ))
 
-        # SECONDARY wall — ALL TRIM (offset = pri_half_wt)
+        # SECONDARY wall — ALL TRIM
         for layer_name, adj_type, amount in [
             ("core", AdjustmentType.TRIM,
-             pri_half_wt + half_pri_core),
+             half_pri_core),
             ("exterior", AdjustmentType.TRIM,
-             pri_half_wt + half_pri_core + primary_layers.exterior_thickness),
+             half_pri_core + primary_layers.exterior_thickness),
             ("interior", AdjustmentType.TRIM,
-             pri_half_wt + half_pri_core + primary_layers.interior_thickness),
+             half_pri_core + primary_layers.interior_thickness),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
@@ -608,25 +599,21 @@ def _calculate_t_intersection_adjustments(
 
     half_cont_core = continuous_layers.core_thickness / 2.0
 
-    # Fix 2: Endpoint-to-centerline offset for T-intersections.
-    # The terminating wall's endpoint is at the continuous wall's face.
-    cont_half_wt = continuous.wall_thickness / 2.0
-
     if continuous_assembly_layers and terminating_assembly_layers:
         # Per-layer cumulative adjustments
         cont_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
         cont_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
 
-        # Core: TRIM by cont_half_wt + half_cont_core
+        # Core: TRIM by half_cont_core (centerline to core edge)
         adjustments.append(LayerAdjustment(
             wall_id=terminating.wall_id, end=terminating.end,
             junction_id=junction_id, layer_name="core",
             adjustment_type=AdjustmentType.TRIM,
-            amount=cont_half_wt + half_cont_core,
+            amount=half_cont_core,
             connecting_wall_id=continuous.wall_id,
         ))
 
-        # Terminating exterior: each TRIMS by cont_half_wt + half_cont_core + cumulative
+        # Terminating exterior: each TRIMS by half_cont_core + cumulative
         t_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
         cumulative = 0.0
         for i, t_layer in enumerate(t_ext):
@@ -637,11 +624,11 @@ def _calculate_t_intersection_adjustments(
                 junction_id=junction_id,
                 layer_name=t_layer.get("name", f"exterior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=cont_half_wt + half_cont_core + cumulative,
+                amount=half_cont_core + cumulative,
                 connecting_wall_id=continuous.wall_id,
             ))
 
-        # Terminating interior: each TRIMS by cont_half_wt + half_cont_core + cumulative
+        # Terminating interior: each TRIMS by half_cont_core + cumulative
         t_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
         cumulative = 0.0
         for i, t_layer in enumerate(t_int):
@@ -652,18 +639,18 @@ def _calculate_t_intersection_adjustments(
                 junction_id=junction_id,
                 layer_name=t_layer.get("name", f"interior_{i}"),
                 adjustment_type=AdjustmentType.TRIM,
-                amount=cont_half_wt + half_cont_core + cumulative,
+                amount=half_cont_core + cumulative,
                 connecting_wall_id=continuous.wall_id,
             ))
 
     else:
-        # Fallback: 3-aggregate adjustments (with offset)
+        # Fallback: 3-aggregate adjustments
         for layer_name, amount in [
-            ("core", cont_half_wt + half_cont_core),
+            ("core", half_cont_core),
             ("exterior",
-             cont_half_wt + half_cont_core + continuous_layers.exterior_thickness),
+             half_cont_core + continuous_layers.exterior_thickness),
             ("interior",
-             cont_half_wt + half_cont_core + continuous_layers.interior_thickness),
+             half_cont_core + continuous_layers.interior_thickness),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=terminating.wall_id, end=terminating.end,

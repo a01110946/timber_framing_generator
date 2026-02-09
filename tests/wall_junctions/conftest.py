@@ -99,6 +99,26 @@ def l_corner_walls() -> List[Dict]:
 
 
 @pytest.fixture
+def l_corner_interior_walls() -> List[Dict]:
+    """Two walls meeting at a 90-degree interior L-corner.
+
+    Wall A: horizontal, 20 ft long, ends at (20, 0, 0)
+        z_axis = (0, -1, 0) → faces south
+    Wall B: vertical going SOUTH, 15 ft long, starts at (20, 0, 0)
+        z_axis = (-1, 0, 0) → faces west
+
+    Both z_axes point INTO the corner's acute angle (south-west quadrant),
+    making this an interior corner.
+
+    dot(A_z, B_outward) = dot((0,-1,0), (0,-1,0)) = +1 → interior corner.
+    """
+    return [
+        create_mock_wall("wall_A", (0.0, 0.0, 0.0), (20.0, 0.0, 0.0)),
+        create_mock_wall("wall_B", (20.0, 0.0, 0.0), (20.0, -15.0, 0.0)),
+    ]
+
+
+@pytest.fixture
 def t_intersection_walls() -> List[Dict]:
     """Wall B terminates mid-span of wall A (T-intersection).
 

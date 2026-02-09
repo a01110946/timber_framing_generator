@@ -168,6 +168,29 @@ def _extract_direction(wall: Dict) -> Tuple[float, float, float]:
     return (x_axis.x, x_axis.y, x_axis.z)
 
 
+def _extract_z_axis(wall: Dict) -> Tuple[float, float, float]:
+    """Extract wall normal (z_axis) from exterior_normal or base_plane.z_axis.
+
+    Prefers ``exterior_normal`` (Revit wall.Orientation) when available,
+    as it is the authoritative exterior direction. Falls back to
+    ``base_plane.z_axis`` otherwise.
+    """
+    # Prefer exterior_normal (from Revit wall.Orientation)
+    en = wall.get("exterior_normal")
+    if isinstance(en, dict):
+        return (en["x"], en["y"], en["z"])
+
+    # Fallback to base_plane.z_axis
+    bp = wall.get("base_plane", {})
+    z_axis = bp.get("z_axis")
+    if isinstance(z_axis, dict):
+        return (z_axis["x"], z_axis["y"], z_axis["z"])
+    if z_axis is not None:
+        return (z_axis.x, z_axis.y, z_axis.z)
+
+    return (0.0, 0.0, 1.0)
+
+
 def _extract_endpoints(walls_data: List[Dict]) -> List[Dict]:
     """Extract all wall endpoints with metadata.
 
@@ -177,6 +200,7 @@ def _extract_endpoints(walls_data: List[Dict]) -> List[Dict]:
     for wall in walls_data:
         wall_id = wall["wall_id"]
         direction = _extract_direction(wall)
+        z_axis = _extract_z_axis(wall)
         thickness = wall.get("wall_thickness", 0.3958)
         length = wall.get("wall_length", 0.0)
         is_exterior = wall.get("is_exterior", False)
@@ -188,6 +212,7 @@ def _extract_endpoints(walls_data: List[Dict]) -> List[Dict]:
                 "end": end_name,
                 "position": position,
                 "direction": direction,
+                "z_axis": z_axis,
                 "thickness": thickness,
                 "length": length,
                 "is_exterior": is_exterior,
@@ -364,6 +389,7 @@ def _detect_t_intersections(
                     "end": "midspan",
                     "position": ep_pos,  # Use endpoint position as meeting point
                     "direction": direction,
+                    "z_axis": _extract_z_axis(wall),
                     "thickness": wall.get("wall_thickness", 0.3958),
                     "length": wall.get("wall_length", 0.0),
                     "is_exterior": wall.get("is_exterior", False),
@@ -530,6 +556,7 @@ def build_junction_graph(
                 is_exterior=ep.get("is_exterior", False),
                 is_midspan=ep.get("is_midspan", False),
                 midspan_u=ep.get("midspan_u"),
+                z_axis=ep.get("z_axis", (0.0, 0.0, 1.0)),
             )
             connections.append(conn)
 

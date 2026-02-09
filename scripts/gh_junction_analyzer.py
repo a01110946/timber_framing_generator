@@ -171,10 +171,10 @@ from src.timber_framing_generator.config.assembly_resolver import (
 
 COMPONENT_NAME = "Junction Analyzer"
 COMPONENT_NICKNAME = "JnxAnl"
-COMPONENT_MESSAGE = "v1.3-diag"
+COMPONENT_MESSAGE = "v1.5-diag"
 
 # Version marker — confirms the updated script is running in GH
-print("[JnxAnl] Script version v1.3-diag loaded (worktree path + assembly resolution + diagnostics)")
+print("[JnxAnl] Script version v1.5-diag loaded (worktree path + assembly resolution + diagnostics)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "0-Analysis"
 

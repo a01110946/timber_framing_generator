@@ -27,7 +27,11 @@ from .junction_types import (
     JunctionGraph,
     _serialize_adjustment,
 )
-from .junction_detector import _outward_direction_at_junction, _calculate_angle
+from .junction_detector import (
+    _outward_direction_at_junction,
+    _calculate_angle,
+    _extract_z_axis,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +335,36 @@ def _determine_t_priority(
 # =============================================================================
 
 
+def _is_exterior_corner(
+    primary: WallConnection,
+    secondary: WallConnection,
+) -> bool:
+    """Determine if an L-corner is an exterior corner (building outside).
+
+    Uses the dot product of the primary wall's z_axis (exterior normal)
+    and the secondary wall's outward direction at the junction.
+
+    - Negative dot product: z_axes point outward from the corner
+      (exterior corner — building outside).
+    - Positive dot product: z_axes point inward toward the corner
+      (interior corner — room inside).
+
+    Args:
+        primary: Primary wall connection (with z_axis populated).
+        secondary: Secondary wall connection (with direction populated).
+
+    Returns:
+        True if the corner is an exterior corner.
+    """
+    out_sec = _outward_direction_at_junction(secondary)
+    dot = (
+        primary.z_axis[0] * out_sec[0]
+        + primary.z_axis[1] * out_sec[1]
+        + primary.z_axis[2] * out_sec[2]
+    )
+    return dot < 0
+
+
 def _calculate_butt_adjustments(
     junction_id: str,
     primary: WallConnection,
@@ -342,21 +376,24 @@ def _calculate_butt_adjustments(
 ) -> List[LayerAdjustment]:
     """Calculate per-layer adjustments for a butt join.
 
-    The primary wall dominates both faces of the corner:
-      - Primary exterior layers EXTEND past the junction
-      - Primary interior layers TRIM before the junction
-      - Primary core EXTENDS
+    The primary wall dominates both faces of the corner. The exact
+    EXTEND/TRIM pattern depends on whether the corner is exterior
+    (building outside) or interior (room inside):
+
+    **Interior corner** (z_axes point into corner):
+      - Primary exterior EXTENDS, core EXTENDS, interior TRIMS
       - Secondary ALL layers TRIM
+
+    **Exterior corner** (z_axes point outward from corner):
+      - Primary ALL layers EXTEND (ext, core, int)
+      - Secondary exterior EXTENDS, core TRIMS, interior TRIMS
 
     Each layer's amount is cumulative: ``half_opposing_core`` plus the
     sum of the opposing wall's layers (same side) up to that layer's
     position in the stack.  This ensures each layer stops exactly at
     the face of the corresponding opposing layer.
 
-    All thicknesses (both ``half_core`` from ``WallLayerInfo`` and the
-    per-layer cumulative values) are **scaled** to match the Revit
-    ``wall_thickness``, avoiding the mismatch between scaled aggregates
-    and raw catalog values.
+    Layer thicknesses are used as-is from the catalog (unscaled).
 
     When ``primary_assembly_layers`` / ``secondary_assembly_layers``
     are provided, adjustments are emitted per individual layer name.
@@ -382,11 +419,22 @@ def _calculate_butt_adjustments(
     half_sec_core = secondary_layers.core_thickness / 2.0
     half_pri_core = primary_layers.core_thickness / 2.0
 
+    # Determine corner type (exterior vs interior)
+    exterior_corner = _is_exterior_corner(primary, secondary)
+
+    # Primary interior ALWAYS trims (faces the room, stops at secondary wall)
+    # Secondary exterior: EXTEND at exterior corners (wraps building envelope),
+    #                     TRIM at interior corners
+    pri_int_type = AdjustmentType.TRIM
+    sec_ext_type = AdjustmentType.EXTEND if exterior_corner else AdjustmentType.TRIM
+
     # ===== DIAGNOSTIC: Butt adjustment inputs =====
     _diag(f"=== _calculate_butt_adjustments [{junction_id}] ===")
+    _diag(f"  CORNER TYPE: {'EXTERIOR' if exterior_corner else 'INTERIOR'}")
+    _diag(f"  -> primary int = {pri_int_type.value}, secondary ext = {sec_ext_type.value}")
     _diag(f"  ASSUMPTION: amounts are distances from each wall's Revit centerline endpoint along its U-axis")
     _diag(f"  ASSUMPTION: wall endpoints meet at/near the virtual centerline corner")
-    _diag(f"  ASSUMPTION: +z_axis = physical exterior face (after flip normalization)")
+    _diag(f"  ASSUMPTION: +z_axis = physical exterior face")
     _diag(f"  PRIMARY: wall={primary.wall_id} end={primary.end} "
            f"thick={primary.wall_thickness:.6f} ft ({primary.wall_thickness*12:.4f} in) "
            f"len={primary.wall_length:.4f} ft")
@@ -466,24 +514,26 @@ def _calculate_butt_adjustments(
                    f"[added sec_ext[{i}] '{sec_layer_name}'={sec_layer_thick:.6f} ft ({sec_layer_thick*12:.4f} in)] "
                    f"at end={primary.end}")
 
-        # Primary interior: each TRIMS by half_sec_core + cumulative(sec_int)
+        # Primary interior: always TRIM (faces room, stops at secondary core face)
+        # Cumulative added AFTER amount: layer[0] stops at half_sec_core,
+        # layer[1] stops at half_sec_core + sec_int[0], etc.
         p_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
         cumulative = 0.0
         for i, p_layer in enumerate(p_int):
             sec_layer_name = sec_int[i].get("name", "?") if i < len(sec_int) else "NONE(sec ran out)"
             sec_layer_thick = sec_int[i].get("thickness", 0.0) if i < len(sec_int) else 0.0
+            amount = half_sec_core + cumulative
             if i < len(sec_int):
                 cumulative += sec_layer_thick
-            amount = half_sec_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
                 junction_id=junction_id,
                 layer_name=p_layer.get("name", f"interior_{i}"),
-                adjustment_type=AdjustmentType.TRIM,
+                adjustment_type=pri_int_type,
                 amount=amount,
                 connecting_wall_id=secondary.wall_id,
             ))
-            _diag(f"  ADJ PRIMARY int[{i}] '{p_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+            _diag(f"  ADJ PRIMARY int[{i}] '{p_layer.get('name')}': {pri_int_type.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
                    f"= half_sec_core({half_sec_core:.6f}) + cumulative({cumulative:.6f}) "
                    f"[added sec_int[{i}] '{sec_layer_name}'={sec_layer_thick:.6f} ft ({sec_layer_thick*12:.4f} in)] "
                    f"at end={primary.end}")
@@ -500,36 +550,44 @@ def _calculate_butt_adjustments(
         _diag(f"  ADJ SECONDARY core: TRIM {half_pri_core:.6f} ft ({half_pri_core*12:.4f} in) "
                f"= half_pri_core at end={secondary.end}")
 
-        # Secondary exterior: each TRIMS by half_pri_core + cumulative(pri_ext)
+        # Secondary exterior: TRIM (interior corner) or EXTEND (exterior corner)
+        # EXTEND: cumulative AFTER (reach TO opposing core face, not past exterior)
+        # TRIM: cumulative BEFORE (stop past opposing exterior layers)
         s_ext = _ordered_layers_core_outward(secondary_assembly_layers, "exterior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_ext):
             pri_layer_name = pri_ext[i].get("name", "?") if i < len(pri_ext) else "NONE(pri ran out)"
             pri_layer_thick = pri_ext[i].get("thickness", 0.0) if i < len(pri_ext) else 0.0
-            if i < len(pri_ext):
+            if sec_ext_type == AdjustmentType.TRIM and i < len(pri_ext):
                 cumulative += pri_layer_thick
             amount = half_pri_core + cumulative
+            if sec_ext_type != AdjustmentType.TRIM and i < len(pri_ext):
+                cumulative += pri_layer_thick
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
                 junction_id=junction_id,
                 layer_name=s_layer.get("name", f"exterior_{i}"),
-                adjustment_type=AdjustmentType.TRIM,
+                adjustment_type=sec_ext_type,
                 amount=amount,
                 connecting_wall_id=primary.wall_id,
             ))
-            _diag(f"  ADJ SECONDARY ext[{i}] '{s_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+            _diag(f"  ADJ SECONDARY ext[{i}] '{s_layer.get('name')}': {sec_ext_type.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
                    f"= half_pri_core({half_pri_core:.6f}) + cumulative({cumulative:.6f}) "
                    f"[added pri_ext[{i}] '{pri_layer_name}'={pri_layer_thick:.6f} ft ({pri_layer_thick*12:.4f} in)] "
                    f"at end={secondary.end}")
 
-        # Secondary interior: each TRIMS by half_pri_core + cumulative(pri_int)
+        # Secondary interior: each TRIMS by half_pri_core + cumulative opposing layers
+        # The trim direction goes INTO the secondary wall body (away from junction).
+        # At exterior corner: trim goes toward room side → encounters pri_int
+        # At interior corner: trim goes toward building exterior → encounters pri_ext
+        sec_int_opposing = pri_int if exterior_corner else pri_ext
         s_int = _ordered_layers_core_outward(secondary_assembly_layers, "interior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_int):
-            pri_layer_name = pri_int[i].get("name", "?") if i < len(pri_int) else "NONE(pri ran out)"
-            pri_layer_thick = pri_int[i].get("thickness", 0.0) if i < len(pri_int) else 0.0
-            if i < len(pri_int):
-                cumulative += pri_layer_thick
+            opp_layer_name = sec_int_opposing[i].get("name", "?") if i < len(sec_int_opposing) else "NONE(opp ran out)"
+            opp_layer_thick = sec_int_opposing[i].get("thickness", 0.0) if i < len(sec_int_opposing) else 0.0
+            if i < len(sec_int_opposing):
+                cumulative += opp_layer_thick
             amount = half_pri_core + cumulative
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
@@ -541,7 +599,7 @@ def _calculate_butt_adjustments(
             ))
             _diag(f"  ADJ SECONDARY int[{i}] '{s_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
                    f"= half_pri_core({half_pri_core:.6f}) + cumulative({cumulative:.6f}) "
-                   f"[added pri_int[{i}] '{pri_layer_name}'={pri_layer_thick:.6f} ft ({pri_layer_thick*12:.4f} in)] "
+                   f"[added opp[{i}] '{opp_layer_name}'={opp_layer_thick:.6f} ft ({opp_layer_thick*12:.4f} in)] "
                    f"at end={secondary.end}")
 
     else:
@@ -550,15 +608,17 @@ def _calculate_butt_adjustments(
         # Uses WallLayerInfo which is already scaled to wall_thickness.
         # ----------------------------------------------------------
         _diag(f"  FALLBACK PATH (no individual assembly layers)")
+        _diag(f"  CORNER TYPE: {'EXTERIOR' if exterior_corner else 'INTERIOR'}")
         _diag(f"  WARNING: all layers on same side get identical adjustment amount")
         # PRIMARY wall
+        # Interior: just half_sec_core (stops at opposing core face)
         for layer_name, adj_type, amount in [
             ("core", AdjustmentType.EXTEND,
              half_sec_core),
             ("exterior", AdjustmentType.EXTEND,
              half_sec_core + secondary_layers.exterior_thickness),
-            ("interior", AdjustmentType.TRIM,
-             half_sec_core + secondary_layers.interior_thickness),
+            ("interior", pri_int_type,
+             half_sec_core),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
@@ -567,14 +627,19 @@ def _calculate_butt_adjustments(
                 connecting_wall_id=secondary.wall_id,
             ))
 
-        # SECONDARY wall — ALL TRIM
+        # SECONDARY wall
+        # Exterior EXTEND: just half_pri_core (reaches TO opposing core face)
+        # Exterior TRIM: half_pri_core + pri_ext (stops past opposing exterior)
+        sec_ext_amount = (half_pri_core if sec_ext_type == AdjustmentType.EXTEND
+                          else half_pri_core + primary_layers.exterior_thickness)
         for layer_name, adj_type, amount in [
             ("core", AdjustmentType.TRIM,
              half_pri_core),
-            ("exterior", AdjustmentType.TRIM,
-             half_pri_core + primary_layers.exterior_thickness),
+            ("exterior", sec_ext_type,
+             sec_ext_amount),
             ("interior", AdjustmentType.TRIM,
-             half_pri_core + primary_layers.interior_thickness),
+             half_pri_core + (primary_layers.interior_thickness if exterior_corner
+                              else primary_layers.exterior_thickness)),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
@@ -1366,7 +1431,7 @@ def _rebuild_connection(
     """Reconstruct a WallConnection from serialized data + wall lookup.
 
     The serialized connection has wall_id, end, wall_thickness,
-    is_midspan, is_exterior. Wall length comes from wall_data.
+    is_midspan, is_exterior, z_axis. Wall length comes from wall_data.
 
     Args:
         conn_data: Serialized connection dict from junctions_json.
@@ -1375,10 +1440,27 @@ def _rebuild_connection(
     Returns:
         WallConnection with enough fields for adjustment calculation.
     """
+    # Extract z_axis: prefer serialized connection data, then wall_data
+    z_axis_data = conn_data.get("z_axis")
+    if isinstance(z_axis_data, dict):
+        z_axis = (z_axis_data["x"], z_axis_data["y"], z_axis_data["z"])
+    elif wall_data:
+        z_axis = _extract_z_axis(wall_data)
+    else:
+        z_axis = (0.0, 0.0, 1.0)
+
+    # Extract direction from wall_data base_plane.x_axis (needed for corner type detection)
+    direction = (0.0, 0.0, 0.0)
+    if wall_data:
+        bp = wall_data.get("base_plane", {})
+        x_axis = bp.get("x_axis")
+        if isinstance(x_axis, dict):
+            direction = (x_axis["x"], x_axis["y"], x_axis["z"])
+
     return WallConnection(
         wall_id=conn_data["wall_id"],
         end=conn_data["end"],
-        direction=(0.0, 0.0, 0.0),  # Not needed for amount calculation
+        direction=direction,
         angle_at_junction=0.0,
         wall_thickness=conn_data.get(
             "wall_thickness",
@@ -1388,4 +1470,5 @@ def _rebuild_connection(
         is_exterior=conn_data.get("is_exterior", False),
         is_midspan=conn_data.get("is_midspan", False),
         midspan_u=conn_data.get("midspan_u"),
+        z_axis=z_axis,
     )

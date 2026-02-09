@@ -148,6 +148,7 @@ class WallConnection:
     is_exterior: bool = False
     is_midspan: bool = False
     midspan_u: Optional[float] = None
+    z_axis: Tuple[float, float, float] = (0.0, 0.0, 1.0)
 
 
 @dataclass
@@ -461,6 +462,7 @@ def _serialize_node(node: JunctionNode) -> Dict:
                 "midspan_u": c.midspan_u,
                 "wall_thickness": c.wall_thickness,
                 "is_exterior": c.is_exterior,
+                "z_axis": {"x": c.z_axis[0], "y": c.z_axis[1], "z": c.z_axis[2]},
             }
             for c in node.connections
         ],

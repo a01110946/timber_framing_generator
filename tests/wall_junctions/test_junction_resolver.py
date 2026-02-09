@@ -26,6 +26,7 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
     _calculate_butt_adjustments,
     _ordered_layers_core_outward,
     _build_layers_from_assembly,
+    _is_exterior_corner,
 )
 from src.timber_framing_generator.wall_junctions.junction_detector import (
     build_junction_graph,
@@ -478,13 +479,19 @@ class TestAnalyzeJunctions:
 
 
 class TestButtJoinDirections:
-    """Tests verifying primary-dominates pattern at L-corner butt joints.
+    """Tests verifying corner-type-aware butt joint directions.
 
-    At a butt joint:
-    - Primary exterior EXTENDS (wraps outside corner)
-    - Primary interior TRIMS (stops at opposing framing face)
-    - Primary core EXTENDS
-    - Secondary ALL layers TRIM (stop at opposing faces)
+    At an **exterior** L-corner (z_axes point outward from corner):
+    - Primary: ALL EXTEND (ext, core, int)
+    - Secondary: ext EXTENDS, core TRIMS, int TRIMS
+
+    At an **interior** L-corner (z_axes point into corner):
+    - Primary: ext EXTENDS, core EXTENDS, int TRIMS
+    - Secondary: ALL TRIM
+
+    Note: The ``l_corner_walls`` fixture creates an exterior corner
+    (wall A z=(0,-1,0) south, wall B z=(1,0,0) east — both point
+    outward from the L).
     """
 
     def test_primary_exterior_extends(self, l_corner_walls):
@@ -499,9 +506,22 @@ class TestButtJoinDirections:
         assert len(ext_adj) == 1
         assert ext_adj[0].adjustment_type == AdjustmentType.EXTEND
 
-    def test_primary_interior_trims(self, l_corner_walls):
+    def test_primary_interior_trims_at_exterior_corner(self, l_corner_walls):
+        """At an exterior corner, primary interior still TRIMS (faces room side)."""
         graph = analyze_junctions(
             l_corner_walls,
+            default_join_type="butt",
+            priority_strategy="longer_wall",
+        )
+        wall_a_adjs = graph.get_adjustments_for_wall("wall_A")
+        int_adj = [a for a in wall_a_adjs if a.layer_name == "interior"]
+        assert len(int_adj) == 1
+        assert int_adj[0].adjustment_type == AdjustmentType.TRIM
+
+    def test_primary_interior_trims_at_interior_corner(self, l_corner_interior_walls):
+        """At an interior corner, primary interior TRIMS."""
+        graph = analyze_junctions(
+            l_corner_interior_walls,
             default_join_type="butt",
             priority_strategy="longer_wall",
         )
@@ -521,9 +541,22 @@ class TestButtJoinDirections:
         assert len(core_adj) == 1
         assert core_adj[0].adjustment_type == AdjustmentType.EXTEND
 
-    def test_secondary_exterior_trims(self, l_corner_walls):
+    def test_secondary_exterior_extends_at_exterior_corner(self, l_corner_walls):
+        """At an exterior corner, secondary exterior EXTENDS."""
         graph = analyze_junctions(
             l_corner_walls,
+            default_join_type="butt",
+            priority_strategy="longer_wall",
+        )
+        wall_b_adjs = graph.get_adjustments_for_wall("wall_B")
+        ext_adj = [a for a in wall_b_adjs if a.layer_name == "exterior"]
+        assert len(ext_adj) == 1
+        assert ext_adj[0].adjustment_type == AdjustmentType.EXTEND
+
+    def test_secondary_exterior_trims_at_interior_corner(self, l_corner_interior_walls):
+        """At an interior corner, secondary exterior TRIMS."""
+        graph = analyze_junctions(
+            l_corner_interior_walls,
             default_join_type="butt",
             priority_strategy="longer_wall",
         )
@@ -533,7 +566,7 @@ class TestButtJoinDirections:
         assert ext_adj[0].adjustment_type == AdjustmentType.TRIM
 
     def test_secondary_interior_trims(self, l_corner_walls):
-        """Secondary interior TRIMS (primary covers inside corner)."""
+        """Secondary interior TRIMS at both corner types."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -570,7 +603,7 @@ class TestButtJoinDirections:
         assert abs(ext_adj.amount - expected) < 0.001
 
     def test_secondary_interior_trim_amount(self, l_corner_walls):
-        """Secondary int trims by half_pri_core + pri_interior_thickness."""
+        """Secondary int trims by half_pri_core + pri_int (same room side at exterior corner)."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -578,13 +611,19 @@ class TestButtJoinDirections:
         )
         wall_b_adjs = graph.get_adjustments_for_wall("wall_B")
         int_adj = [a for a in wall_b_adjs if a.layer_name == "interior"][0]
-        # Fallback (no assembly): half_pri_core + pri_int
+        # Exterior corner fallback: half_pri_core + pri_int (trim toward room side)
         pri_layers = build_default_wall_layers("wall_A", 0.3958)
         expected = pri_layers.core_thickness / 2.0 + pri_layers.interior_thickness
         assert abs(int_adj.amount - expected) < 0.001
 
     def test_directions_with_four_room_layout(self, four_room_layout):
-        """Verify directions hold for all corners in a rectangular room."""
+        """Verify directions hold for all corners in a rectangular room.
+
+        All 4 corners in the rectangular room fixture are exterior corners
+        (z_axes point outward from the room). Expected pattern:
+        - Primary: ext+core EXTEND, int TRIMS (faces room)
+        - Secondary: ext EXTENDS, core+int TRIMS
+        """
         graph = analyze_junctions(
             four_room_layout,
             default_join_type="butt",
@@ -604,15 +643,43 @@ class TestButtJoinDirections:
                 if a.wall_id == res.secondary_wall_id
             }
 
-            # Primary: exterior extends, core extends, interior trims
+            # Exterior corner: Primary ext+core EXTEND, int TRIMS
             assert primary_adjs["exterior"].adjustment_type == AdjustmentType.EXTEND
             assert primary_adjs["core"].adjustment_type == AdjustmentType.EXTEND
             assert primary_adjs["interior"].adjustment_type == AdjustmentType.TRIM
 
-            # Secondary: ALL TRIM
-            assert secondary_adjs["exterior"].adjustment_type == AdjustmentType.TRIM
+            # Exterior corner: Secondary ext EXTENDS, core+int TRIM
+            assert secondary_adjs["exterior"].adjustment_type == AdjustmentType.EXTEND
             assert secondary_adjs["core"].adjustment_type == AdjustmentType.TRIM
             assert secondary_adjs["interior"].adjustment_type == AdjustmentType.TRIM
+
+    def test_interior_corner_directions(self, l_corner_interior_walls):
+        """Verify interior corner: primary int TRIMS, secondary ext TRIMS."""
+        graph = analyze_junctions(
+            l_corner_interior_walls,
+            default_join_type="butt",
+            priority_strategy="longer_wall",
+        )
+
+        res = graph.resolutions[0]
+        primary_adjs = {
+            a.layer_name: a for a in res.layer_adjustments
+            if a.wall_id == res.primary_wall_id
+        }
+        secondary_adjs = {
+            a.layer_name: a for a in res.layer_adjustments
+            if a.wall_id == res.secondary_wall_id
+        }
+
+        # Interior corner: Primary ext+core EXTEND, int TRIMS
+        assert primary_adjs["exterior"].adjustment_type == AdjustmentType.EXTEND
+        assert primary_adjs["core"].adjustment_type == AdjustmentType.EXTEND
+        assert primary_adjs["interior"].adjustment_type == AdjustmentType.TRIM
+
+        # Interior corner: Secondary ALL TRIM
+        assert secondary_adjs["exterior"].adjustment_type == AdjustmentType.TRIM
+        assert secondary_adjs["core"].adjustment_type == AdjustmentType.TRIM
+        assert secondary_adjs["interior"].adjustment_type == AdjustmentType.TRIM
 
 
 # =============================================================================
@@ -636,6 +703,7 @@ class TestPerLayerCumulativeAdjustments:
             wall_id="wall_A", end="end",
             direction=(1, 0, 0), angle_at_junction=0.0,
             wall_thickness=0.50, wall_length=20.0,
+            z_axis=(0, -1, 0),  # cross((1,0,0),(0,0,1)) → exterior corner
         )
 
     @pytest.fixture
@@ -644,6 +712,7 @@ class TestPerLayerCumulativeAdjustments:
             wall_id="wall_B", end="start",
             direction=(0, 1, 0), angle_at_junction=90.0,
             wall_thickness=0.50, wall_length=15.0,
+            z_axis=(1, 0, 0),  # cross((0,1,0),(0,0,1))
         )
 
     @pytest.fixture
@@ -733,43 +802,55 @@ class TestPerLayerCumulativeAdjustments:
         # Cumulative: siding amount > sheathing amount
         assert siding_adj.amount > sheathing_adj.amount
 
-    def test_primary_int_cumulative_amounts(
+    def test_primary_int_cumulative_amounts_exterior_corner(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Primary int layers trim by half_sec_core + cumulative unscaled sec_int."""
+        """Primary int TRIMS by just half_sec_core (stops at opposing core face)."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
         half_sec_core = layers_3_5in.core_thickness / 2.0
-        sec_int_thick = 1.0 / 24  # gypsum = 0.5"
 
         gypsum_adj = [a for a in adjs if a.wall_id == "wall_A"
                       and a.layer_name == "gypsum"][0]
+        # Primary int always TRIMS (faces room side), amount = half_sec_core only
         assert gypsum_adj.adjustment_type == AdjustmentType.TRIM
-        expected = half_sec_core + sec_int_thick
+        expected = half_sec_core
         assert abs(gypsum_adj.amount - expected) < 0.001
 
-    def test_secondary_all_trim(
+    def test_secondary_directions_exterior_corner(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """All secondary layers should TRIM."""
+        """At exterior corner: secondary ext EXTENDS, core+int TRIM."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
         sec_adjs = [a for a in adjs if a.wall_id == "wall_B"]
-        assert all(a.adjustment_type == AdjustmentType.TRIM for a in sec_adjs)
+        sec_ext = [a for a in sec_adjs if a.layer_name in ("sheathing", "siding")]
+        sec_core = [a for a in sec_adjs if a.layer_name == "core"]
+        sec_int = [a for a in sec_adjs if a.layer_name == "gypsum"]
+
+        # Exterior corner: secondary ext EXTENDS
+        assert all(a.adjustment_type == AdjustmentType.EXTEND for a in sec_ext)
+        # Secondary core + int still TRIM
+        assert all(a.adjustment_type == AdjustmentType.TRIM for a in sec_core)
+        assert all(a.adjustment_type == AdjustmentType.TRIM for a in sec_int)
 
     def test_secondary_ext_cumulative_amounts(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """Secondary ext layers trim by half_pri_core + cumulative unscaled pri_ext."""
+        """Secondary ext EXTEND amounts: cumulative AFTER (reaches TO opposing face).
+
+        At exterior corner, sec_ext[0] reaches pri core face (half_pri_core),
+        sec_ext[1] reaches past pri_ext[0] (half_pri_core + pri_ext[0]).
+        """
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
@@ -783,14 +864,20 @@ class TestPerLayerCumulativeAdjustments:
         sheathing_adj = [a for a in sec_ext if a.layer_name == "sheathing"][0]
         siding_adj = [a for a in sec_ext if a.layer_name == "siding"][0]
 
-        expected_sheathing = half_pri_core + pri_ext_thick
+        # Cumulative AFTER: first layer = half_pri_core only
+        expected_sheathing = half_pri_core
         assert abs(sheathing_adj.amount - expected_sheathing) < 0.001
 
-        expected_siding = half_pri_core + 2 * pri_ext_thick
+        # Second layer = half_pri_core + one pri_ext layer
+        expected_siding = half_pri_core + pri_ext_thick
         assert abs(siding_adj.amount - expected_siding) < 0.001
 
         # Cumulative: siding amount > sheathing amount
         assert siding_adj.amount > sheathing_adj.amount
+
+        # Exterior corner: secondary ext EXTENDS (not TRIMS)
+        assert sheathing_adj.adjustment_type == AdjustmentType.EXTEND
+        assert siding_adj.adjustment_type == AdjustmentType.EXTEND
 
     def test_secondary_int_cumulative_amounts(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
@@ -1409,10 +1496,10 @@ class TestUnscaledThickness:
                    and a.layer_name == "exterior"][0]
         assert abs(ext_ext.amount - (half_sec_core + layers["B"].exterior_thickness)) < 0.001
 
-        # Primary int trims by half_sec_core + sec_int
+        # Primary int trims by just half_sec_core (stops at opposing core face)
         int_trim = [a for a in adjs if a.wall_id == "A"
                     and a.layer_name == "interior"][0]
-        assert abs(int_trim.amount - (half_sec_core + layers["B"].interior_thickness)) < 0.001
+        assert abs(int_trim.amount - half_sec_core) < 0.001
 
         # Secondary core trims by half_pri_core
         sec_core = [a for a in adjs if a.wall_id == "B"

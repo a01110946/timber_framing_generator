@@ -392,23 +392,13 @@ def generate_assembly_layers(
     layers = wall_assembly.get("layers", [])
     allowed_funcs = set(include_functions) if include_functions else PANELIZABLE_FUNCTIONS
 
-    # Resolve framing depth: explicit > wall_thickness > auto-inferred > None
+    # Resolve framing depth: explicit > auto-inferred from core material > None
+    # Do NOT use wall_thickness as a fallback — it includes finish layers
+    # (e.g., 4" total for a 2x4 wall with 3.5" framing + 0.5" finishes)
+    # and would push sheathing outward, creating a visible gap.
     effective_framing_depth = framing_depth
     if effective_framing_depth is None:
         effective_framing_depth = _infer_framing_depth(wall_assembly)
-
-    # Also consider wall_thickness from Revit as a conservative bound.
-    # When the actual framing material (e.g., CFS 550S = 5.5") exceeds
-    # the assembly catalog's core_thickness (e.g., "2x4" = 3.5"),
-    # wall_thickness from Revit is often the most reliable indicator
-    # of the true framing depth.  Using it prevents sheathing from
-    # starting inside the framing zone.
-    wall_thickness = wall_data.get("wall_thickness", wall_data.get("thickness"))
-    if wall_thickness is not None:
-        if wall_thickness > 2.0:  # likely in inches
-            wall_thickness = wall_thickness / 12.0
-        if effective_framing_depth is None or wall_thickness > effective_framing_depth:
-            effective_framing_depth = wall_thickness
 
     # Compute per-layer W offsets
     w_offsets = _safe_calculate_w_offsets(wall_assembly, effective_framing_depth)

@@ -1372,8 +1372,16 @@ class TestFallbackWOffsetsWithFramingDepth:
 
 
 class TestWallThicknessFramingDepthFallback:
-    """Tests that wall_thickness from Revit is used when it exceeds
-    the assembly's core_thickness (e.g., CFS profiles on a '2x4' assembly)."""
+    """Tests that framing_depth controls the W offset, not wall_thickness.
+
+    wall_thickness includes finish layers (e.g., 4" for a 2x4 wall with
+    3.5" framing + 0.5" finishes) and must NOT be used as a framing depth
+    proxy — it creates a visible gap between framing and sheathing.
+
+    For CFS walls where the actual stud depth exceeds the catalog core
+    thickness, the correct source is the explicit framing_depth parameter
+    (injected from framing_json by the GH component).
+    """
 
     def _cfs_wall_data(self, wall_thickness: float = 0.5) -> dict:
         """Wall with 2x4 assembly but CFS-scale wall_thickness (6 inches)."""
@@ -1389,24 +1397,26 @@ class TestWallThicknessFramingDepthFallback:
             ],
         )
 
-    def test_cfs_wall_uses_wall_thickness(self) -> None:
-        """wall_thickness=0.5 (6in CFS) overrides inferred 3.5in '2x4' depth."""
+    def test_wall_thickness_not_used_as_framing_depth(self) -> None:
+        """wall_thickness (includes finishes) must NOT override inferred depth."""
         wall_data = self._cfs_wall_data(wall_thickness=0.5)
         result = generate_assembly_layers(wall_data, framing_depth=None)
 
         osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
-        # effective_half = max(core_half, wall_thickness/2) + gap
-        # = max(3.5/24, 0.5/2) + 0.001 = 0.25 + 0.001 = 0.251
-        expected = 0.5 / 2.0 + SHEATHING_GAP
+        # Without explicit framing_depth, uses inferred depth from "2x4 SPF" = 3.5"
+        # effective_half = max(core_half, 3.5/24) + gap = 3.5/24 + 0.001
+        core_half = 3.5 / 12 / 2.0
+        expected = core_half + SHEATHING_GAP
         assert osb_layer["w_offset"] == pytest.approx(expected, abs=1e-6)
 
-    def test_cfs_sheathing_clears_framing_zone(self) -> None:
-        """All exterior layers start past framing half-depth."""
+    def test_cfs_explicit_framing_depth_clears_zone(self) -> None:
+        """CFS framing depth (from framing_json) positions sheathing correctly."""
+        cfs_depth = 6.0 / 12  # 6" CFS stud depth in feet
         wall_data = self._cfs_wall_data(wall_thickness=0.5)
-        framing_half = 0.5 / 2.0  # 6in / 2 = 3in = 0.25 ft
 
-        result = generate_assembly_layers(wall_data, framing_depth=None)
+        result = generate_assembly_layers(wall_data, framing_depth=cfs_depth)
 
+        framing_half = cfs_depth / 2.0
         for lr in result["layer_results"]:
             w = lr["w_offset"]
             if lr["layer_side"] == "exterior":
@@ -1435,27 +1445,28 @@ class TestWallThicknessFramingDepthFallback:
         core_half = 3.5 / 12 / 2.0
         assert osb_layer["w_offset"] == pytest.approx(core_half + SHEATHING_GAP, abs=1e-6)
 
-    def test_explicit_framing_depth_overrides_wall_thickness(self) -> None:
-        """Explicit framing_depth takes priority over wall_thickness."""
+    def test_explicit_framing_depth_overrides_inference(self) -> None:
+        """Explicit framing_depth takes priority over inferred depth."""
         depth_2x8 = 7.25 / 12
         wall_data = self._cfs_wall_data(wall_thickness=0.5)
 
         result = generate_assembly_layers(wall_data, framing_depth=depth_2x8)
 
         osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
-        # explicit 2x8 (7.25") > wall_thickness (6") → uses 2x8
+        # explicit 2x8 (7.25") → half = 7.25/24 + gap
         expected = depth_2x8 / 2.0 + SHEATHING_GAP
         assert osb_layer["w_offset"] == pytest.approx(expected, abs=1e-6)
 
-    def test_wall_thickness_in_inches_auto_converted(self) -> None:
-        """wall_thickness > 2.0 is treated as inches and converted to feet."""
+    def test_wall_thickness_ignored_even_when_large(self) -> None:
+        """Even large wall_thickness (6.0 inches) does not override framing depth."""
         wall_data = self._cfs_wall_data(wall_thickness=6.0)  # 6 inches
 
         result = generate_assembly_layers(wall_data, framing_depth=None)
 
         osb_layer = next(r for r in result["layer_results"] if r["layer_name"] == "OSB")
-        # 6 inches > 2.0 → /12 → 0.5 ft → half = 0.25
-        expected = 0.5 / 2.0 + SHEATHING_GAP
+        # wall_thickness=6.0" is ignored; uses inferred 3.5" from "2x4 SPF"
+        core_half = 3.5 / 12 / 2.0
+        expected = core_half + SHEATHING_GAP
         assert osb_layer["w_offset"] == pytest.approx(expected, abs=1e-6)
 
 

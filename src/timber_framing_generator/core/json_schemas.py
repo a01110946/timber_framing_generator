@@ -146,6 +146,7 @@ class WallData:
     openings: List[OpeningData] = field(default_factory=list)
     is_exterior: bool = False
     is_flipped: bool = False
+    exterior_normal: Optional[Vector3D] = None  # wall.Orientation (true exterior direction)
     wall_type: Optional[str] = None
     wall_assembly: Optional[Dict[str, Any]] = None
     # Revit level IDs for RiR baking (Add Structural Column/Beam)
@@ -397,8 +398,8 @@ def deserialize_framing_results(json_str: str) -> FramingResults:
         elements.append(element)
 
     return FramingResults(
-        wall_id=data['wall_id'],
-        material_system=data['material_system'],
+        wall_id=data.get('wall_id', 'unknown'),
+        material_system=data.get('material_system', 'timber'),
         elements=elements,
         element_counts=data.get('element_counts', {}),
         metadata=data.get('metadata', {}),

@@ -122,7 +122,13 @@ from Grasshopper.Kernel.Data import GH_Path
 # Force Module Reload (CPython 3 in Rhino 8)
 # =============================================================================
 
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+# Clear timber_framing_generator modules AND the 'src' package itself.
+# Other GH components may have already imported 'src', caching its
+# __path__ to the main repo.  Clearing it forces Python to re-resolve
+# 'src' from the updated sys.path (worktree at index 0).
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k
+                     or k == 'src']
 for mod in _modules_to_clear:
     del sys.modules[mod]
 
@@ -130,9 +136,17 @@ for mod in _modules_to_clear:
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path (contains element_adapters fixes, etc.)
+# Fallback: main repo path (for modules not yet in the worktree)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+# Ensure worktree path has highest priority (index 0) in sys.path.
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 # Import materials module to trigger strategy registration
 # Import material strategies to trigger registration.
@@ -487,6 +501,12 @@ def main():
                 log_warning(error_msg)
             return framing_json, element_count, error_msg
 
+        # Parse inputs (config must be parsed BEFORE framing_system extraction)
+        cell_list = json.loads(cell_json_input)
+        wall_list = json.loads(walls_json_input)
+        wall_lookup = {w.get('wall_id'): w for w in wall_list}
+        config = json.loads(config_json_input) if config_json_input else {}
+
         # Get material system — framing_system from config_json overrides material_type input
         framing_system = config.get("framing_system")
         if framing_system and framing_system.strip():
@@ -507,12 +527,6 @@ def main():
             return framing_json, element_count, error_msg
 
         strategy = get_framing_strategy(material_system)
-
-        # Parse inputs
-        cell_list = json.loads(cell_json_input)
-        wall_list = json.loads(walls_json_input)
-        wall_lookup = {w.get('wall_id'): w for w in wall_list}
-        config = json.loads(config_json_input) if config_json_input else {}
 
         log_lines.append(f"Framing Generator v1.2")
         log_lines.append(f"Material System: {material_type_val}")

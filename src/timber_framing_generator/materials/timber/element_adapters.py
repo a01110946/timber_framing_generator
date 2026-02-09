@@ -100,6 +100,17 @@ def reconstruct_wall_data(wall_data: Dict[str, Any]) -> Dict[str, Any]:
         # Already a Plane object
         result["base_plane"] = plane_data
 
+    # SAFETY: Ensure base_plane Y-axis always points upward.
+    # If wall.Orientation disagrees with cross(x_dir, world_Z), the
+    # base_plane from wall_helpers may have YAxis = (0,0,-1), which
+    # inverts all vertical positions computed via base_plane.PointAt().
+    if "base_plane" in result and isinstance(result["base_plane"], rg.Plane):
+        plane = result["base_plane"]
+        if plane.YAxis.Z < 0:
+            result["base_plane"] = rg.Plane(
+                plane.Origin, plane.XAxis, rg.Vector3d(0, 0, 1)
+            )
+
     # Reconstruct base curve from start/end points
     curve_start = wall_data.get("base_curve_start", {})
     curve_end = wall_data.get("base_curve_end", {})

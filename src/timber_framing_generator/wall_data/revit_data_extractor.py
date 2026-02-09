@@ -165,6 +165,18 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         # (opposite to the default cross(curve_direction, world_Z) direction).
         is_flipped = bool(revit_wall.Flipped)
 
+        # 4a-ii. Store wall.Orientation as the authoritative exterior normal.
+        # This is the geometric outward normal = cross(curve_tangent, world_Z).
+        # It does NOT change when the wall is flipped.  Stored separately
+        # from base_plane so sheathing code can determine face direction
+        # independently of the framing coordinate system.
+        orientation = revit_wall.Orientation
+        exterior_normal = {
+            "x": float(orientation.X),
+            "y": float(orientation.Y),
+            "z": float(orientation.Z),
+        }
+
         # 4b. Determine if the wall is load-bearing.
         # WALL_STRUCTURAL_USAGE_PARAM values:
         # 0 = Non-bearing, 1 = Bearing, 2 = Shear, 3 = Structural Combined
@@ -422,6 +434,7 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             "wall_height": wall_height,
             "is_exterior_wall": is_exterior_wall,
             "is_flipped": is_flipped,
+            "exterior_normal": exterior_normal,
             "is_load_bearing": is_load_bearing,
             "wall_assembly": wall_assembly_dict,
             "openings": openings_data,

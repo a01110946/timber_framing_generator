@@ -140,11 +140,30 @@ def get_wall_base_plane(
             z_dir = rg.Vector3d.CrossProduct(x_dir, rg.Vector3d(0, 1, 0))
     z_dir.Unitize()
 
-    # Force vertical direction to be the world Z axis.
-    # Recompute Y for orthonormality with the Revit-sourced z_dir.
+    # Compute Y-axis for orthonormality with the Revit-sourced z_dir.
     y_dir = rg.Vector3d.CrossProduct(z_dir, x_dir)
     if y_dir.IsZero:
         y_dir = rg.Vector3d(0, 0, 1)
+
+    # SAFETY: Ensure Y-axis always points upward (positive world-Z).
+    # For standard vertical walls, wall.Orientation = cross(tangent, world_Z),
+    # so cross(z_dir, x_dir) naturally yields (0,0,1).  However, if
+    # wall.Orientation disagrees with that formula (e.g. non-standard
+    # walls, numerical drift, or Revit API edge cases), y_dir could flip
+    # to (0,0,-1).  This would invert ALL vertical positions computed via
+    # base_plane.PointAt(u, v, 0), placing framing elements below the
+    # wall.  Guard against this by falling back to the cross-product
+    # approach that guarantees y-up.
+    if y_dir.Z < 0:
+        y_dir = rg.Vector3d(0, 0, 1)
+        z_dir = rg.Vector3d.CrossProduct(x_dir, y_dir)
+        if z_dir.IsZero:
+            z_dir = rg.Vector3d.CrossProduct(x_dir, rg.Vector3d(0, 1, 0))
+        z_dir.Unitize()
+        y_dir = rg.Vector3d.CrossProduct(z_dir, x_dir)
+        if y_dir.IsZero:
+            y_dir = rg.Vector3d(0, 0, 1)
+
     y_dir.Unitize()
 
     return rg.Plane(origin, x_dir, y_dir)

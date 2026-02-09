@@ -116,7 +116,10 @@ from Grasshopper.Kernel.Data import GH_Path
 # Force Module Reload (CPython 3 in Rhino 8)
 # =============================================================================
 
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+# Clear timber_framing_generator modules AND the 'src' package itself.
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k
+                     or k == 'src']
 for mod in _modules_to_clear:
     del sys.modules[mod]
 
@@ -124,9 +127,16 @@ for mod in _modules_to_clear:
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path
+# Fallback: main repo path (for modules not yet in the worktree)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.core.json_schemas import (
     CellData, CellInfo, CellCorners, Point3D,

@@ -533,9 +533,17 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         log_error("walls_json must be a dict or list")
         return [], [], "Error: Invalid format", ["Invalid walls_json format"]
 
-    # z_axis in walls_json is already set to Revit's wall.Orientation
-    # (the geometric exterior normal, independent of flip state).
-    # No flip correction needed — +z_axis = building-layout exterior.
+    # Ensure base_plane.z_axis matches the wall's exterior_normal.
+    # wall_helpers.py guarantees y_axis=(0,0,1) for framing; as a result
+    # z_axis = cross(x, y_up) which may disagree with wall.Orientation
+    # for non-standard walls.  When exterior_normal is available, use it
+    # as the authoritative z_axis for sheathing face determination.
+    for wall in walls_list:
+        en = wall.get("exterior_normal")
+        if en and isinstance(en, dict):
+            bp = wall.get("base_plane")
+            if bp and isinstance(bp, dict):
+                bp["z_axis"] = en
 
     # Inject framing_hint into wall dicts for assembly resolution (Option B).
     # When framing_json is connected, each wall gets a hint with its stud

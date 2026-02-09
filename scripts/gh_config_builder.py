@@ -365,7 +365,7 @@ def _safe_str(value, default: str = "") -> str:
     return s if s else default
 
 
-def _parse_json_input(value, input_name: str) -> dict | None:
+def _parse_json_input(value, input_name: str):
     """Parse a JSON string input, logging warnings on failure.
 
     Args:
@@ -430,7 +430,7 @@ def validate_inputs(assembly_mode_raw, framing_system_raw):
     return assembly_mode, framing_system
 
 
-def _clean_faces_list(raw_faces) -> list[str] | None:
+def _clean_faces_list(raw_faces):
     """Clean and validate a faces list input.
 
     Filters to valid face names and deduplicates. Returns None if
@@ -464,7 +464,7 @@ def _clean_faces_list(raw_faces) -> list[str] | None:
     return cleaned if cleaned else None
 
 
-def _clean_include_functions_list(raw_functions) -> list[str] | None:
+def _clean_include_functions_list(raw_functions):
     """Clean and validate an include_functions list input.
 
     Filters to valid function names and deduplicates. Returns None if
@@ -498,7 +498,7 @@ def _clean_include_functions_list(raw_functions) -> list[str] | None:
     return cleaned if cleaned else None
 
 
-def _parse_stud_spacing(raw_value) -> float | None:
+def _parse_stud_spacing(raw_value):
     """Parse and validate stud spacing input.
 
     Args:

@@ -42,7 +42,7 @@ DIAG_ENABLED = True
 
 # Version marker — printed on import to confirm updated code is loaded.
 # Bump this value whenever the adjustment logic changes.
-_RESOLVER_VERSION = "2.8-primary-dominates-butt"
+_RESOLVER_VERSION = "2.9-approach-side-endpoint"
 print(f"[JUNC-RESOLVER] junction_resolver.py version {_RESOLVER_VERSION} loaded")
 
 
@@ -806,6 +806,18 @@ def _calculate_t_intersection_adjustments(
     # its adjustments need the midspan_u value so downstream can create gaps.
     term_midspan_u = terminating.midspan_u if terminating.is_midspan else None
 
+    # Determine which side of the continuous wall the terminating wall
+    # approaches from.  This is needed for BOTH endpoint and midspan logic.
+    term_outward = _outward_direction_at_junction(terminating)
+    dot_approach = (
+        continuous.z_axis[0] * term_outward[0]
+        + continuous.z_axis[1] * term_outward[1]
+        + continuous.z_axis[2] * term_outward[2]
+    )
+    # dot < 0 → wall body on -z (interior) side
+    # dot >= 0 → wall body on +z (exterior) side
+    approach_side = "interior" if dot_approach < 0 else "exterior"
+
     _diag(f"\n=== T-INTERSECTION ADJUSTMENTS (junction={junction_id}) ===")
     _diag(f"  ASSUMPTION: Terminating wall endpoint is AT the virtual centerline corner")
     _diag(f"  ASSUMPTION: half_cont_core is the distance from centerline to continuous core face")
@@ -820,6 +832,7 @@ def _calculate_t_intersection_adjustments(
            f"core={terminating_layers.core_thickness:.6f}, "
            f"int={terminating_layers.interior_thickness:.6f}")
     _diag(f"  half_cont_core = {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in)")
+    _diag(f"  approach_side = {approach_side} (dot_approach={dot_approach:.4f})")
     _diag(f"  midspan_only = {midspan_only}")
 
     # =================================================================
@@ -831,9 +844,15 @@ def _calculate_t_intersection_adjustments(
             cont_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
             cont_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
 
+            # NEW CODE: Select opposing layers based on approach side
+            # All terminating layers face the same side of the continuous wall,
+            # so they all accumulate against the SAME set of continuous layers.
+            opposing_layers = cont_ext if approach_side == "exterior" else cont_int
+
             _diag("  PER-LAYER PATH active (unscaled catalog thicknesses)")
             _diag("  cont_ext (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_ext]))
             _diag("  cont_int (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_int]))
+            _diag(f"  opposing_layers (approach_side={approach_side}): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft" for l in opposing_layers]))
 
             # Core: TRIM by half_cont_core
             adjustments.append(LayerAdjustment(
@@ -847,14 +866,14 @@ def _calculate_t_intersection_adjustments(
             _diag(f"  ADJ TERM core: TRIM {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in) "
                    f"= half_cont_core")
 
-            # Terminating exterior: each TRIMS by half_cont_core + cumulative(cont_ext)
+            # Terminating exterior: each TRIMS by half_cont_core + cumulative(opposing_layers)
             t_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
             cumulative = 0.0
             for i, t_layer in enumerate(t_ext):
-                cont_layer_name = cont_ext[i].get("name", "?") if i < len(cont_ext) else "NONE(cont ran out)"
-                cont_layer_thick = cont_ext[i].get("thickness", 0.0) if i < len(cont_ext) else 0.0
-                if i < len(cont_ext):
-                    cumulative += cont_ext[i].get("thickness", 0.0)
+                cont_layer_name = opposing_layers[i].get("name", "?") if i < len(opposing_layers) else "NONE(cont ran out)"
+                cont_layer_thick = opposing_layers[i].get("thickness", 0.0) if i < len(opposing_layers) else 0.0
+                if i < len(opposing_layers):
+                    cumulative += opposing_layers[i].get("thickness", 0.0)
                 amount = half_cont_core + cumulative
                 adjustments.append(LayerAdjustment(
                     wall_id=terminating.wall_id, end=terminating.end,
@@ -869,14 +888,14 @@ def _calculate_t_intersection_adjustments(
                        f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
                        f"[opposing: '{cont_layer_name}' thick={cont_layer_thick:.6f} ft ({cont_layer_thick*12:.4f} in)]")
 
-            # Terminating interior: each TRIMS by half_cont_core + cumulative(cont_int)
+            # Terminating interior: each TRIMS by half_cont_core + cumulative(opposing_layers)
             t_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
             cumulative = 0.0
             for i, t_layer in enumerate(t_int):
-                cont_layer_name = cont_int[i].get("name", "?") if i < len(cont_int) else "NONE(cont ran out)"
-                cont_layer_thick = cont_int[i].get("thickness", 0.0) if i < len(cont_int) else 0.0
-                if i < len(cont_int):
-                    cumulative += cont_int[i].get("thickness", 0.0)
+                cont_layer_name = opposing_layers[i].get("name", "?") if i < len(opposing_layers) else "NONE(cont ran out)"
+                cont_layer_thick = opposing_layers[i].get("thickness", 0.0) if i < len(opposing_layers) else 0.0
+                if i < len(opposing_layers):
+                    cumulative += opposing_layers[i].get("thickness", 0.0)
                 amount = half_cont_core + cumulative
                 adjustments.append(LayerAdjustment(
                     wall_id=terminating.wall_id, end=terminating.end,
@@ -893,13 +912,17 @@ def _calculate_t_intersection_adjustments(
 
         else:
             # Fallback: 3-aggregate adjustments (unscaled WallLayerInfo)
+            # NEW CODE: Use approach-side thickness for ALL term layers
+            approach_thickness = (continuous_layers.exterior_thickness
+                if approach_side == "exterior" else continuous_layers.interior_thickness)
             _diag("  FALLBACK PATH (no assembly layers) — 3 aggregate adjustments")
+            _diag(f"  approach_thickness = {approach_thickness:.6f} ft (from {approach_side} side)")
             for layer_name, amount in [
                 ("core", half_cont_core),
                 ("exterior",
-                 half_cont_core + continuous_layers.exterior_thickness),
+                 half_cont_core + approach_thickness),
                 ("interior",
-                 half_cont_core + continuous_layers.interior_thickness),
+                 half_cont_core + approach_thickness),
             ]:
                 adjustments.append(LayerAdjustment(
                     wall_id=terminating.wall_id, end=terminating.end,
@@ -938,17 +961,7 @@ def _calculate_t_intersection_adjustments(
     midspan_u = continuous.midspan_u
 
     if midspan_u is not None:
-        # Determine which side of the continuous wall the terminating
-        # wall body is on
-        term_outward = _outward_direction_at_junction(terminating)
-        dot_approach = (
-            continuous.z_axis[0] * term_outward[0]
-            + continuous.z_axis[1] * term_outward[1]
-            + continuous.z_axis[2] * term_outward[2]
-        )
-        # dot < 0 → wall body on -z (interior) side
-        # dot >= 0 → wall body on +z (exterior) side
-        approach_side = "interior" if dot_approach < 0 else "exterior"
+        # approach_side, term_outward, dot_approach already computed above
 
         # X-crossing: both sides get gaps (crossing wall passes through)
         # T-intersection: only the approach side gets gaps

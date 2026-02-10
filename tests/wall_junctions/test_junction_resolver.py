@@ -25,6 +25,7 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
     build_wall_adjustments_map,
     _determine_priority,
     _calculate_butt_adjustments,
+    _calculate_t_intersection_adjustments,
     _ordered_layers_core_outward,
     _build_layers_from_assembly,
     _is_exterior_corner,
@@ -2898,5 +2899,273 @@ class TestAsymmetricMidspanGaps:
 
         assert found_amount_neg, (
             "Expected at least one recomputed adjustment with amount_neg"
+        )
+
+
+# =============================================================================
+# T-Intersection Approach-Side Endpoint Tests (v2.9)
+# =============================================================================
+
+
+class TestTIntersectionApproachSideEndpoint:
+    """Tests for approach-side matching in T-intersection endpoint adjustments.
+
+    When a terminating wall approaches the continuous wall, ALL of the
+    terminating wall's layers face the SAME side of the continuous wall.
+    Therefore they should all accumulate against that side's layers, not
+    match same-side (ext→ext, int→int).
+    """
+
+    @staticmethod
+    def _make_continuous_conn(
+        z_axis: tuple = (0.0, 1.0, 0.0),
+        direction: tuple = (1.0, 0.0, 0.0),
+        midspan_u: float = 5.0,
+    ) -> WallConnection:
+        """Create a continuous wall connection."""
+        return WallConnection(
+            wall_id="cont",
+            end="midspan",
+            direction=direction,
+            angle_at_junction=90.0,
+            wall_thickness=0.5,
+            wall_length=20.0,
+            is_exterior=True,
+            is_midspan=True,
+            midspan_u=midspan_u,
+            z_axis=z_axis,
+        )
+
+    @staticmethod
+    def _make_terminating_conn(
+        end: str = "end",
+        direction: tuple = (0.0, 1.0, 0.0),
+        z_axis: tuple = (1.0, 0.0, 0.0),
+    ) -> WallConnection:
+        """Create a terminating wall connection."""
+        return WallConnection(
+            wall_id="term",
+            end=end,
+            direction=direction,
+            angle_at_junction=90.0,
+            wall_thickness=0.5,
+            wall_length=10.0,
+            is_exterior=True,
+            is_midspan=False,
+            z_axis=z_axis,
+        )
+
+    def test_endpoint_all_layers_use_exterior_approach(self):
+        """Terminating approaches from exterior → all layers use cont_ext."""
+        # Continuous z_axis = (0, 1, 0).
+        # Terminating outward at "end" = -direction = (0, -1, 0).
+        # dot(z_axis, outward) = (0)(0) + (1)(-1) + (0)(0) = -1 < 0
+        # → approach_side = "interior"?
+        # Actually we need approach from EXTERIOR. Let's flip:
+        # Terminating direction = (0, -1, 0), end="end" → outward = (0, 1, 0)
+        # dot(cont.z_axis=(0,1,0), outward=(0,1,0)) = 1 >= 0 → "exterior"
+        continuous = self._make_continuous_conn(z_axis=(0.0, 1.0, 0.0))
+        terminating = self._make_terminating_conn(
+            end="end", direction=(0.0, -1.0, 0.0),
+        )
+
+        cont_layers = WallLayerInfo(
+            wall_id="cont", total_thickness=0.5,
+            exterior_thickness=0.020, core_thickness=0.292,
+            interior_thickness=0.080, source="assembly",
+        )
+        term_layers = WallLayerInfo(
+            wall_id="term", total_thickness=0.5,
+            exterior_thickness=0.167, core_thickness=0.292,
+            interior_thickness=0.042, source="assembly",
+        )
+
+        # Continuous assembly: ext=[OSB(0.020)], int=[Gyp(0.080)]
+        cont_asm = _make_assembly(
+            [("OSB", 0.020)], 0.292, [("Gyp", 0.080)],
+        )["layers"]
+        # Terminating assembly: ext=[Siding(0.167)], int=[Gyp(0.042)]
+        term_asm = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)],
+        )["layers"]
+
+        half_cont_core = 0.292 / 2.0  # 0.146
+
+        adjs = _calculate_t_intersection_adjustments(
+            "j1", continuous, terminating,
+            cont_layers, term_layers,
+            continuous_assembly_layers=cont_asm,
+            terminating_assembly_layers=term_asm,
+        )
+
+        # Filter to endpoint adjustments only (not midspan)
+        endpoint_adjs = [a for a in adjs if a.end != "midspan"]
+
+        # core: half_cont_core
+        core_adj = [a for a in endpoint_adjs if a.layer_name == "core"][0]
+        assert abs(core_adj.amount - half_cont_core) < 1e-6
+
+        # Both ext and int should use cont_ext layers (approach=exterior)
+        # ext[0] Siding: half_core + cont_ext[0](OSB=0.020) = 0.146 + 0.020
+        siding_adj = [a for a in endpoint_adjs if a.layer_name == "Siding"][0]
+        expected_ext = half_cont_core + 0.020
+        assert abs(siding_adj.amount - expected_ext) < 1e-6, (
+            f"Siding expected {expected_ext:.6f} got {siding_adj.amount:.6f}"
+        )
+
+        # int[0] Gyp: half_core + cont_ext[0](OSB=0.020) = 0.146 + 0.020
+        # NOT half_core + cont_int[0](Gyp=0.080) = 0.226 (old wrong behavior)
+        gyp_adj = [a for a in endpoint_adjs if a.layer_name == "Gyp"][0]
+        expected_int = half_cont_core + 0.020
+        assert abs(gyp_adj.amount - expected_int) < 1e-6, (
+            f"Gyp expected {expected_int:.6f} got {gyp_adj.amount:.6f}"
+        )
+
+    def test_endpoint_all_layers_use_interior_approach(self):
+        """Terminating approaches from interior → all layers use cont_int."""
+        # Continuous z_axis = (0, 1, 0).
+        # Terminating direction = (0, 1, 0), end="end" → outward = (0, -1, 0)
+        # dot(z_axis=(0,1,0), outward=(0,-1,0)) = -1 < 0 → "interior"
+        continuous = self._make_continuous_conn(z_axis=(0.0, 1.0, 0.0))
+        terminating = self._make_terminating_conn(
+            end="end", direction=(0.0, 1.0, 0.0),
+        )
+
+        cont_layers = WallLayerInfo(
+            wall_id="cont", total_thickness=0.5,
+            exterior_thickness=0.020, core_thickness=0.292,
+            interior_thickness=0.080, source="assembly",
+        )
+        term_layers = WallLayerInfo(
+            wall_id="term", total_thickness=0.5,
+            exterior_thickness=0.167, core_thickness=0.292,
+            interior_thickness=0.042, source="assembly",
+        )
+
+        cont_asm = _make_assembly(
+            [("OSB", 0.020)], 0.292, [("Gyp", 0.080)],
+        )["layers"]
+        term_asm = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)],
+        )["layers"]
+
+        half_cont_core = 0.292 / 2.0
+
+        adjs = _calculate_t_intersection_adjustments(
+            "j1", continuous, terminating,
+            cont_layers, term_layers,
+            continuous_assembly_layers=cont_asm,
+            terminating_assembly_layers=term_asm,
+        )
+
+        endpoint_adjs = [a for a in adjs if a.end != "midspan"]
+
+        # Both ext and int should use cont_int layers (approach=interior)
+        # ext[0] Siding: half_core + cont_int[0](Gyp=0.080) = 0.146 + 0.080
+        siding_adj = [a for a in endpoint_adjs if a.layer_name == "Siding"][0]
+        expected = half_cont_core + 0.080
+        assert abs(siding_adj.amount - expected) < 1e-6, (
+            f"Siding expected {expected:.6f} got {siding_adj.amount:.6f}"
+        )
+
+        # int[0] Gyp: half_core + cont_int[0](Gyp=0.080) = 0.146 + 0.080
+        gyp_adj = [a for a in endpoint_adjs if a.layer_name == "Gyp"][0]
+        assert abs(gyp_adj.amount - expected) < 1e-6, (
+            f"Gyp expected {expected:.6f} got {gyp_adj.amount:.6f}"
+        )
+
+    def test_endpoint_asymmetric_assembly(self):
+        """Continuous wall with thick ext, thin int; approach from interior.
+
+        All terminating layers should use the THIN interior, not thick ext.
+        """
+        continuous = self._make_continuous_conn(z_axis=(0.0, 1.0, 0.0))
+        terminating = self._make_terminating_conn(
+            end="end", direction=(0.0, 1.0, 0.0),  # outward = (0,-1,0) → interior
+        )
+
+        # Thick exterior (Siding=0.167), thin interior (Gyp=0.042)
+        cont_layers = WallLayerInfo(
+            wall_id="cont", total_thickness=0.5,
+            exterior_thickness=0.167, core_thickness=0.292,
+            interior_thickness=0.042, source="assembly",
+        )
+        term_layers = WallLayerInfo(
+            wall_id="term", total_thickness=0.5,
+            exterior_thickness=0.020, core_thickness=0.292,
+            interior_thickness=0.080, source="assembly",
+        )
+
+        cont_asm = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)],
+        )["layers"]
+        term_asm = _make_assembly(
+            [("OSB", 0.020)], 0.292, [("DryWall", 0.080)],
+        )["layers"]
+
+        half_cont_core = 0.292 / 2.0
+
+        adjs = _calculate_t_intersection_adjustments(
+            "j1", continuous, terminating,
+            cont_layers, term_layers,
+            continuous_assembly_layers=cont_asm,
+            terminating_assembly_layers=term_asm,
+        )
+
+        endpoint_adjs = [a for a in adjs if a.end != "midspan"]
+
+        # Approach from interior → opposing_layers = cont_int = [Gyp(0.042)]
+        # Both term_ext(OSB) and term_int(DryWall) use cont_int
+        osb_adj = [a for a in endpoint_adjs if a.layer_name == "OSB"][0]
+        drywall_adj = [a for a in endpoint_adjs if a.layer_name == "DryWall"][0]
+
+        expected = half_cont_core + 0.042  # NOT 0.167 (thick ext)
+        assert abs(osb_adj.amount - expected) < 1e-6, (
+            f"OSB expected {expected:.6f} got {osb_adj.amount:.6f}"
+        )
+        assert abs(drywall_adj.amount - expected) < 1e-6, (
+            f"DryWall expected {expected:.6f} got {drywall_adj.amount:.6f}"
+        )
+
+    def test_endpoint_fallback_uses_approach_side(self):
+        """Fallback path (no assembly layers): both sides get approach_thickness."""
+        continuous = self._make_continuous_conn(z_axis=(0.0, 1.0, 0.0))
+        terminating = self._make_terminating_conn(
+            end="end", direction=(0.0, -1.0, 0.0),  # outward = (0,1,0) → exterior
+        )
+
+        cont_layers = WallLayerInfo(
+            wall_id="cont", total_thickness=0.5,
+            exterior_thickness=0.020, core_thickness=0.292,
+            interior_thickness=0.080, source="default",
+        )
+        term_layers = WallLayerInfo(
+            wall_id="term", total_thickness=0.5,
+            exterior_thickness=0.167, core_thickness=0.292,
+            interior_thickness=0.042, source="default",
+        )
+
+        half_cont_core = 0.292 / 2.0
+
+        # No assembly layers → fallback path
+        adjs = _calculate_t_intersection_adjustments(
+            "j1", continuous, terminating,
+            cont_layers, term_layers,
+            continuous_assembly_layers=None,
+            terminating_assembly_layers=None,
+        )
+
+        endpoint_adjs = [a for a in adjs if a.end != "midspan"]
+
+        # Approach from exterior → approach_thickness = cont_ext = 0.020
+        ext_adj = [a for a in endpoint_adjs if a.layer_name == "exterior"][0]
+        int_adj = [a for a in endpoint_adjs if a.layer_name == "interior"][0]
+
+        expected = half_cont_core + 0.020  # Both use exterior thickness
+        assert abs(ext_adj.amount - expected) < 1e-6, (
+            f"exterior expected {expected:.6f} got {ext_adj.amount:.6f}"
+        )
+        assert abs(int_adj.amount - expected) < 1e-6, (
+            f"interior expected {expected:.6f} got {int_adj.amount:.6f}"
         )
 

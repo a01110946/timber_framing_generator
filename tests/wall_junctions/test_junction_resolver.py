@@ -592,7 +592,7 @@ class TestButtJoinDirections:
         assert abs(ext_adj.amount - expected) < 0.001
 
     def test_secondary_interior_trim_amount_exterior_corner(self, l_corner_walls):
-        """EXTERIOR corner: sec int TRIMS by half_pri_core + pri_int."""
+        """EXTERIOR corner: sec int TRIMS by half_pri_core (shifted)."""
         graph = analyze_junctions(
             l_corner_walls,
             default_join_type="butt",
@@ -600,9 +600,9 @@ class TestButtJoinDirections:
         )
         wall_b_adjs = graph.get_adjustments_for_wall("wall_B")
         int_adj = [a for a in wall_b_adjs if a.layer_name == "interior"][0]
-        # Exterior corner fallback: half_pri_core + pri_int (same side)
+        # Exterior corner fallback: sec_int_cumul = "shifted" → half_pri_core only
         pri_layers = build_default_wall_layers("wall_A", 0.3958)
-        expected = pri_layers.core_thickness / 2.0 + pri_layers.interior_thickness
+        expected = pri_layers.core_thickness / 2.0
         assert int_adj.adjustment_type == AdjustmentType.TRIM
         assert abs(int_adj.amount - expected) < 0.001
 
@@ -862,11 +862,11 @@ class TestPerLayerCumulativeAdjustments:
         # Cumulative: siding amount > sheathing amount
         assert siding_adj.amount > sheathing_adj.amount
 
-    def test_primary_int_shifted_cumulative_exterior_corner(
+    def test_primary_int_full_cumulative_exterior_corner(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """EXTERIOR corner: pri int TRIMS with shifted cumulative."""
+        """EXTERIOR corner: pri int TRIMS with full cumulative."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
@@ -876,10 +876,11 @@ class TestPerLayerCumulativeAdjustments:
 
         gypsum_adj = [a for a in adjs if a.wall_id == "wall_A"
                       and a.layer_name == "gypsum"][0]
-        # EXTERIOR: primary int TRIMS with shifted cumulative
-        # shifted: amount = half_sec_core + 0 (compute before add)
+        # EXTERIOR: primary int TRIMS with full cumulative
+        # full: amount = half_sec_core + sec_int[0].thickness (add then compute)
         assert gypsum_adj.adjustment_type == AdjustmentType.TRIM
-        expected = half_sec_core  # shifted: just half_core
+        sec_int_thick = 1.0 / 24  # gypsum = 0.5" = 1/24 ft
+        expected = half_sec_core + sec_int_thick
         assert abs(gypsum_adj.amount - expected) < 0.001
 
     def test_secondary_directions_exterior_corner(
@@ -940,23 +941,22 @@ class TestPerLayerCumulativeAdjustments:
         assert sheathing_adj.adjustment_type == AdjustmentType.EXTEND
         assert siding_adj.adjustment_type == AdjustmentType.EXTEND
 
-    def test_secondary_int_full_cumulative_exterior_corner(
+    def test_secondary_int_shifted_cumulative_exterior_corner(
         self, primary_conn, secondary_conn, layers_6in, layers_3_5in,
         assembly_layers_6in, assembly_layers_3_5in,
     ):
-        """EXTERIOR corner: sec int TRIMS with full cumulative."""
+        """EXTERIOR corner: sec int TRIMS with shifted cumulative."""
         adjs = _calculate_butt_adjustments(
             "j0", primary_conn, secondary_conn, layers_6in, layers_3_5in,
             primary_assembly_layers=assembly_layers_6in,
             secondary_assembly_layers=assembly_layers_3_5in,
         )
         half_pri_core = layers_6in.core_thickness / 2.0
-        pri_int_thick = 1.0 / 24  # gypsum = 0.5"
 
         gypsum_adj = [a for a in adjs if a.wall_id == "wall_B"
                       and a.layer_name == "gypsum"][0]
         assert gypsum_adj.adjustment_type == AdjustmentType.TRIM
-        expected = half_pri_core + pri_int_thick  # full cumulative
+        expected = half_pri_core  # shifted cumulative: just half_core
         assert abs(gypsum_adj.amount - expected) < 0.001
 
     def test_interior_corner_per_layer_directions(self):
@@ -1030,10 +1030,10 @@ class TestPerLayerCumulativeAdjustments:
         assert sec_siding.adjustment_type == AdjustmentType.TRIM
         assert abs(sec_siding.amount - (half_core + 2 * ext_thick)) < 0.001
 
-        # INTERIOR: sec int EXTENDS with full cumulative
+        # INTERIOR: sec int EXTENDS with shifted cumulative
         sec_gyp = [a for a in adjs if a.wall_id == "wall_B" and a.layer_name == "gypsum"][0]
         assert sec_gyp.adjustment_type == AdjustmentType.EXTEND
-        assert abs(sec_gyp.amount - (half_core + int_thick)) < 0.001  # full
+        assert abs(sec_gyp.amount - half_core) < 0.001  # shifted: half_core only
 
     def test_asymmetric_layer_counts(self):
         """Wall with 3 ext layers vs wall with 1 ext layer.
@@ -1219,13 +1219,11 @@ class TestPerLayerCumulativeAdjustments:
         assert sec_ext.adjustment_type == AdjustmentType.TRIM
         assert sec_int.adjustment_type == AdjustmentType.EXTEND
 
-    def test_fallback_amounts_same_regardless_of_corner(self):
-        """Fallback amounts use same-side matching regardless of corner type.
+    def test_fallback_respects_cumulative_patterns(self):
+        """Fallback amounts respect full/shifted cumulative patterns per corner type.
 
-        Without assembly layers, amounts use aggregate thicknesses from
-        WallLayerInfo. Same-side matching: ext accumulates opposing ext,
-        int accumulates opposing int. Since both walls use the same
-        default layers, amounts are identical for both corner types.
+        Primary wall always uses "full" cumulative (half_core + opposing thickness),
+        secondary wall always uses "shifted" (half_core only).
         """
         layers_a = build_default_wall_layers("wall_A", 0.40)
         layers_b = build_default_wall_layers("wall_B", 0.40)
@@ -1247,35 +1245,34 @@ class TestPerLayerCumulativeAdjustments:
             "j0", conn_a, conn_b_ext, layers_a, layers_b,
         )
 
-        # INTERIOR corner: sec at "start" dir=(0,-1,0) → outward=(0,-1,0)
-        # dot((0,-1,0),(0,-1,0)) = +1 → INTERIOR
-        conn_b_int = WallConnection(
-            wall_id="wall_B", end="start", direction=(0, -1, 0),
-            angle_at_junction=90.0, wall_thickness=0.40, wall_length=15.0,
-            z_axis=(-1, 0, 0),
-        )
-        int_adjs = _calculate_butt_adjustments(
-            "j0", conn_a, conn_b_int, layers_a, layers_b,
-        )
-
         half_sec_core = layers_b.core_thickness / 2.0
+        half_pri_core = layers_a.core_thickness / 2.0
 
-        # Core amounts are the same regardless of corner type
+        # Core amounts are always half_opposing_core
         ext_core = [a for a in ext_adjs if a.wall_id == "wall_A"
                     and a.layer_name == "core"][0]
-        int_core = [a for a in int_adjs if a.wall_id == "wall_A"
-                    and a.layer_name == "core"][0]
-        assert abs(ext_core.amount - int_core.amount) < 0.001
+        assert abs(ext_core.amount - half_sec_core) < 0.001
 
-        # Same-side matching: ext amounts are same for both corner types
-        ext_ext = [a for a in ext_adjs if a.wall_id == "wall_A"
+        # EXTERIOR corner patterns: pri=full, sec=shifted
+        # Primary ext: full → half_sec_core + sec.ext_thickness
+        pri_ext = [a for a in ext_adjs if a.wall_id == "wall_A"
                    and a.layer_name == "exterior"][0]
-        int_ext = [a for a in int_adjs if a.wall_id == "wall_A"
+        assert abs(pri_ext.amount - (half_sec_core + layers_b.exterior_thickness)) < 0.001
+
+        # Primary int: full → half_sec_core + sec.int_thickness
+        pri_int = [a for a in ext_adjs if a.wall_id == "wall_A"
+                   and a.layer_name == "interior"][0]
+        assert abs(pri_int.amount - (half_sec_core + layers_b.interior_thickness)) < 0.001
+
+        # Secondary ext: shifted → half_pri_core only
+        sec_ext = [a for a in ext_adjs if a.wall_id == "wall_B"
                    and a.layer_name == "exterior"][0]
-        # Both use sec.ext_thickness (same-side)
-        expected_ext = half_sec_core + layers_b.exterior_thickness
-        assert abs(ext_ext.amount - expected_ext) < 0.001
-        assert abs(int_ext.amount - expected_ext) < 0.001
+        assert abs(sec_ext.amount - half_pri_core) < 0.001
+
+        # Secondary int: shifted → half_pri_core only
+        sec_int = [a for a in ext_adjs if a.wall_id == "wall_B"
+                   and a.layer_name == "interior"][0]
+        assert abs(sec_int.amount - half_pri_core) < 0.001
 
     def test_fallback_without_assembly(self):
         """Without assembly layers, falls back to 3-aggregate."""
@@ -1826,10 +1823,10 @@ class TestUnscaledThickness:
                     and a.layer_name == "core"][0]
         assert abs(core_ext.amount - half_sec_core) < 0.001
 
-        # Primary ext amount = half_sec_core + sec_ext (cumulative)
+        # Primary ext amount = half_sec_core (shifted at interior corner)
         ext_adj = [a for a in adjs if a.wall_id == "A"
                    and a.layer_name == "exterior"][0]
-        assert abs(ext_adj.amount - (half_sec_core + layers["B"].exterior_thickness)) < 0.001
+        assert abs(ext_adj.amount - half_sec_core) < 0.001
 
         # Primary int amount = half_sec_core + sec_int
         int_adj = [a for a in adjs if a.wall_id == "A"

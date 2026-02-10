@@ -42,7 +42,7 @@ DIAG_ENABLED = True
 
 # Version marker — printed on import to confirm updated code is loaded.
 # Bump this value whenever the adjustment logic changes.
-_RESOLVER_VERSION = "2.7-structural-midspan-filter"
+_RESOLVER_VERSION = "2.8-primary-dominates-butt"
 print(f"[JUNC-RESOLVER] junction_resolver.py version {_RESOLVER_VERSION} loaded")
 
 
@@ -433,14 +433,14 @@ def _calculate_butt_adjustments(
     #   interior surface).
     if exterior_corner:
         pri_ext_dir, pri_ext_cumul = AdjustmentType.EXTEND, "full"
-        pri_int_dir, pri_int_cumul = AdjustmentType.TRIM, "shifted"
+        pri_int_dir, pri_int_cumul = AdjustmentType.TRIM, "full"
         sec_ext_dir, sec_ext_cumul = AdjustmentType.EXTEND, "shifted"
-        sec_int_dir, sec_int_cumul = AdjustmentType.TRIM, "full"
+        sec_int_dir, sec_int_cumul = AdjustmentType.TRIM, "shifted"
     else:
         pri_ext_dir, pri_ext_cumul = AdjustmentType.TRIM, "shifted"
         pri_int_dir, pri_int_cumul = AdjustmentType.EXTEND, "full"
         sec_ext_dir, sec_ext_cumul = AdjustmentType.TRIM, "full"
-        sec_int_dir, sec_int_cumul = AdjustmentType.EXTEND, "full"
+        sec_int_dir, sec_int_cumul = AdjustmentType.EXTEND, "shifted"
 
     # ===== DIAGNOSTIC: Butt adjustment inputs =====
     _diag(f"=== _calculate_butt_adjustments [{junction_id}] ===")
@@ -638,14 +638,15 @@ def _calculate_butt_adjustments(
         _diag(f"  CORNER TYPE: {'EXTERIOR' if exterior_corner else 'INTERIOR'}")
         _diag(f"  WARNING: all layers on same side get identical adjustment amount")
 
-        # PRIMARY wall
+        # PRIMARY wall — "full" adds opposing layer thickness, "shifted" uses half_core only
+        pri_ext_amount = (half_sec_core + secondary_layers.exterior_thickness
+                          if pri_ext_cumul == "full" else half_sec_core)
+        pri_int_amount = (half_sec_core + secondary_layers.interior_thickness
+                          if pri_int_cumul == "full" else half_sec_core)
         for layer_name, adj_type, amount in [
-            ("core", AdjustmentType.EXTEND,
-             half_sec_core),
-            ("exterior", pri_ext_dir,
-             half_sec_core + secondary_layers.exterior_thickness),
-            ("interior", pri_int_dir,
-             half_sec_core + secondary_layers.interior_thickness),
+            ("core", AdjustmentType.EXTEND, half_sec_core),
+            ("exterior", pri_ext_dir, pri_ext_amount),
+            ("interior", pri_int_dir, pri_int_amount),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
@@ -654,14 +655,15 @@ def _calculate_butt_adjustments(
                 connecting_wall_id=secondary.wall_id,
             ))
 
-        # SECONDARY wall
+        # SECONDARY wall — "full" adds opposing layer thickness, "shifted" uses half_core only
+        sec_ext_amount = (half_pri_core + primary_layers.exterior_thickness
+                          if sec_ext_cumul == "full" else half_pri_core)
+        sec_int_amount = (half_pri_core + primary_layers.interior_thickness
+                          if sec_int_cumul == "full" else half_pri_core)
         for layer_name, adj_type, amount in [
-            ("core", AdjustmentType.TRIM,
-             half_pri_core),
-            ("exterior", sec_ext_dir,
-             half_pri_core + primary_layers.exterior_thickness),
-            ("interior", sec_int_dir,
-             half_pri_core + primary_layers.interior_thickness),
+            ("core", AdjustmentType.TRIM, half_pri_core),
+            ("exterior", sec_ext_dir, sec_ext_amount),
+            ("interior", sec_int_dir, sec_int_amount),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,

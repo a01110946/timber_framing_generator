@@ -83,7 +83,7 @@ class LayerPlacementRules:
 
     stagger_pattern: StaggerPattern = StaggerPattern.RUNNING_BOND
     stagger_offset: float = 2.0  # feet
-    min_piece_width: float = 0.5  # 6 inches
+    min_piece_width: float = 0.333  # 4 inches
     orientation: PanelOrientation = PanelOrientation.HORIZONTAL
     requires_blocking: bool = False
     fasteners: Optional[FastenerSpec] = None
@@ -131,7 +131,7 @@ class LayerPlacementRules:
 RULES_OSB_SHEATHING = LayerPlacementRules(
     stagger_pattern=StaggerPattern.RUNNING_BOND,
     stagger_offset=2.0,  # 2 ft standard per APA E30
-    min_piece_width=0.5,  # 6"
+    min_piece_width=0.333,  # 4"
     orientation=PanelOrientation.HORIZONTAL,
     requires_blocking=True,
     fasteners=FastenerSpec(edge_spacing=6.0, field_spacing=12.0, edge_distance=0.375),
@@ -141,7 +141,7 @@ RULES_OSB_SHEATHING = LayerPlacementRules(
 RULES_PLYWOOD_SHEATHING = LayerPlacementRules(
     stagger_pattern=StaggerPattern.RUNNING_BOND,
     stagger_offset=2.0,
-    min_piece_width=0.5,
+    min_piece_width=0.333,  # 4"
     orientation=PanelOrientation.HORIZONTAL,
     requires_blocking=True,
     fasteners=FastenerSpec(edge_spacing=6.0, field_spacing=12.0, edge_distance=0.375),
@@ -151,7 +151,7 @@ RULES_PLYWOOD_SHEATHING = LayerPlacementRules(
 RULES_GYPSUM_BOARD = LayerPlacementRules(
     stagger_pattern=StaggerPattern.RUNNING_BOND,
     stagger_offset=2.0,  # Offset from sheathing joints
-    min_piece_width=0.667,  # 8"
+    min_piece_width=0.333,  # 4"
     orientation=PanelOrientation.HORIZONTAL,
     requires_blocking=False,
     fasteners=FastenerSpec(edge_spacing=8.0, field_spacing=12.0, edge_distance=0.375),
@@ -161,7 +161,7 @@ RULES_GYPSUM_BOARD = LayerPlacementRules(
 RULES_CONTINUOUS_INSULATION = LayerPlacementRules(
     stagger_pattern=StaggerPattern.RUNNING_BOND,
     stagger_offset=2.0,
-    min_piece_width=1.0,  # 12"
+    min_piece_width=0.333,  # 4"
     orientation=PanelOrientation.ANY,
     requires_blocking=False,
     notes="Continuous insulation. Stagger joints, no gaps allowed.",
@@ -179,7 +179,7 @@ RULES_WRB_MEMBRANE = LayerPlacementRules(
 RULES_EXTERIOR_FINISH = LayerPlacementRules(
     stagger_pattern=StaggerPattern.RUNNING_BOND,
     stagger_offset=1.333,  # 16" (one stud bay)
-    min_piece_width=0.5,
+    min_piece_width=0.333,  # 4"
     orientation=PanelOrientation.HORIZONTAL,
     requires_blocking=False,
     notes="Exterior finish (lap siding, fiber cement). Stagger by one stud bay.",
@@ -188,7 +188,7 @@ RULES_EXTERIOR_FINISH = LayerPlacementRules(
 RULES_DEFAULT = LayerPlacementRules(
     stagger_pattern=StaggerPattern.RUNNING_BOND,
     stagger_offset=2.0,
-    min_piece_width=0.5,
+    min_piece_width=0.333,  # 4"
     orientation=PanelOrientation.HORIZONTAL,
     notes="Default rules when no specific match found.",
 )

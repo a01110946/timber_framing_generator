@@ -421,7 +421,7 @@ class TestGenerateAssemblyLayersRules:
         rules = result["layer_results"][0]["rules_applied"]
         assert rules["stagger_pattern"] == "running_bond"
         assert rules["stagger_offset"] == 2.0
-        assert rules["min_piece_width"] == 0.5
+        assert rules["min_piece_width"] == 0.333
 
     def test_interior_finish_rules_applied(self) -> None:
         wall_data = _make_wall_data(layers=[
@@ -430,7 +430,7 @@ class TestGenerateAssemblyLayersRules:
         result = generate_assembly_layers(wall_data)
         rules = result["layer_results"][0]["rules_applied"]
         assert rules["stagger_pattern"] == "running_bond"
-        assert rules["min_piece_width"] == pytest.approx(0.667, abs=0.001)
+        assert rules["min_piece_width"] == pytest.approx(0.333, abs=0.001)
 
     def test_thermal_rules_applied(self) -> None:
         wall_data = _make_wall_data(layers=[
@@ -439,7 +439,7 @@ class TestGenerateAssemblyLayersRules:
         result = generate_assembly_layers(wall_data)
         rules = result["layer_results"][0]["rules_applied"]
         assert rules["orientation"] == "any"
-        assert rules["min_piece_width"] == 1.0
+        assert rules["min_piece_width"] == 0.333
 
 
 class TestGenerateAssemblyLayersFiltering:

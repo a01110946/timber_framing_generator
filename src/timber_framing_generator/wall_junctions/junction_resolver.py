@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 DIAG_ENABLED = True
 
+# Version marker — printed on import to confirm updated code is loaded.
+# Bump this value whenever the adjustment logic changes.
+_RESOLVER_VERSION = "2.7-structural-midspan-filter"
+print(f"[JUNC-RESOLVER] junction_resolver.py version {_RESOLVER_VERSION} loaded")
+
 
 def _diag(msg: str) -> None:
     """Print diagnostic message when DIAG_ENABLED is True."""
@@ -382,16 +387,15 @@ def _calculate_butt_adjustments(
 
     **Interior corner** (z_axes point into corner):
       - Primary exterior EXTENDS, core EXTENDS, interior TRIMS
-      - Secondary ALL layers TRIM
+      - Secondary exterior TRIMS, core TRIMS, interior EXTENDS
 
-    **Exterior corner** (z_axes point outward from corner):
-      - Primary ALL layers EXTEND (ext, core, int)
+    **Exterior corner** (z_axes point away from corner):
+      - Primary exterior TRIMS, core EXTENDS, interior EXTENDS
       - Secondary exterior EXTENDS, core TRIMS, interior TRIMS
 
-    Each layer's amount is cumulative: ``half_opposing_core`` plus the
-    sum of the opposing wall's layers (same side) up to that layer's
-    position in the stack.  This ensures each layer stops exactly at
-    the face of the corresponding opposing layer.
+    Two cumulative patterns control per-layer amounts:
+      - **Full** (add-then-compute): ``cumul += opp[i]; amount = half_core + cumul``
+      - **Shifted** (compute-then-add): ``amount = half_core + cumul; cumul += opp[i]``
 
     Layer thicknesses are used as-is from the catalog (unscaled).
 
@@ -422,16 +426,29 @@ def _calculate_butt_adjustments(
     # Determine corner type (exterior vs interior)
     exterior_corner = _is_exterior_corner(primary, secondary)
 
-    # Primary interior ALWAYS trims (faces the room, stops at secondary wall)
-    # Secondary exterior: EXTEND at exterior corners (wraps building envelope),
-    #                     TRIM at interior corners
-    pri_int_type = AdjustmentType.TRIM
-    sec_ext_type = AdjustmentType.EXTEND if exterior_corner else AdjustmentType.TRIM
+    # Corner-type-dependent direction and cumulative pattern assignment.
+    # At exterior corners: ext layers EXTEND (continuous exterior surface),
+    #   int layers TRIM.
+    # At interior corners: ext layers TRIM, int layers EXTEND (continuous
+    #   interior surface).
+    if exterior_corner:
+        pri_ext_dir, pri_ext_cumul = AdjustmentType.EXTEND, "full"
+        pri_int_dir, pri_int_cumul = AdjustmentType.TRIM, "shifted"
+        sec_ext_dir, sec_ext_cumul = AdjustmentType.EXTEND, "shifted"
+        sec_int_dir, sec_int_cumul = AdjustmentType.TRIM, "full"
+    else:
+        pri_ext_dir, pri_ext_cumul = AdjustmentType.TRIM, "shifted"
+        pri_int_dir, pri_int_cumul = AdjustmentType.EXTEND, "full"
+        sec_ext_dir, sec_ext_cumul = AdjustmentType.TRIM, "full"
+        sec_int_dir, sec_int_cumul = AdjustmentType.EXTEND, "full"
 
     # ===== DIAGNOSTIC: Butt adjustment inputs =====
     _diag(f"=== _calculate_butt_adjustments [{junction_id}] ===")
     _diag(f"  CORNER TYPE: {'EXTERIOR' if exterior_corner else 'INTERIOR'}")
-    _diag(f"  -> primary int = {pri_int_type.value}, secondary ext = {sec_ext_type.value}")
+    _diag(f"  -> DIRECTIONS: pri_ext={pri_ext_dir.value}, pri_int={pri_int_dir.value}, "
+           f"sec_ext={sec_ext_dir.value}, sec_int={sec_int_dir.value}")
+    _diag(f"  -> CUMULATIVE: pri_ext={pri_ext_cumul}, pri_int={pri_int_cumul}, "
+           f"sec_ext={sec_ext_cumul}, sec_int={sec_int_cumul}")
     _diag(f"  ASSUMPTION: amounts are distances from each wall's Revit centerline endpoint along its U-axis")
     _diag(f"  ASSUMPTION: wall endpoints meet at/near the virtual centerline corner")
     _diag(f"  ASSUMPTION: +z_axis = physical exterior face")
@@ -492,53 +509,61 @@ def _calculate_butt_adjustments(
         _diag(f"  ADJ PRIMARY core: EXTEND {half_sec_core:.6f} ft ({half_sec_core*12:.4f} in) "
                f"= half_sec_core at end={primary.end}")
 
-        # Primary exterior: each EXTENDS by half_sec_core + cumulative(sec_ext)
+        # Primary exterior: direction and cumulative pattern from corner type
         p_ext = _ordered_layers_core_outward(primary_assembly_layers, "exterior")
         cumulative = 0.0
         for i, p_layer in enumerate(p_ext):
-            sec_layer_name = sec_ext[i].get("name", "?") if i < len(sec_ext) else "NONE(sec ran out)"
-            sec_layer_thick = sec_ext[i].get("thickness", 0.0) if i < len(sec_ext) else 0.0
-            if i < len(sec_ext):
-                cumulative += sec_layer_thick
-            amount = half_sec_core + cumulative
+            opp_name = sec_ext[i].get("name", "?") if i < len(sec_ext) else "NONE(opp ran out)"
+            opp_thick = sec_ext[i].get("thickness", 0.0) if i < len(sec_ext) else 0.0
+            if pri_ext_cumul == "full":
+                if i < len(sec_ext):
+                    cumulative += opp_thick
+                amount = half_sec_core + cumulative
+            else:  # shifted
+                amount = half_sec_core + cumulative
+                if i < len(sec_ext):
+                    cumulative += opp_thick
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
                 junction_id=junction_id,
                 layer_name=p_layer.get("name", f"exterior_{i}"),
-                adjustment_type=AdjustmentType.EXTEND,
+                adjustment_type=pri_ext_dir,
                 amount=amount,
                 connecting_wall_id=secondary.wall_id,
             ))
-            _diag(f"  ADJ PRIMARY ext[{i}] '{p_layer.get('name')}': EXTEND {amount:.6f} ft ({amount*12:.4f} in) "
-                   f"= half_sec_core({half_sec_core:.6f}) + cumulative({cumulative:.6f}) "
-                   f"[added sec_ext[{i}] '{sec_layer_name}'={sec_layer_thick:.6f} ft ({sec_layer_thick*12:.4f} in)] "
-                   f"at end={primary.end}")
+            _diag(f"  ADJ PRIMARY ext[{i}] '{p_layer.get('name')}': {pri_ext_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_sec_core({half_sec_core:.6f}) + cumul({cumulative:.6f}) "
+                   f"[opp[{i}] '{opp_name}'={opp_thick:.6f} ft] "
+                   f"pattern={pri_ext_cumul} at end={primary.end}")
 
-        # Primary interior: always TRIM (faces room, stops at secondary core face)
-        # Cumulative added AFTER amount: layer[0] stops at half_sec_core,
-        # layer[1] stops at half_sec_core + sec_int[0], etc.
+        # Primary interior: direction and cumulative pattern from corner type
         p_int = _ordered_layers_core_outward(primary_assembly_layers, "interior")
         cumulative = 0.0
         for i, p_layer in enumerate(p_int):
-            sec_layer_name = sec_int[i].get("name", "?") if i < len(sec_int) else "NONE(sec ran out)"
-            sec_layer_thick = sec_int[i].get("thickness", 0.0) if i < len(sec_int) else 0.0
-            amount = half_sec_core + cumulative
-            if i < len(sec_int):
-                cumulative += sec_layer_thick
+            opp_name = sec_int[i].get("name", "?") if i < len(sec_int) else "NONE(opp ran out)"
+            opp_thick = sec_int[i].get("thickness", 0.0) if i < len(sec_int) else 0.0
+            if pri_int_cumul == "full":
+                if i < len(sec_int):
+                    cumulative += opp_thick
+                amount = half_sec_core + cumulative
+            else:  # shifted
+                amount = half_sec_core + cumulative
+                if i < len(sec_int):
+                    cumulative += opp_thick
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
                 junction_id=junction_id,
                 layer_name=p_layer.get("name", f"interior_{i}"),
-                adjustment_type=pri_int_type,
+                adjustment_type=pri_int_dir,
                 amount=amount,
                 connecting_wall_id=secondary.wall_id,
             ))
-            _diag(f"  ADJ PRIMARY int[{i}] '{p_layer.get('name')}': {pri_int_type.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
-                   f"= half_sec_core({half_sec_core:.6f}) + cumulative({cumulative:.6f}) "
-                   f"[added sec_int[{i}] '{sec_layer_name}'={sec_layer_thick:.6f} ft ({sec_layer_thick*12:.4f} in)] "
-                   f"at end={primary.end}")
+            _diag(f"  ADJ PRIMARY int[{i}] '{p_layer.get('name')}': {pri_int_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_sec_core({half_sec_core:.6f}) + cumul({cumulative:.6f}) "
+                   f"[opp[{i}] '{opp_name}'={opp_thick:.6f} ft] "
+                   f"pattern={pri_int_cumul} at end={primary.end}")
 
-        # --- SECONDARY WALL (all TRIM) ---
+        # --- SECONDARY WALL ---
         # Core: TRIM by half_pri_core (centerline to opposing core edge)
         adjustments.append(LayerAdjustment(
             wall_id=secondary.wall_id, end=secondary.end,
@@ -550,75 +575,77 @@ def _calculate_butt_adjustments(
         _diag(f"  ADJ SECONDARY core: TRIM {half_pri_core:.6f} ft ({half_pri_core*12:.4f} in) "
                f"= half_pri_core at end={secondary.end}")
 
-        # Secondary exterior: TRIM (interior corner) or EXTEND (exterior corner)
-        # EXTEND: cumulative AFTER (reach TO opposing core face, not past exterior)
-        # TRIM: cumulative BEFORE (stop past opposing exterior layers)
+        # Secondary exterior: direction and cumulative pattern from corner type
         s_ext = _ordered_layers_core_outward(secondary_assembly_layers, "exterior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_ext):
-            pri_layer_name = pri_ext[i].get("name", "?") if i < len(pri_ext) else "NONE(pri ran out)"
-            pri_layer_thick = pri_ext[i].get("thickness", 0.0) if i < len(pri_ext) else 0.0
-            if sec_ext_type == AdjustmentType.TRIM and i < len(pri_ext):
-                cumulative += pri_layer_thick
-            amount = half_pri_core + cumulative
-            if sec_ext_type != AdjustmentType.TRIM and i < len(pri_ext):
-                cumulative += pri_layer_thick
+            opp_name = pri_ext[i].get("name", "?") if i < len(pri_ext) else "NONE(opp ran out)"
+            opp_thick = pri_ext[i].get("thickness", 0.0) if i < len(pri_ext) else 0.0
+            if sec_ext_cumul == "full":
+                if i < len(pri_ext):
+                    cumulative += opp_thick
+                amount = half_pri_core + cumulative
+            else:  # shifted
+                amount = half_pri_core + cumulative
+                if i < len(pri_ext):
+                    cumulative += opp_thick
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
                 junction_id=junction_id,
                 layer_name=s_layer.get("name", f"exterior_{i}"),
-                adjustment_type=sec_ext_type,
+                adjustment_type=sec_ext_dir,
                 amount=amount,
                 connecting_wall_id=primary.wall_id,
             ))
-            _diag(f"  ADJ SECONDARY ext[{i}] '{s_layer.get('name')}': {sec_ext_type.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
-                   f"= half_pri_core({half_pri_core:.6f}) + cumulative({cumulative:.6f}) "
-                   f"[added pri_ext[{i}] '{pri_layer_name}'={pri_layer_thick:.6f} ft ({pri_layer_thick*12:.4f} in)] "
-                   f"at end={secondary.end}")
+            _diag(f"  ADJ SECONDARY ext[{i}] '{s_layer.get('name')}': {sec_ext_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_pri_core({half_pri_core:.6f}) + cumul({cumulative:.6f}) "
+                   f"[opp[{i}] '{opp_name}'={opp_thick:.6f} ft] "
+                   f"pattern={sec_ext_cumul} at end={secondary.end}")
 
-        # Secondary interior: each TRIMS by half_pri_core + cumulative opposing layers
-        # The trim direction goes INTO the secondary wall body (away from junction).
-        # At exterior corner: trim goes toward room side → encounters pri_int
-        # At interior corner: trim goes toward building exterior → encounters pri_ext
-        sec_int_opposing = pri_int if exterior_corner else pri_ext
+        # Secondary interior: direction and cumulative pattern from corner type
         s_int = _ordered_layers_core_outward(secondary_assembly_layers, "interior")
         cumulative = 0.0
         for i, s_layer in enumerate(s_int):
-            opp_layer_name = sec_int_opposing[i].get("name", "?") if i < len(sec_int_opposing) else "NONE(opp ran out)"
-            opp_layer_thick = sec_int_opposing[i].get("thickness", 0.0) if i < len(sec_int_opposing) else 0.0
-            if i < len(sec_int_opposing):
-                cumulative += opp_layer_thick
-            amount = half_pri_core + cumulative
+            opp_name = pri_int[i].get("name", "?") if i < len(pri_int) else "NONE(opp ran out)"
+            opp_thick = pri_int[i].get("thickness", 0.0) if i < len(pri_int) else 0.0
+            if sec_int_cumul == "full":
+                if i < len(pri_int):
+                    cumulative += opp_thick
+                amount = half_pri_core + cumulative
+            else:  # shifted
+                amount = half_pri_core + cumulative
+                if i < len(pri_int):
+                    cumulative += opp_thick
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
                 junction_id=junction_id,
                 layer_name=s_layer.get("name", f"interior_{i}"),
-                adjustment_type=AdjustmentType.TRIM,
+                adjustment_type=sec_int_dir,
                 amount=amount,
                 connecting_wall_id=primary.wall_id,
             ))
-            _diag(f"  ADJ SECONDARY int[{i}] '{s_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
-                   f"= half_pri_core({half_pri_core:.6f}) + cumulative({cumulative:.6f}) "
-                   f"[added opp[{i}] '{opp_layer_name}'={opp_layer_thick:.6f} ft ({opp_layer_thick*12:.4f} in)] "
-                   f"at end={secondary.end}")
+            _diag(f"  ADJ SECONDARY int[{i}] '{s_layer.get('name')}': {sec_int_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
+                   f"= half_pri_core({half_pri_core:.6f}) + cumul({cumulative:.6f}) "
+                   f"[opp[{i}] '{opp_name}'={opp_thick:.6f} ft] "
+                   f"pattern={sec_int_cumul} at end={secondary.end}")
 
     else:
         # ----------------------------------------------------------
         # Fallback: 3-aggregate adjustments (no individual layers)
-        # Uses WallLayerInfo which is already scaled to wall_thickness.
+        # Uses WallLayerInfo.  Directions change based on corner type.
         # ----------------------------------------------------------
         _diag(f"  FALLBACK PATH (no individual assembly layers)")
         _diag(f"  CORNER TYPE: {'EXTERIOR' if exterior_corner else 'INTERIOR'}")
         _diag(f"  WARNING: all layers on same side get identical adjustment amount")
+
         # PRIMARY wall
-        # Interior: just half_sec_core (stops at opposing core face)
         for layer_name, adj_type, amount in [
             ("core", AdjustmentType.EXTEND,
              half_sec_core),
-            ("exterior", AdjustmentType.EXTEND,
+            ("exterior", pri_ext_dir,
              half_sec_core + secondary_layers.exterior_thickness),
-            ("interior", pri_int_type,
-             half_sec_core),
+            ("interior", pri_int_dir,
+             half_sec_core + secondary_layers.interior_thickness),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=primary.wall_id, end=primary.end,
@@ -628,18 +655,13 @@ def _calculate_butt_adjustments(
             ))
 
         # SECONDARY wall
-        # Exterior EXTEND: just half_pri_core (reaches TO opposing core face)
-        # Exterior TRIM: half_pri_core + pri_ext (stops past opposing exterior)
-        sec_ext_amount = (half_pri_core if sec_ext_type == AdjustmentType.EXTEND
-                          else half_pri_core + primary_layers.exterior_thickness)
         for layer_name, adj_type, amount in [
             ("core", AdjustmentType.TRIM,
              half_pri_core),
-            ("exterior", sec_ext_type,
-             sec_ext_amount),
-            ("interior", AdjustmentType.TRIM,
-             half_pri_core + (primary_layers.interior_thickness if exterior_corner
-                              else primary_layers.exterior_thickness)),
+            ("exterior", sec_ext_dir,
+             half_pri_core + primary_layers.exterior_thickness),
+            ("interior", sec_int_dir,
+             half_pri_core + primary_layers.interior_thickness),
         ]:
             adjustments.append(LayerAdjustment(
                 wall_id=secondary.wall_id, end=secondary.end,
@@ -730,15 +752,31 @@ def _calculate_t_intersection_adjustments(
     terminating_layers: WallLayerInfo,
     continuous_assembly_layers: Optional[List[Dict]] = None,
     terminating_assembly_layers: Optional[List[Dict]] = None,
+    midspan_only: bool = False,
+    midspan_cumulative: str = "shifted",
 ) -> List[LayerAdjustment]:
     """Calculate adjustments for a T-intersection.
 
-    The continuous wall is NOT adjusted (it passes through).
-    The terminating wall trims all layers at the junction end.
+    The continuous wall gets midspan gap adjustments where the
+    terminating wall meets it.  The terminating wall trims all
+    layers at the junction end (unless ``midspan_only=True``).
 
     Each terminating layer trims by ``half_cont_core`` plus the
-    cumulative **scaled** thickness of the continuous wall's layers on
+    cumulative thickness of the continuous wall's layers on
     the same side up to that layer's stack position.
+
+    Midspan adjustments are **one-sided** for T-intersections: only
+    the layers on the side the terminating wall body is on get gaps
+    (plus core, which always gets a gap).  For X-crossings
+    (``midspan_only=True``), both sides get gaps.
+
+    Midspan cumulative pattern:
+      - **shifted** (compute-then-add): layer 0 = ``half_term_core``,
+        layer 1 = ``half_term_core + term[0]``.  Used for the primary
+        wall at X-crossings and for T-intersections.
+      - **full** (add-then-compute): layer 0 = ``half_term_core + term[0]``,
+        layer 1 = ``half_term_core + term[0] + term[1]``.  Used for
+        the secondary wall at X-crossings to create interlocking gaps.
 
     Args:
         junction_id: Junction identifier.
@@ -750,13 +788,21 @@ def _calculate_t_intersection_adjustments(
             the continuous wall.
         terminating_assembly_layers: Optional individual layer dicts for
             the terminating wall.
+        midspan_only: If True, skip terminating endpoint adjustments.
+            Used for X-crossings where neither wall actually terminates.
+        midspan_cumulative: Cumulative pattern for midspan gap widths.
+            "shifted" (default) or "full".
 
     Returns:
-        List of LayerAdjustments (all TRIM) for the terminating wall.
+        List of LayerAdjustments for the terminating and continuous walls.
     """
     adjustments: List[LayerAdjustment] = []
 
     half_cont_core = continuous_layers.core_thickness / 2.0
+
+    # When the terminating wall is also a midspan connection (X-crossings),
+    # its adjustments need the midspan_u value so downstream can create gaps.
+    term_midspan_u = terminating.midspan_u if terminating.is_midspan else None
 
     _diag(f"\n=== T-INTERSECTION ADJUSTMENTS (junction={junction_id}) ===")
     _diag(f"  ASSUMPTION: Terminating wall endpoint is AT the virtual centerline corner")
@@ -772,86 +818,280 @@ def _calculate_t_intersection_adjustments(
            f"core={terminating_layers.core_thickness:.6f}, "
            f"int={terminating_layers.interior_thickness:.6f}")
     _diag(f"  half_cont_core = {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in)")
+    _diag(f"  midspan_only = {midspan_only}")
 
-    if continuous_assembly_layers and terminating_assembly_layers:
-        # Per-layer cumulative adjustments (unscaled catalog thicknesses)
-        cont_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
-        cont_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
+    # =================================================================
+    # Terminating wall endpoint adjustments (skip when midspan_only)
+    # =================================================================
+    if not midspan_only:
+        if continuous_assembly_layers and terminating_assembly_layers:
+            # Per-layer cumulative adjustments (unscaled catalog thicknesses)
+            cont_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
+            cont_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
 
-        _diag("  PER-LAYER PATH active (unscaled catalog thicknesses)")
-        _diag("  cont_ext (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_ext]))
-        _diag("  cont_int (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_int]))
+            _diag("  PER-LAYER PATH active (unscaled catalog thicknesses)")
+            _diag("  cont_ext (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_ext]))
+            _diag("  cont_int (core-outward): " + str([f"{l.get('name')}={l.get('thickness',0):.6f}ft ({l.get('thickness',0)*12:.4f}in)" for l in cont_int]))
 
-        # Core: TRIM by half_cont_core
-        adjustments.append(LayerAdjustment(
-            wall_id=terminating.wall_id, end=terminating.end,
-            junction_id=junction_id, layer_name="core",
-            adjustment_type=AdjustmentType.TRIM,
-            amount=half_cont_core,
-            connecting_wall_id=continuous.wall_id,
-        ))
-        _diag(f"  ADJ TERM core: TRIM {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in) "
-               f"= half_cont_core")
-
-        # Terminating exterior: each TRIMS by half_cont_core + cumulative(cont_ext)
-        t_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
-        cumulative = 0.0
-        for i, t_layer in enumerate(t_ext):
-            cont_layer_name = cont_ext[i].get("name", "?") if i < len(cont_ext) else "NONE(cont ran out)"
-            cont_layer_thick = cont_ext[i].get("thickness", 0.0) if i < len(cont_ext) else 0.0
-            if i < len(cont_ext):
-                cumulative += cont_ext[i].get("thickness", 0.0)
-            amount = half_cont_core + cumulative
+            # Core: TRIM by half_cont_core
             adjustments.append(LayerAdjustment(
                 wall_id=terminating.wall_id, end=terminating.end,
-                junction_id=junction_id,
-                layer_name=t_layer.get("name", f"exterior_{i}"),
+                junction_id=junction_id, layer_name="core",
                 adjustment_type=AdjustmentType.TRIM,
-                amount=amount,
+                amount=half_cont_core,
                 connecting_wall_id=continuous.wall_id,
+                midspan_u=term_midspan_u,
             ))
-            _diag(f"  ADJ TERM ext[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
-                   f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
-                   f"[opposing: '{cont_layer_name}' thick={cont_layer_thick:.6f} ft ({cont_layer_thick*12:.4f} in)]")
+            _diag(f"  ADJ TERM core: TRIM {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in) "
+                   f"= half_cont_core")
 
-        # Terminating interior: each TRIMS by half_cont_core + cumulative(cont_int)
-        t_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
-        cumulative = 0.0
-        for i, t_layer in enumerate(t_int):
-            cont_layer_name = cont_int[i].get("name", "?") if i < len(cont_int) else "NONE(cont ran out)"
-            cont_layer_thick = cont_int[i].get("thickness", 0.0) if i < len(cont_int) else 0.0
-            if i < len(cont_int):
-                cumulative += cont_int[i].get("thickness", 0.0)
-            amount = half_cont_core + cumulative
-            adjustments.append(LayerAdjustment(
-                wall_id=terminating.wall_id, end=terminating.end,
-                junction_id=junction_id,
-                layer_name=t_layer.get("name", f"interior_{i}"),
-                adjustment_type=AdjustmentType.TRIM,
-                amount=amount,
-                connecting_wall_id=continuous.wall_id,
-            ))
-            _diag(f"  ADJ TERM int[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
-                   f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
-                   f"[opposing: '{cont_layer_name}' thick={cont_layer_thick:.6f} ft ({cont_layer_thick*12:.4f} in)]")
+            # Terminating exterior: each TRIMS by half_cont_core + cumulative(cont_ext)
+            t_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
+            cumulative = 0.0
+            for i, t_layer in enumerate(t_ext):
+                cont_layer_name = cont_ext[i].get("name", "?") if i < len(cont_ext) else "NONE(cont ran out)"
+                cont_layer_thick = cont_ext[i].get("thickness", 0.0) if i < len(cont_ext) else 0.0
+                if i < len(cont_ext):
+                    cumulative += cont_ext[i].get("thickness", 0.0)
+                amount = half_cont_core + cumulative
+                adjustments.append(LayerAdjustment(
+                    wall_id=terminating.wall_id, end=terminating.end,
+                    junction_id=junction_id,
+                    layer_name=t_layer.get("name", f"exterior_{i}"),
+                    adjustment_type=AdjustmentType.TRIM,
+                    amount=amount,
+                    connecting_wall_id=continuous.wall_id,
+                    midspan_u=term_midspan_u,
+                ))
+                _diag(f"  ADJ TERM ext[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+                       f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
+                       f"[opposing: '{cont_layer_name}' thick={cont_layer_thick:.6f} ft ({cont_layer_thick*12:.4f} in)]")
 
+            # Terminating interior: each TRIMS by half_cont_core + cumulative(cont_int)
+            t_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
+            cumulative = 0.0
+            for i, t_layer in enumerate(t_int):
+                cont_layer_name = cont_int[i].get("name", "?") if i < len(cont_int) else "NONE(cont ran out)"
+                cont_layer_thick = cont_int[i].get("thickness", 0.0) if i < len(cont_int) else 0.0
+                if i < len(cont_int):
+                    cumulative += cont_int[i].get("thickness", 0.0)
+                amount = half_cont_core + cumulative
+                adjustments.append(LayerAdjustment(
+                    wall_id=terminating.wall_id, end=terminating.end,
+                    junction_id=junction_id,
+                    layer_name=t_layer.get("name", f"interior_{i}"),
+                    adjustment_type=AdjustmentType.TRIM,
+                    amount=amount,
+                    connecting_wall_id=continuous.wall_id,
+                    midspan_u=term_midspan_u,
+                ))
+                _diag(f"  ADJ TERM int[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
+                       f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
+                       f"[opposing: '{cont_layer_name}' thick={cont_layer_thick:.6f} ft ({cont_layer_thick*12:.4f} in)]")
+
+        else:
+            # Fallback: 3-aggregate adjustments (unscaled WallLayerInfo)
+            _diag("  FALLBACK PATH (no assembly layers) — 3 aggregate adjustments")
+            for layer_name, amount in [
+                ("core", half_cont_core),
+                ("exterior",
+                 half_cont_core + continuous_layers.exterior_thickness),
+                ("interior",
+                 half_cont_core + continuous_layers.interior_thickness),
+            ]:
+                adjustments.append(LayerAdjustment(
+                    wall_id=terminating.wall_id, end=terminating.end,
+                    junction_id=junction_id, layer_name=layer_name,
+                    adjustment_type=AdjustmentType.TRIM, amount=amount,
+                    connecting_wall_id=continuous.wall_id,
+                    midspan_u=term_midspan_u,
+                ))
+                _diag(f"  ADJ TERM '{layer_name}': TRIM {amount:.6f} ft ({amount*12:.4f} in)")
     else:
-        # Fallback: 3-aggregate adjustments (unscaled WallLayerInfo)
-        _diag("  FALLBACK PATH (no assembly layers) — 3 aggregate adjustments")
-        for layer_name, amount in [
-            ("core", half_cont_core),
-            ("exterior",
-             half_cont_core + continuous_layers.exterior_thickness),
-            ("interior",
-             half_cont_core + continuous_layers.interior_thickness),
-        ]:
+        _diag("  SKIPPING terminating endpoint adjustments (midspan_only=True)")
+
+    # ===================================================================
+    # Continuous wall midspan adjustments
+    # ===================================================================
+    # The continuous wall's sheathing needs a gap where the terminating
+    # wall meets it.
+    #
+    # **T-intersection (midspan_only=False)**: One-sided gaps — only
+    # layers on the side where the terminating wall body IS get gaps.
+    #
+    # **X-crossing (midspan_only=True)**: Both-sided gaps — the crossing
+    # wall passes through both sides of the continuous wall.
+    #
+    # Approach side detection (for T-intersections):
+    #   _outward_direction_at_junction(terminating) points AWAY from the
+    #   junction, i.e., toward where the terminating wall body IS.
+    #   dot(continuous.z_axis, outward):
+    #   - dot < 0: outward opposes z_axis → wall body is on -z side → INTERIOR
+    #   - dot >= 0: outward aligns with z_axis → wall body is on +z side → EXTERIOR
+    #
+    # Cumulative pattern controlled by midspan_cumulative:
+    #   "shifted" (compute-then-add): layer 0 = half_term_core
+    #   "full"    (add-then-compute): layer 0 = half_term_core + term[0]
+    half_term_core = terminating_layers.core_thickness / 2.0
+    midspan_u = continuous.midspan_u
+
+    if midspan_u is not None:
+        # Determine which side of the continuous wall the terminating
+        # wall body is on
+        term_outward = _outward_direction_at_junction(terminating)
+        dot_approach = (
+            continuous.z_axis[0] * term_outward[0]
+            + continuous.z_axis[1] * term_outward[1]
+            + continuous.z_axis[2] * term_outward[2]
+        )
+        # dot < 0 → wall body on -z (interior) side
+        # dot >= 0 → wall body on +z (exterior) side
+        approach_side = "interior" if dot_approach < 0 else "exterior"
+
+        # X-crossing: both sides get gaps (crossing wall passes through)
+        # T-intersection: only the approach side gets gaps
+        gap_exterior = midspan_only or approach_side == "exterior"
+        gap_interior = midspan_only or approach_side == "interior"
+
+        use_full = midspan_cumulative == "full"
+
+        _diag(f"\n  CONTINUOUS WALL MIDSPAN ADJUSTMENTS (midspan_u={midspan_u:.4f})")
+        _diag(f"  half_term_core = {half_term_core:.6f} ft ({half_term_core*12:.4f} in)")
+        _diag(f"  approach_side = {approach_side} (dot={dot_approach:.4f})")
+        _diag(f"  gap_exterior={gap_exterior}, gap_interior={gap_interior} "
+               f"(midspan_only={midspan_only})")
+        _diag(f"  midspan_cumulative = {midspan_cumulative}")
+
+        if terminating_assembly_layers and continuous_assembly_layers:
+            term_ext_all = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
+            term_int_all = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
+            if midspan_only:
+                # X-crossing: filter out finish-function layers for gap sizing.
+                # At crossings, finish layers (siding, gypsum) are co-planar
+                # with the continuous wall's finish — they don't create
+                # additional barriers. Only substrate/structure matter.
+                term_ext = [l for l in term_ext_all if l.get("function") != "finish"]
+                term_int = [l for l in term_int_all if l.get("function") != "finish"]
+                _diag(f"  term_ext: {len(term_ext_all)} total, {len(term_ext)} structural "
+                       f"(filtered {len(term_ext_all) - len(term_ext)} finish layers)")
+                _diag(f"  term_int: {len(term_int_all)} total, {len(term_int)} structural "
+                       f"(filtered {len(term_int_all) - len(term_int)} finish layers)")
+            else:
+                # T-intersection: terminating wall stops here — ALL its layers
+                # (including finish) are physical barriers for gap sizing.
+                term_ext = term_ext_all
+                term_int = term_int_all
+                _diag(f"  term_ext: {len(term_ext)} layers, term_int: {len(term_int)} layers")
+
+            # Continuous wall core: midspan TRIM by half_term_core (always)
             adjustments.append(LayerAdjustment(
-                wall_id=terminating.wall_id, end=terminating.end,
-                junction_id=junction_id, layer_name=layer_name,
-                adjustment_type=AdjustmentType.TRIM, amount=amount,
-                connecting_wall_id=continuous.wall_id,
+                wall_id=continuous.wall_id, end="midspan",
+                junction_id=junction_id, layer_name="core",
+                adjustment_type=AdjustmentType.TRIM,
+                amount=half_term_core,
+                connecting_wall_id=terminating.wall_id,
+                midspan_u=midspan_u,
             ))
-            _diag(f"  ADJ TERM '{layer_name}': TRIM {amount:.6f} ft ({amount*12:.4f} in)")
+            _diag(f"  ADJ CONT core: TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f}")
+
+            # Continuous wall exterior layers
+            if gap_exterior:
+                c_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
+                cumulative = 0.0
+                for i, c_layer in enumerate(c_ext):
+                    if use_full:
+                        # Full: add FIRST, then compute
+                        if i < len(term_ext):
+                            cumulative += term_ext[i].get("thickness", 0.0)
+                        amount = half_term_core + cumulative
+                    else:
+                        # Shifted: compute FIRST, then add
+                        amount = half_term_core + cumulative
+                        if i < len(term_ext):
+                            cumulative += term_ext[i].get("thickness", 0.0)
+                    adjustments.append(LayerAdjustment(
+                        wall_id=continuous.wall_id, end="midspan",
+                        junction_id=junction_id,
+                        layer_name=c_layer.get("name", f"exterior_{i}"),
+                        adjustment_type=AdjustmentType.TRIM,
+                        amount=amount,
+                        connecting_wall_id=terminating.wall_id,
+                        midspan_u=midspan_u,
+                    ))
+                    _diag(f"  ADJ CONT ext[{i}] '{c_layer.get('name')}': TRIM {amount:.6f} ft "
+                           f"({midspan_cumulative} cumul={cumulative:.6f}) at midspan_u={midspan_u:.4f}")
+            else:
+                _diag("  SKIPPING exterior midspan (approach_side=interior, T-intersection)")
+
+            # Continuous wall interior layers
+            if gap_interior:
+                c_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
+                cumulative = 0.0
+                for i, c_layer in enumerate(c_int):
+                    if use_full:
+                        # Full: add FIRST, then compute
+                        if i < len(term_int):
+                            cumulative += term_int[i].get("thickness", 0.0)
+                        amount = half_term_core + cumulative
+                    else:
+                        # Shifted: compute FIRST, then add
+                        amount = half_term_core + cumulative
+                        if i < len(term_int):
+                            cumulative += term_int[i].get("thickness", 0.0)
+                    adjustments.append(LayerAdjustment(
+                        wall_id=continuous.wall_id, end="midspan",
+                        junction_id=junction_id,
+                        layer_name=c_layer.get("name", f"interior_{i}"),
+                        adjustment_type=AdjustmentType.TRIM,
+                        amount=amount,
+                        connecting_wall_id=terminating.wall_id,
+                        midspan_u=midspan_u,
+                    ))
+                    _diag(f"  ADJ CONT int[{i}] '{c_layer.get('name')}': TRIM {amount:.6f} ft "
+                           f"({midspan_cumulative} cumul={cumulative:.6f}) at midspan_u={midspan_u:.4f}")
+            else:
+                _diag("  SKIPPING interior midspan (approach_side=exterior, T-intersection)")
+
+        else:
+            # Fallback: aggregate midspan adjustments
+            _diag(f"  CONT MIDSPAN FALLBACK (no assembly layers, pattern={midspan_cumulative})")
+            # Core always
+            adjustments.append(LayerAdjustment(
+                wall_id=continuous.wall_id, end="midspan",
+                junction_id=junction_id, layer_name="core",
+                adjustment_type=AdjustmentType.TRIM, amount=half_term_core,
+                connecting_wall_id=terminating.wall_id,
+                midspan_u=midspan_u,
+            ))
+            _diag(f"  ADJ CONT 'core': TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f}")
+            if gap_exterior:
+                if use_full:
+                    ext_amount = half_term_core + terminating_layers.exterior_thickness
+                else:
+                    ext_amount = half_term_core
+                adjustments.append(LayerAdjustment(
+                    wall_id=continuous.wall_id, end="midspan",
+                    junction_id=junction_id, layer_name="exterior",
+                    adjustment_type=AdjustmentType.TRIM, amount=ext_amount,
+                    connecting_wall_id=terminating.wall_id,
+                    midspan_u=midspan_u,
+                ))
+                _diag(f"  ADJ CONT 'exterior': TRIM {ext_amount:.6f} ft at midspan_u={midspan_u:.4f}")
+            if gap_interior:
+                if use_full:
+                    int_amount = half_term_core + terminating_layers.interior_thickness
+                else:
+                    int_amount = half_term_core
+                adjustments.append(LayerAdjustment(
+                    wall_id=continuous.wall_id, end="midspan",
+                    junction_id=junction_id, layer_name="interior",
+                    adjustment_type=AdjustmentType.TRIM, amount=int_amount,
+                    connecting_wall_id=terminating.wall_id,
+                    midspan_u=midspan_u,
+                ))
+                _diag(f"  ADJ CONT 'interior': TRIM {int_amount:.6f} ft at midspan_u={midspan_u:.4f}")
+    else:
+        _diag("  No midspan_u on continuous wall — skipping midspan adjustments")
 
     _diag(f"  Total T-intersection adjustments: {len(adjustments)}")
     return adjustments
@@ -975,6 +1215,13 @@ def _resolve_two_wall_junction(
     else:
         adjustments = []
 
+    # Determine corner side for L-corners
+    corner_side = None
+    if node.junction_type == JunctionType.L_CORNER:
+        corner_side = (
+            "exterior" if _is_exterior_corner(primary, secondary) else "interior"
+        )
+
     return JunctionResolution(
         junction_id=node.id,
         join_type=join_type,
@@ -984,6 +1231,7 @@ def _resolve_two_wall_junction(
         reason=reason,
         layer_adjustments=adjustments,
         is_user_override=is_override,
+        corner_side=corner_side,
     )
 
 
@@ -1005,7 +1253,53 @@ def _resolve_multi_wall_junction(
     resolutions = []
     connections = node.connections
 
-    if node.junction_type == JunctionType.X_CROSSING and len(connections) == 4:
+    if node.junction_type == JunctionType.X_CROSSING and len(connections) == 2 and all(c.is_midspan for c in connections):
+        # Two-midspan X-crossing detected via centerline intersection.
+        # Each wall is both "continuous through" and "crossed by" the other.
+        # Emit bidirectional midspan TRIM adjustments.
+        conn_a = connections[0]
+        conn_b = connections[1]
+
+        layers_a = wall_layers.get(
+            conn_a.wall_id,
+            build_default_wall_layers(conn_a.wall_id, conn_a.wall_thickness),
+        )
+        layers_b = wall_layers.get(
+            conn_b.wall_id,
+            build_default_wall_layers(conn_b.wall_id, conn_b.wall_thickness),
+        )
+
+        asm_a = (wall_assemblies or {}).get(conn_a.wall_id)
+        asm_b = (wall_assemblies or {}).get(conn_b.wall_id)
+
+        # Wall A gets a gap where wall B crosses it
+        adjs_a = _calculate_t_intersection_adjustments(
+            node.id, conn_a, conn_b, layers_a, layers_b,
+            continuous_assembly_layers=asm_a,
+            terminating_assembly_layers=asm_b,
+            midspan_only=True,
+        )
+        # Wall B gets a gap where wall A crosses it (secondary: full cumulative)
+        adjs_b = _calculate_t_intersection_adjustments(
+            node.id, conn_b, conn_a, layers_b, layers_a,
+            continuous_assembly_layers=asm_b,
+            terminating_assembly_layers=asm_a,
+            midspan_only=True,
+            midspan_cumulative="full",
+        )
+
+        all_adjustments = adjs_a + adjs_b
+        resolutions.append(JunctionResolution(
+            junction_id=node.id,
+            join_type=JoinType.BUTT,
+            primary_wall_id=conn_a.wall_id,
+            secondary_wall_id=conn_b.wall_id,
+            confidence=0.9,
+            reason="X-crossing: bidirectional midspan gaps",
+            layer_adjustments=all_adjustments,
+        ))
+
+    elif node.junction_type == JunctionType.X_CROSSING and len(connections) == 4:
         # Find two inline pairs
         pairs = _find_inline_pairs(connections)
         for pair in pairs:
@@ -1347,7 +1641,25 @@ def recompute_adjustments(
         sec_assembly = wall_assemblies.get(secondary_wall_id)
 
         # Compute adjustments using the existing calculation functions
-        if junction_type == "t_intersection":
+        if junction_type == "x_crossing":
+            # X-crossing: bidirectional midspan gaps (both walls get gaps)
+            adjs_a = _calculate_t_intersection_adjustments(
+                junction_id, primary_conn, secondary_conn,
+                pri_layers, sec_layers,
+                continuous_assembly_layers=pri_assembly,
+                terminating_assembly_layers=sec_assembly,
+                midspan_only=True,
+            )
+            adjs_b = _calculate_t_intersection_adjustments(
+                junction_id, secondary_conn, primary_conn,
+                sec_layers, pri_layers,
+                continuous_assembly_layers=sec_assembly,
+                terminating_assembly_layers=pri_assembly,
+                midspan_only=True,
+                midspan_cumulative="full",
+            )
+            adjustments = adjs_a + adjs_b
+        elif junction_type == "t_intersection":
             adjustments = _calculate_t_intersection_adjustments(
                 junction_id, primary_conn, secondary_conn,
                 pri_layers, sec_layers,
@@ -1430,7 +1742,7 @@ def _rebuild_connection(
 ) -> WallConnection:
     """Reconstruct a WallConnection from serialized data + wall lookup.
 
-    The serialized connection has wall_id, end, wall_thickness,
+    The serialized connection has wall_id, end, direction, wall_thickness,
     is_midspan, is_exterior, z_axis. Wall length comes from wall_data.
 
     Args:
@@ -1449,9 +1761,13 @@ def _rebuild_connection(
     else:
         z_axis = (0.0, 0.0, 1.0)
 
-    # Extract direction from wall_data base_plane.x_axis (needed for corner type detection)
+    # Extract direction: prefer serialized connection (always correct),
+    # fall back to wall_data base_plane.x_axis.
     direction = (0.0, 0.0, 0.0)
-    if wall_data:
+    dir_data = conn_data.get("direction")
+    if isinstance(dir_data, dict):
+        direction = (dir_data["x"], dir_data["y"], dir_data["z"])
+    elif wall_data:
         bp = wall_data.get("base_plane", {})
         x_axis = bp.get("x_axis")
         if isinstance(x_axis, dict):

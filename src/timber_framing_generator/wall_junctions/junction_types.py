@@ -323,6 +323,8 @@ class LayerAdjustment:
     amount: float
     miter_angle: Optional[float] = None
     connecting_wall_id: str = ""
+    midspan_u: Optional[float] = None  # U-coordinate for midspan gap (T/X-intersections)
+    amount_neg: Optional[float] = None  # For asymmetric midspan gaps: negative-U edge amount. When None, defaults to amount.
 
 
 @dataclass
@@ -348,6 +350,7 @@ class JunctionResolution:
     reason: str
     layer_adjustments: List[LayerAdjustment] = field(default_factory=list)
     is_user_override: bool = False
+    corner_side: Optional[str] = None  # "exterior" or "interior" for L-corners
 
 
 @dataclass
@@ -422,8 +425,18 @@ class JunctionGraph:
             1 for r in self.resolutions if r.is_user_override
         )
 
+        # Count exterior vs interior corners from resolutions
+        ext_corners = sum(
+            1 for r in self.resolutions if r.corner_side == "exterior"
+        )
+        int_corners = sum(
+            1 for r in self.resolutions if r.corner_side == "interior"
+        )
+
         return {
             "l_corners": type_counts.get("l_corner", 0),
+            "exterior_corners": ext_corners,
+            "interior_corners": int_corners,
             "t_intersections": type_counts.get("t_intersection", 0),
             "x_crossings": type_counts.get("x_crossing", 0),
             "free_ends": type_counts.get("free_end", 0),
@@ -458,6 +471,7 @@ def _serialize_node(node: JunctionNode) -> Dict:
             {
                 "wall_id": c.wall_id,
                 "end": c.end,
+                "direction": {"x": c.direction[0], "y": c.direction[1], "z": c.direction[2]},
                 "is_midspan": c.is_midspan,
                 "midspan_u": c.midspan_u,
                 "wall_thickness": c.wall_thickness,
@@ -481,6 +495,10 @@ def _serialize_adjustment(adj: LayerAdjustment) -> Dict:
     }
     if adj.miter_angle is not None:
         result["miter_angle"] = round(adj.miter_angle, 2)
+    if adj.midspan_u is not None:
+        result["midspan_u"] = round(adj.midspan_u, 6)
+    if adj.amount_neg is not None:
+        result["amount_neg"] = round(adj.amount_neg, 6)
     return result
 
 
@@ -491,7 +509,7 @@ def _serialize_resolution(res: JunctionResolution) -> Dict:
     needed by downstream ``recompute_adjustments()`` to recalculate
     per-layer amounts with resolved assembly data.
     """
-    return {
+    result = {
         "junction_id": res.junction_id,
         "join_type": res.join_type.value,
         "primary_wall_id": res.primary_wall_id,
@@ -500,3 +518,6 @@ def _serialize_resolution(res: JunctionResolution) -> Dict:
         "reason": res.reason,
         "is_user_override": res.is_user_override,
     }
+    if res.corner_side is not None:
+        result["corner_side"] = res.corner_side
+    return result

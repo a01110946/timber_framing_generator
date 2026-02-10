@@ -957,141 +957,208 @@ def _calculate_t_intersection_adjustments(
 
         use_full = midspan_cumulative == "full"
 
+        # Asymmetric gap edge: which term side faces +U vs -U of cont wall
+        cont_x = continuous.direction
+        term_z = terminating.z_axis
+        dot_term_z_cont_x = (
+            term_z[0] * cont_x[0]
+            + term_z[1] * cont_x[1]
+            + term_z[2] * cont_x[2]
+        )
+        # dot > 0: term exterior faces +U, term interior faces -U
+        # dot < 0: term exterior faces -U, term interior faces +U
+        # dot == 0: symmetric (ext -> +U arbitrarily)
+
         _diag(f"\n  CONTINUOUS WALL MIDSPAN ADJUSTMENTS (midspan_u={midspan_u:.4f})")
         _diag(f"  half_term_core = {half_term_core:.6f} ft ({half_term_core*12:.4f} in)")
         _diag(f"  approach_side = {approach_side} (dot={dot_approach:.4f})")
         _diag(f"  gap_exterior={gap_exterior}, gap_interior={gap_interior} "
                f"(midspan_only={midspan_only})")
         _diag(f"  midspan_cumulative = {midspan_cumulative}")
+        _diag(f"  dot_term_z_cont_x = {dot_term_z_cont_x:.4f}")
 
         if terminating_assembly_layers and continuous_assembly_layers:
-            term_ext_all = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
-            term_int_all = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
-            if midspan_only:
-                # X-crossing: filter out finish-function layers for gap sizing.
-                # At crossings, finish layers (siding, gypsum) are co-planar
-                # with the continuous wall's finish — they don't create
-                # additional barriers. Only substrate/structure matter.
-                term_ext = [l for l in term_ext_all if l.get("function") != "finish"]
-                term_int = [l for l in term_int_all if l.get("function") != "finish"]
-                _diag(f"  term_ext: {len(term_ext_all)} total, {len(term_ext)} structural "
-                       f"(filtered {len(term_ext_all) - len(term_ext)} finish layers)")
-                _diag(f"  term_int: {len(term_int_all)} total, {len(term_int)} structural "
-                       f"(filtered {len(term_int_all) - len(term_int)} finish layers)")
-            else:
-                # T-intersection: terminating wall stops here — ALL its layers
-                # (including finish) are physical barriers for gap sizing.
-                term_ext = term_ext_all
-                term_int = term_int_all
-                _diag(f"  term_ext: {len(term_ext)} layers, term_int: {len(term_int)} layers")
+            term_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
+            term_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
+            _diag(f"  term_ext: {len(term_ext)} layers, term_int: {len(term_int)} layers")
 
-            # Continuous wall core: midspan TRIM by half_term_core (always)
-            adjustments.append(LayerAdjustment(
-                wall_id=continuous.wall_id, end="midspan",
-                junction_id=junction_id, layer_name="core",
-                adjustment_type=AdjustmentType.TRIM,
-                amount=half_term_core,
-                connecting_wall_id=terminating.wall_id,
-                midspan_u=midspan_u,
-            ))
-            _diag(f"  ADJ CONT core: TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f}")
+            # Continuous wall core midspan:
+            # - T-intersection: core runs through (no gap). Skip.
+            # - X-crossing primary (shifted): core runs through. Skip.
+            # - X-crossing secondary (full): core terminates at primary. TRIM.
+            if use_full:
+                adjustments.append(LayerAdjustment(
+                    wall_id=continuous.wall_id, end="midspan",
+                    junction_id=junction_id, layer_name="core",
+                    adjustment_type=AdjustmentType.TRIM,
+                    amount=half_term_core,
+                    connecting_wall_id=terminating.wall_id,
+                    midspan_u=midspan_u,
+                ))
+                _diag(f"  ADJ CONT core: TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f} "
+                       f"(secondary wall core terminates at X-crossing)")
+            else:
+                _diag(f"  SKIP CONT core midspan (primary/continuous wall core runs through)")
+
+            # --- Asymmetric gap edge computation ---
+            # dot_term_z_cont_x computed above (before branch)
+            if dot_term_z_cont_x >= 0:
+                term_pos_layers = term_ext  # layers on the +U side
+                term_neg_layers = term_int  # layers on the -U side
+            else:
+                term_pos_layers = term_int  # layers on the +U side
+                term_neg_layers = term_ext  # layers on the -U side
+
+            _diag(f"  ASYMMETRIC GAP: dot_term_z_cont_x={dot_term_z_cont_x:.4f} "
+                   f"-> +U uses term_{'ext' if dot_term_z_cont_x >= 0 else 'int'} "
+                   f"({len(term_pos_layers)} layers), "
+                   f"-U uses term_{'int' if dot_term_z_cont_x >= 0 else 'ext'} "
+                   f"({len(term_neg_layers)} layers)")
 
             # Continuous wall exterior layers
             if gap_exterior:
                 c_ext = _ordered_layers_core_outward(continuous_assembly_layers, "exterior")
-                cumulative = 0.0
+                cumul_pos = 0.0
+                cumul_neg = 0.0
                 for i, c_layer in enumerate(c_ext):
                     if use_full:
                         # Full: add FIRST, then compute
-                        if i < len(term_ext):
-                            cumulative += term_ext[i].get("thickness", 0.0)
-                        amount = half_term_core + cumulative
+                        if i < len(term_pos_layers):
+                            cumul_pos += term_pos_layers[i].get("thickness", 0.0)
+                        if i < len(term_neg_layers):
+                            cumul_neg += term_neg_layers[i].get("thickness", 0.0)
+                        amount_pos = half_term_core + cumul_pos
+                        amount_neg_val = half_term_core + cumul_neg
                     else:
                         # Shifted: compute FIRST, then add
-                        amount = half_term_core + cumulative
-                        if i < len(term_ext):
-                            cumulative += term_ext[i].get("thickness", 0.0)
+                        amount_pos = half_term_core + cumul_pos
+                        amount_neg_val = half_term_core + cumul_neg
+                        if i < len(term_pos_layers):
+                            cumul_pos += term_pos_layers[i].get("thickness", 0.0)
+                        if i < len(term_neg_layers):
+                            cumul_neg += term_neg_layers[i].get("thickness", 0.0)
+                    # Set amount_neg only when it differs from amount_pos
+                    adj_amount_neg = amount_neg_val if abs(amount_neg_val - amount_pos) > 1e-9 else None
                     adjustments.append(LayerAdjustment(
                         wall_id=continuous.wall_id, end="midspan",
                         junction_id=junction_id,
                         layer_name=c_layer.get("name", f"exterior_{i}"),
                         adjustment_type=AdjustmentType.TRIM,
-                        amount=amount,
+                        amount=amount_pos,
                         connecting_wall_id=terminating.wall_id,
                         midspan_u=midspan_u,
+                        amount_neg=adj_amount_neg,
                     ))
-                    _diag(f"  ADJ CONT ext[{i}] '{c_layer.get('name')}': TRIM {amount:.6f} ft "
-                           f"({midspan_cumulative} cumul={cumulative:.6f}) at midspan_u={midspan_u:.4f}")
+                    _diag(f"  ADJ CONT ext[{i}] '{c_layer.get('name')}': TRIM "
+                           f"amount_pos={amount_pos:.6f} amount_neg={amount_neg_val:.6f} ft "
+                           f"({midspan_cumulative} cumul_pos={cumul_pos:.6f} cumul_neg={cumul_neg:.6f}) "
+                           f"at midspan_u={midspan_u:.4f}")
             else:
                 _diag("  SKIPPING exterior midspan (approach_side=interior, T-intersection)")
 
             # Continuous wall interior layers
             if gap_interior:
                 c_int = _ordered_layers_core_outward(continuous_assembly_layers, "interior")
-                cumulative = 0.0
+                cumul_pos = 0.0
+                cumul_neg = 0.0
                 for i, c_layer in enumerate(c_int):
                     if use_full:
                         # Full: add FIRST, then compute
-                        if i < len(term_int):
-                            cumulative += term_int[i].get("thickness", 0.0)
-                        amount = half_term_core + cumulative
+                        if i < len(term_pos_layers):
+                            cumul_pos += term_pos_layers[i].get("thickness", 0.0)
+                        if i < len(term_neg_layers):
+                            cumul_neg += term_neg_layers[i].get("thickness", 0.0)
+                        amount_pos = half_term_core + cumul_pos
+                        amount_neg_val = half_term_core + cumul_neg
                     else:
                         # Shifted: compute FIRST, then add
-                        amount = half_term_core + cumulative
-                        if i < len(term_int):
-                            cumulative += term_int[i].get("thickness", 0.0)
+                        amount_pos = half_term_core + cumul_pos
+                        amount_neg_val = half_term_core + cumul_neg
+                        if i < len(term_pos_layers):
+                            cumul_pos += term_pos_layers[i].get("thickness", 0.0)
+                        if i < len(term_neg_layers):
+                            cumul_neg += term_neg_layers[i].get("thickness", 0.0)
+                    # Set amount_neg only when it differs from amount_pos
+                    adj_amount_neg = amount_neg_val if abs(amount_neg_val - amount_pos) > 1e-9 else None
                     adjustments.append(LayerAdjustment(
                         wall_id=continuous.wall_id, end="midspan",
                         junction_id=junction_id,
                         layer_name=c_layer.get("name", f"interior_{i}"),
                         adjustment_type=AdjustmentType.TRIM,
-                        amount=amount,
+                        amount=amount_pos,
                         connecting_wall_id=terminating.wall_id,
                         midspan_u=midspan_u,
+                        amount_neg=adj_amount_neg,
                     ))
-                    _diag(f"  ADJ CONT int[{i}] '{c_layer.get('name')}': TRIM {amount:.6f} ft "
-                           f"({midspan_cumulative} cumul={cumulative:.6f}) at midspan_u={midspan_u:.4f}")
+                    _diag(f"  ADJ CONT int[{i}] '{c_layer.get('name')}': TRIM "
+                           f"amount_pos={amount_pos:.6f} amount_neg={amount_neg_val:.6f} ft "
+                           f"({midspan_cumulative} cumul_pos={cumul_pos:.6f} cumul_neg={cumul_neg:.6f}) "
+                           f"at midspan_u={midspan_u:.4f}")
             else:
                 _diag("  SKIPPING interior midspan (approach_side=exterior, T-intersection)")
 
         else:
-            # Fallback: aggregate midspan adjustments
+            # Fallback: aggregate midspan adjustments (no assembly layers)
             _diag(f"  CONT MIDSPAN FALLBACK (no assembly layers, pattern={midspan_cumulative})")
-            # Core always
-            adjustments.append(LayerAdjustment(
-                wall_id=continuous.wall_id, end="midspan",
-                junction_id=junction_id, layer_name="core",
-                adjustment_type=AdjustmentType.TRIM, amount=half_term_core,
-                connecting_wall_id=terminating.wall_id,
-                midspan_u=midspan_u,
-            ))
-            _diag(f"  ADJ CONT 'core': TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f}")
+            # Core: NO midspan TRIM — core runs continuously through junction
+            # Core: only TRIM for X-crossing secondary (use_full), skip otherwise
+            if use_full:
+                adjustments.append(LayerAdjustment(
+                    wall_id=continuous.wall_id, end="midspan",
+                    junction_id=junction_id, layer_name="core",
+                    adjustment_type=AdjustmentType.TRIM,
+                    amount=half_term_core,
+                    connecting_wall_id=terminating.wall_id,
+                    midspan_u=midspan_u,
+                ))
+                _diag(f"  ADJ CONT 'core': TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f}")
+            else:
+                _diag(f"  SKIP CONT 'core' midspan (primary/continuous wall core runs through)")
+
+            # Asymmetric: map term ext/int to +U/-U based on dot_term_z_cont_x
+            if dot_term_z_cont_x >= 0:
+                term_pos_thick = terminating_layers.exterior_thickness
+                term_neg_thick = terminating_layers.interior_thickness
+            else:
+                term_pos_thick = terminating_layers.interior_thickness
+                term_neg_thick = terminating_layers.exterior_thickness
+
             if gap_exterior:
                 if use_full:
-                    ext_amount = half_term_core + terminating_layers.exterior_thickness
+                    ext_amount_pos = half_term_core + term_pos_thick
+                    ext_amount_neg = half_term_core + term_neg_thick
                 else:
-                    ext_amount = half_term_core
+                    ext_amount_pos = half_term_core
+                    ext_amount_neg = half_term_core
+                adj_amount_neg = ext_amount_neg if abs(ext_amount_neg - ext_amount_pos) > 1e-9 else None
                 adjustments.append(LayerAdjustment(
                     wall_id=continuous.wall_id, end="midspan",
                     junction_id=junction_id, layer_name="exterior",
-                    adjustment_type=AdjustmentType.TRIM, amount=ext_amount,
+                    adjustment_type=AdjustmentType.TRIM, amount=ext_amount_pos,
                     connecting_wall_id=terminating.wall_id,
                     midspan_u=midspan_u,
+                    amount_neg=adj_amount_neg,
                 ))
-                _diag(f"  ADJ CONT 'exterior': TRIM {ext_amount:.6f} ft at midspan_u={midspan_u:.4f}")
+                _diag(f"  ADJ CONT 'exterior': TRIM pos={ext_amount_pos:.6f} neg={ext_amount_neg:.6f} ft "
+                       f"at midspan_u={midspan_u:.4f}")
             if gap_interior:
                 if use_full:
-                    int_amount = half_term_core + terminating_layers.interior_thickness
+                    int_amount_pos = half_term_core + term_pos_thick
+                    int_amount_neg = half_term_core + term_neg_thick
                 else:
-                    int_amount = half_term_core
+                    int_amount_pos = half_term_core
+                    int_amount_neg = half_term_core
+                adj_amount_neg = int_amount_neg if abs(int_amount_neg - int_amount_pos) > 1e-9 else None
                 adjustments.append(LayerAdjustment(
                     wall_id=continuous.wall_id, end="midspan",
                     junction_id=junction_id, layer_name="interior",
-                    adjustment_type=AdjustmentType.TRIM, amount=int_amount,
+                    adjustment_type=AdjustmentType.TRIM, amount=int_amount_pos,
                     connecting_wall_id=terminating.wall_id,
                     midspan_u=midspan_u,
+                    amount_neg=adj_amount_neg,
                 ))
-                _diag(f"  ADJ CONT 'interior': TRIM {int_amount:.6f} ft at midspan_u={midspan_u:.4f}")
+                _diag(f"  ADJ CONT 'interior': TRIM pos={int_amount_pos:.6f} neg={int_amount_neg:.6f} ft "
+                       f"at midspan_u={midspan_u:.4f}")
     else:
         _diag("  No midspan_u on continuous wall — skipping midspan adjustments")
 

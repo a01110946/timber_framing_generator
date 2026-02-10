@@ -38,7 +38,9 @@ from src.timber_framing_generator.wall_junctions.junction_types import (
     AdjustmentType,
     WallConnection,
     WallLayerInfo,
+    LayerAdjustment,
     JunctionGraph,
+    _serialize_adjustment,
 )
 
 
@@ -316,8 +318,8 @@ class TestTIntersection:
         t_adjs_for_a = [
             a for a in wall_a_adjs if a.junction_id in t_junction_ids
         ]
-        # One-sided: core + approach-side layer = 2 midspan adjustments
-        assert len(t_adjs_for_a) == 2
+        # One-sided: approach-side layer only (core runs continuously)
+        assert len(t_adjs_for_a) == 1
         # All should be midspan TRIM
         for adj in t_adjs_for_a:
             assert adj.end == "midspan"
@@ -1946,8 +1948,8 @@ class TestSummaryCornerSplit:
 class TestTIntersectionMidspan:
     """Tests for continuous wall midspan TRIM adjustments at T-intersections."""
 
-    def test_midspan_core_amount(self, t_intersection_walls):
-        """Continuous wall core midspan TRIM = half_terminating_core."""
+    def test_midspan_no_core_adjustment(self, t_intersection_walls):
+        """Continuous wall core should NOT get midspan TRIM (core runs continuously)."""
         graph = analyze_junctions(t_intersection_walls)
         wall_a_adjs = graph.get_adjustments_for_wall("wall_A")
         t_junction_ids = {
@@ -1955,12 +1957,10 @@ class TestTIntersectionMidspan:
             if n.junction_type == JunctionType.T_INTERSECTION
         }
         t_adjs = [a for a in wall_a_adjs if a.junction_id in t_junction_ids]
-        core_adj = [a for a in t_adjs if a.layer_name == "core"][0]
+        core_adjs = [a for a in t_adjs if a.layer_name == "core"]
 
-        # half_term_core = default wall_B core / 2
-        term_layers = build_default_wall_layers("wall_B", 0.3958)
-        expected = term_layers.core_thickness / 2.0
-        assert abs(core_adj.amount - expected) < 0.001
+        # Core runs continuously through T-intersections — no midspan gap
+        assert len(core_adjs) == 0
 
     def test_midspan_approach_side_amount(self, t_intersection_walls):
         """Continuous wall approach-side midspan TRIM = half_term_core (shifted).
@@ -2014,7 +2014,7 @@ class TestTIntersectionMidspan:
             a for a in wall_a_adjs
             if a.get("end") == "midspan"
         ]
-        assert len(midspan_adjs) == 2  # core + exterior only (one-sided)
+        assert len(midspan_adjs) == 1  # approach-side layer only (core runs continuously)
         for adj in midspan_adjs:
             assert "midspan_u" in adj
             assert abs(adj["midspan_u"] - 15.0) < 0.5
@@ -2050,12 +2050,10 @@ class TestTIntersectionMidspan:
             if a.junction_id in t_junction_ids and a.end == "midspan"
         ]
 
-        # One-sided: core + Gyp (interior only) = 2 (no OSB/exterior)
-        assert len(midspan_adjs) == 2
+        # One-sided: Gyp (interior only) = 1 (no core, no OSB/exterior)
+        assert len(midspan_adjs) == 1
 
         half_term_core = 0.292 / 2.0
-        core_adj = [a for a in midspan_adjs if a.layer_name == "core"][0]
-        assert abs(core_adj.amount - half_term_core) < 0.001
 
         # Shifted pattern: Gyp (layer 0) = half_term_core only
         gyp_adj = [a for a in midspan_adjs if a.layer_name == "Gyp"][0]
@@ -2285,11 +2283,11 @@ class TestMidspanOneSidedAndShifted:
         ]
 
         layer_names = {a.layer_name for a in midspan_adjs}
-        # Wall body on interior (-z) side → gap core + Gyp (interior)
-        assert "core" in layer_names
+        # Wall body on interior (-z) side → gap Gyp (interior only, core runs continuously)
         assert "Gyp" in layer_names
+        assert "core" not in layer_names  # core runs continuously
         assert "OSB" not in layer_names  # exterior not gapped
-        assert len(midspan_adjs) == 2
+        assert len(midspan_adjs) == 1
 
     def test_midspan_one_sided_exterior(self):
         """Wall B body is on the exterior side of wall A → gap exterior only.
@@ -2321,18 +2319,31 @@ class TestMidspanOneSidedAndShifted:
         ]
 
         layer_names = {a.layer_name for a in midspan_adjs}
-        # Wall body on exterior (+z) side → gap core + OSB (exterior)
-        assert "core" in layer_names
+        # Wall body on exterior (+z) side → gap OSB (exterior only, core runs continuously)
         assert "OSB" in layer_names
+        assert "core" not in layer_names  # core runs continuously
         assert "Gyp" not in layer_names  # interior not gapped
-        assert len(midspan_adjs) == 2
+        assert len(midspan_adjs) == 1
 
     def test_midspan_shifted_cumulative(self):
-        """Shifted cumulative pattern: layer 0 = half_term_core,
-        layer 1 = half_term_core + term_layer[0].thickness.
+        """Shifted cumulative pattern with asymmetric gap edges.
 
         Uses two interior layers to verify cumulative progression.
-        Wall B body is on interior side (dot < 0) for this geometry.
+        Wall B body is on interior side (dot_approach < 0) for this geometry.
+
+        Geometry:
+          Wall A: (0,0,0) -> (30,0,0), x_axis=(1,0,0), z_axis=(0,-1,0)
+          Wall B: (15,0,0) -> (15,10,0), z_axis=(1,0,0)
+
+          dot_term_z_cont_x = dot((1,0,0), (1,0,0)) = 1 >= 0
+          -> +U uses term_ext = [OSB(0.036)]
+          -> -U uses term_int = [Gyp(0.042), Paint(0.002)]
+
+        Shifted for interior layers (approach side, gapped):
+          layer 0 (Gyp): amount_pos = half_core = 0.146
+                         amount_neg = half_core = 0.146  (both shifted, cumul=0)
+          layer 1 (Paint): amount_pos = half_core + OSB(0.036) = 0.182
+                           amount_neg = half_core + Gyp(0.042) = 0.188
         """
         from tests.wall_junctions.conftest import create_mock_wall
 
@@ -2359,24 +2370,26 @@ class TestMidspanOneSidedAndShifted:
 
         half_term_core = 0.292 / 2.0
 
-        # core
-        core_adj = [a for a in midspan_adjs if a.layer_name == "core"][0]
-        assert abs(core_adj.amount - half_term_core) < 0.001
+        # core should NOT be in midspan adjustments (runs continuously)
+        core_adjs = [a for a in midspan_adjs if a.layer_name == "core"]
+        assert len(core_adjs) == 0
 
         # Interior layers (approach side for this geometry):
-        # _ordered_layers_core_outward("interior") returns layers as-is
-        # (interior layers are already core-outward in assembly order).
-        # Assembly int layers: [Gyp, Paint] → core-outward = [Gyp, Paint]
-        # term_int core-outward for wall_b: [Gyp, Paint]
-        #
-        # Shifted: layer 0 (Gyp) = half_term_core + 0 = half_term_core
+        # Shifted: layer 0 (Gyp) = half_term_core (both edges symmetric)
         gyp_adj = [a for a in midspan_adjs if a.layer_name == "Gyp"][0]
         assert abs(gyp_adj.amount - half_term_core) < 0.001
+        # Gyp layer 0: both edges = half_term_core (shifted starts at 0)
+        assert gyp_adj.amount_neg is None  # symmetric
 
-        # layer 1 (Paint) = half_term_core + term_int[0].thick = + 0.042
+        # layer 1 (Paint): asymmetric edges
+        # +U edge: half_term_core + OSB(0.036) = 0.182
+        # -U edge: half_term_core + Gyp(0.042) = 0.188
         paint_adj = [a for a in midspan_adjs if a.layer_name == "Paint"][0]
-        expected_paint = half_term_core + 0.042  # Gyp thickness
-        assert abs(paint_adj.amount - expected_paint) < 0.001
+        expected_paint_pos = half_term_core + 0.036  # OSB on +U side
+        expected_paint_neg = half_term_core + 0.042  # Gyp on -U side
+        assert abs(paint_adj.amount - expected_paint_pos) < 0.001
+        assert paint_adj.amount_neg is not None
+        assert abs(paint_adj.amount_neg - expected_paint_neg) < 0.001
 
     def test_x_crossing_both_sides_gapped(self):
         """X-crossing: both exterior and interior layers get midspan gaps.
@@ -2409,19 +2422,32 @@ class TestMidspanOneSidedAndShifted:
         ]
 
         layer_names = {a.layer_name for a in midspan_adjs}
-        # X-crossing: BOTH sides gapped → core + OSB + Gyp = 3
-        assert "core" in layer_names
+        # X-crossing: BOTH sides gapped → OSB + Gyp = 2 (core runs continuously)
         assert "OSB" in layer_names
         assert "Gyp" in layer_names
-        assert len(midspan_adjs) == 3
+        assert "core" not in layer_names  # core runs continuously
+        assert len(midspan_adjs) == 2
 
     def test_x_crossing_interlocking_amounts(self):
         """X-crossing: primary wall uses shifted, secondary uses full cumulative.
 
-        Primary (wall A) first layers → half_term_core (shifted: no extra)
-        Secondary (wall B) first layers → half_term_core + term_first_layer (full)
+        With asymmetric gaps, each edge of the gap is bounded by a different
+        side of the crossing wall. No finish filter — all layers contribute.
 
-        This creates interlocking gaps that don't overlap at the crossing.
+        Geometry:
+          Wall A: (0,10,0) -> (30,10,0), x_axis=(1,0,0), z_axis=(0,-1,0)
+          Wall B: (15,0,0) -> (15,20,0), z_axis=(1,0,0)
+
+        For Wall A (continuous, primary, shifted):
+          dot_term_z_cont_x = dot(B.z_axis, A.direction) = dot((1,0,0),(1,0,0)) = 1
+          -> +U uses term_ext(B) = [OSB(0.036)], -U uses term_int(B) = [Gyp(0.042)]
+          Shifted first layer: amount_pos = half_core, amount_neg = half_core (symmetric)
+
+        For Wall B (continuous, secondary, full):
+          dot_term_z_cont_x = dot(A.z_axis, B.direction) = dot((0,-1,0),(0,1,0)) = -1
+          -> +U uses term_int(A) = [Gyp(0.042)], -U uses term_ext(A) = [OSB(0.036)]
+          Full: OSB amount_pos = half_core + 0.042 = 0.188, amount_neg = half_core + 0.036 = 0.182
+                Gyp amount_pos = half_core + 0.042 = 0.188, amount_neg = half_core + 0.036 = 0.182
         """
         from tests.wall_junctions.conftest import create_mock_wall
 
@@ -2444,7 +2470,8 @@ class TestMidspanOneSidedAndShifted:
         half_b_core = 0.292 / 2  # = 0.146
         half_a_core = 0.292 / 2  # = 0.146
 
-        # Wall A (primary) — shifted cumulative: first layers = half_term_core
+        # Wall A (primary) — shifted cumulative
+        # dot_term_z_cont_x = 1 -> +U = term_ext = [OSB], -U = term_int = [Gyp]
         wall_a_adjs = graph.get_adjustments_for_wall("A")
         a_midspan = [
             a for a in wall_a_adjs
@@ -2452,31 +2479,424 @@ class TestMidspanOneSidedAndShifted:
         ]
         a_osb = [a for a in a_midspan if a.layer_name == "OSB"][0]
         a_gyp = [a for a in a_midspan if a.layer_name == "Gyp"][0]
-        # Primary: shifted → first ext/int layer amount = half_term_core only
+        # Primary shifted: first layers = half_term_core (both edges)
         assert abs(a_osb.amount - half_b_core) < 1e-6, (
-            f"Wall A OSB expected {half_b_core}, got {a_osb.amount}"
+            f"Wall A OSB amount_pos expected {half_b_core}, got {a_osb.amount}"
         )
         assert abs(a_gyp.amount - half_b_core) < 1e-6, (
-            f"Wall A Gyp expected {half_b_core}, got {a_gyp.amount}"
+            f"Wall A Gyp amount_pos expected {half_b_core}, got {a_gyp.amount}"
         )
+        # Both edges symmetric at layer 0 (shifted cumulative starts at 0)
+        assert a_osb.amount_neg is None, "Wall A OSB should be symmetric"
+        assert a_gyp.amount_neg is None, "Wall A Gyp should be symmetric"
 
-        # Wall B (secondary) — full cumulative: first layers = half_term_core + term_first_layer
+        # Wall B (secondary) — full cumulative
+        # dot_term_z_cont_x = -1 -> +U = term_int(A) = [Gyp(0.042)], -U = term_ext(A) = [OSB(0.036)]
         wall_b_adjs = graph.get_adjustments_for_wall("B")
         b_midspan = [
             a for a in wall_b_adjs
             if a.junction_id in x_junction_ids and a.end == "midspan"
         ]
+        # Secondary has core midspan now (X-crossing secondary core terminates)
+        b_core = [a for a in b_midspan if a.layer_name == "core"]
+        assert len(b_core) == 1, "Wall B should have core midspan TRIM"
+        assert abs(b_core[0].amount - half_a_core) < 1e-6
+
         b_osb = [a for a in b_midspan if a.layer_name == "OSB"][0]
         b_gyp = [a for a in b_midspan if a.layer_name == "Gyp"][0]
-        # Secondary: full → first ext layer = half_term_core + term_ext[0].thickness
-        #   ext: term_ext = [OSB (substrate)] → full: half_core + 0.036
-        #   int: term_int = [] (Gyp is finish, filtered at X-crossing) → full: half_core + 0
-        expected_b_osb = half_a_core + 0.036  # half_core + OSB thickness
-        expected_b_gyp = half_a_core  # no structural int layers → half_core only
-        assert abs(b_osb.amount - expected_b_osb) < 1e-6, (
-            f"Wall B OSB expected {expected_b_osb}, got {b_osb.amount}"
+        # Secondary full: +U = Gyp(0.042), -U = OSB(0.036)
+        # amount_pos = half_core + 0.042 = 0.188
+        # amount_neg = half_core + 0.036 = 0.182
+        expected_b_pos = half_a_core + 0.042  # Gyp on +U side
+        expected_b_neg = half_a_core + 0.036  # OSB on -U side
+        assert abs(b_osb.amount - expected_b_pos) < 1e-6, (
+            f"Wall B OSB amount_pos expected {expected_b_pos}, got {b_osb.amount}"
         )
-        assert abs(b_gyp.amount - expected_b_gyp) < 1e-6, (
-            f"Wall B Gyp expected {expected_b_gyp}, got {b_gyp.amount}"
+        assert abs(b_gyp.amount - expected_b_pos) < 1e-6, (
+            f"Wall B Gyp amount_pos expected {expected_b_pos}, got {b_gyp.amount}"
+        )
+        assert b_osb.amount_neg is not None
+        assert abs(b_osb.amount_neg - expected_b_neg) < 1e-6, (
+            f"Wall B OSB amount_neg expected {expected_b_neg}, got {b_osb.amount_neg}"
+        )
+        assert b_gyp.amount_neg is not None
+        assert abs(b_gyp.amount_neg - expected_b_neg) < 1e-6, (
+            f"Wall B Gyp amount_neg expected {expected_b_neg}, got {b_gyp.amount_neg}"
+        )
+
+
+# =============================================================================
+# Asymmetric Midspan Gap Tests
+# =============================================================================
+
+
+class TestAsymmetricMidspanGaps:
+    """Tests for asymmetric gap amounts at midspan adjustments.
+
+    When the terminating wall has different exterior and interior layer
+    thicknesses, the gap should be asymmetric: one edge is bounded by
+    the term's exterior layers, the other by term's interior layers.
+    """
+
+    def test_x_crossing_asymmetric_gap_amounts(self):
+        """X-crossing with different ext/int thicknesses produces asymmetric gap.
+
+        Wall A: (0,10,0) -> (30,10,0), x_axis=(1,0,0), z_axis=(0,-1,0)
+        Wall B: (15,0,0) -> (15,20,0), z_axis=(1,0,0)
+
+        Assembly: ext=Siding(0.167ft), core=0.292, int=Gyp(0.042ft)
+
+        For Wall A (primary, shifted):
+          dot_term_z_cont_x = dot(B.z_axis, A.x_axis) = dot((1,0,0),(1,0,0)) = 1
+          +U uses term_ext = [Siding(0.167)], -U uses term_int = [Gyp(0.042)]
+          Shifted first layer: amount_pos = half_core, amount_neg = half_core (symmetric)
+
+        For Wall B (secondary, full):
+          dot_term_z_cont_x = dot(A.z_axis, B.x_axis) = dot((0,-1,0),(0,1,0)) = -1
+          +U uses term_int(A) = [Gyp(0.042)], -U uses term_ext(A) = [Siding(0.167)]
+          Full: amount_pos = half_core + 0.042 = 0.188
+                amount_neg = half_core + 0.167 = 0.313
+        """
+        from tests.wall_junctions.conftest import create_mock_wall
+
+        wall_a = create_mock_wall("A", (0, 10, 0), (30, 10, 0))
+        wall_b = create_mock_wall("B", (15, 0, 0), (15, 20, 0))
+        # Asymmetric: thick exterior siding, thin interior gypsum
+        wall_a["wall_assembly"] = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)]
+        )
+        wall_b["wall_assembly"] = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)]
+        )
+
+        graph = analyze_junctions([wall_a, wall_b])
+        x_junction_ids = {
+            n.id for n in graph.nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        }
+        half_core = 0.292 / 2  # = 0.146
+
+        # Wall A (primary, shifted) — no core midspan (primary core runs through)
+        a_adjs = graph.get_adjustments_for_wall("A")
+        a_midspan = [a for a in a_adjs if a.junction_id in x_junction_ids and a.end == "midspan"]
+        a_core = [a for a in a_midspan if a.layer_name == "core"]
+        assert len(a_core) == 0, "Primary wall A should have no core midspan"
+
+        # Wall B (secondary, full) — has core midspan (secondary terminates)
+        b_adjs = graph.get_adjustments_for_wall("B")
+        b_midspan = [a for a in b_adjs if a.junction_id in x_junction_ids and a.end == "midspan"]
+        b_core = [a for a in b_midspan if a.layer_name == "core"]
+        assert len(b_core) == 1, "Secondary wall B should have core midspan TRIM"
+
+        # Wall B non-core layers should have asymmetric amounts
+        b_layers = [a for a in b_midspan if a.layer_name != "core"]
+        assert len(b_layers) >= 1
+        for adj in b_layers:
+            assert adj.amount_neg is not None, (
+                f"Wall B {adj.layer_name} should have amount_neg (asymmetric gap)"
+            )
+            # +U = Gyp(0.042) -> half_core + 0.042
+            expected_pos = half_core + 0.042
+            assert abs(adj.amount - expected_pos) < 1e-6, (
+                f"Wall B {adj.layer_name} amount_pos expected {expected_pos}, got {adj.amount}"
+            )
+            # -U = Siding(0.167) -> half_core + 0.167
+            expected_neg = half_core + 0.167
+            assert abs(adj.amount_neg - expected_neg) < 1e-6, (
+                f"Wall B {adj.layer_name} amount_neg expected {expected_neg}, got {adj.amount_neg}"
+            )
+
+    def test_t_intersection_asymmetric_gap(self):
+        """T-intersection with asymmetric ext/int produces asymmetric midspan gap.
+
+        Wall A: (0,0,0) -> (30,0,0), z_axis=(0,-1,0)
+        Wall B: (15,0,0) -> (15,10,0), z_axis=(1,0,0)
+
+        dot_approach = dot(A.z_axis, outward(B)) = dot((0,-1,0),(0,1,0)) = -1
+        -> approach_side = interior -> gap interior layers only
+
+        dot_term_z_cont_x = dot(B.z_axis, A.x_axis) = dot((1,0,0),(1,0,0)) = 1
+        -> +U uses term_ext = [Siding(0.167)], -U uses term_int = [Gyp(0.042)]
+
+        Shifted for interior layer[0] (DryWall):
+          amount_pos = half_term_core + 0 = 0.146 (shifted: compute first)
+          amount_neg = half_term_core + 0 = 0.146 (shifted: compute first)
+          -> symmetric at layer 0
+        """
+        from tests.wall_junctions.conftest import create_mock_wall
+
+        wall_a = create_mock_wall("A", (0, 0, 0), (30, 0, 0))
+        wall_b = create_mock_wall("B", (15, 0, 0), (15, 10, 0), is_exterior=False)
+        # Wall B has very different ext vs int thicknesses
+        wall_a["wall_assembly"] = _make_assembly(
+            [("OSB", 0.036)], 0.292, [("DryWall", 0.042)]
+        )
+        wall_b["wall_assembly"] = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)]
+        )
+
+        graph = analyze_junctions([wall_a, wall_b])
+        t_junction_ids = {
+            n.id for n in graph.nodes.values()
+            if n.junction_type == JunctionType.T_INTERSECTION
+        }
+
+        a_adjs = graph.get_adjustments_for_wall("A")
+        midspan_adjs = [
+            a for a in a_adjs
+            if a.junction_id in t_junction_ids and a.end == "midspan"
+        ]
+
+        # Only interior layers gapped (approach side = interior)
+        layer_names = {a.layer_name for a in midspan_adjs}
+        assert "DryWall" in layer_names
+        assert "OSB" not in layer_names
+
+        # DryWall is first interior layer (shifted, cumul starts at 0)
+        # -> both edges = half_term_core = symmetric
+        half_term_core = 0.292 / 2.0
+        dw_adj = [a for a in midspan_adjs if a.layer_name == "DryWall"][0]
+        assert abs(dw_adj.amount - half_term_core) < 1e-6
+        # First layer with shifted: symmetric
+        assert dw_adj.amount_neg is None
+
+    def test_t_intersection_asymmetric_second_layer(self):
+        """T-intersection with two interior layers: second layer is asymmetric.
+
+        Wall A: (0,0,0) -> (30,0,0), z_axis=(0,-1,0)
+        Wall B: (15,0,0) -> (15,10,0), z_axis=(1,0,0)
+
+        dot_term_z_cont_x = dot((1,0,0),(1,0,0)) = 1
+        -> +U = term_ext = [Siding(0.167)], -U = term_int = [Gyp(0.042)]
+
+        Interior layer 1 (Paint):
+          Shifted cumulative: cumul_pos = Siding(0.167), cumul_neg = Gyp(0.042)
+          amount_pos = half_core + 0.167 = 0.313
+          amount_neg = half_core + 0.042 = 0.188
+        """
+        from tests.wall_junctions.conftest import create_mock_wall
+
+        wall_a = create_mock_wall("A", (0, 0, 0), (30, 0, 0))
+        wall_b = create_mock_wall("B", (15, 0, 0), (15, 10, 0), is_exterior=False)
+        wall_a["wall_assembly"] = _make_assembly(
+            [("OSB", 0.036)], 0.292, [("DryWall", 0.042), ("Paint", 0.002)]
+        )
+        wall_b["wall_assembly"] = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)]
+        )
+
+        graph = analyze_junctions([wall_a, wall_b])
+        t_junction_ids = {
+            n.id for n in graph.nodes.values()
+            if n.junction_type == JunctionType.T_INTERSECTION
+        }
+
+        a_adjs = graph.get_adjustments_for_wall("A")
+        midspan_adjs = [
+            a for a in a_adjs
+            if a.junction_id in t_junction_ids and a.end == "midspan"
+        ]
+
+        half_term_core = 0.292 / 2.0
+
+        # Paint is layer 1 (interior, shifted)
+        paint_adj = [a for a in midspan_adjs if a.layer_name == "Paint"][0]
+        expected_pos = half_term_core + 0.167  # Siding on +U
+        expected_neg = half_term_core + 0.042  # Gyp on -U
+        assert abs(paint_adj.amount - expected_pos) < 1e-6, (
+            f"Paint amount_pos expected {expected_pos}, got {paint_adj.amount}"
+        )
+        assert paint_adj.amount_neg is not None
+        assert abs(paint_adj.amount_neg - expected_neg) < 1e-6, (
+            f"Paint amount_neg expected {expected_neg}, got {paint_adj.amount_neg}"
+        )
+
+    def test_symmetric_walls_produce_equal_amounts(self):
+        """When ext and int structural thicknesses are equal, amount_neg is None.
+
+        Both walls have same ext and int thicknesses with substrate function
+        (not finish, which would be filtered at X-crossings).
+        """
+        from tests.wall_junctions.conftest import create_mock_wall
+
+        wall_a = create_mock_wall("A", (0, 10, 0), (30, 10, 0))
+        wall_b = create_mock_wall("B", (15, 0, 0), (15, 20, 0))
+        # Symmetric: both sides are substrate with same thickness.
+        # Use explicit layer dicts to set function="substrate" for interior.
+        symmetric_assembly = {
+            "layers": [
+                {"name": "OSB_ext", "side": "exterior", "function": "substrate", "thickness": 0.036},
+                {"name": "framing_core", "side": "core", "function": "structure", "thickness": 0.292},
+                {"name": "OSB_int", "side": "interior", "function": "substrate", "thickness": 0.036},
+            ]
+        }
+        wall_a["wall_assembly"] = symmetric_assembly
+        wall_b["wall_assembly"] = {
+            "layers": [
+                {"name": "OSB_ext", "side": "exterior", "function": "substrate", "thickness": 0.036},
+                {"name": "framing_core", "side": "core", "function": "structure", "thickness": 0.292},
+                {"name": "OSB_int", "side": "interior", "function": "substrate", "thickness": 0.036},
+            ]
+        }
+
+        graph = analyze_junctions([wall_a, wall_b])
+        x_junction_ids = {
+            n.id for n in graph.nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        }
+
+        for wall_id, adjs in graph.wall_adjustments.items():
+            x_adjs = [a for a in adjs if a.junction_id in x_junction_ids and a.end == "midspan"]
+            for adj in x_adjs:
+                # With symmetric layers, amount_neg should be None
+                # (both edges have the same amount)
+                assert adj.amount_neg is None, (
+                    f"Wall {wall_id} {adj.layer_name}: expected symmetric gap "
+                    f"(amount_neg=None), got amount_neg={adj.amount_neg}"
+                )
+
+    def test_amount_neg_serialization_roundtrip(self):
+        """Verify to_dict() / from_dict() preserves amount_neg."""
+        # Create an adjustment with amount_neg
+        adj = LayerAdjustment(
+            wall_id="W1",
+            end="midspan",
+            junction_id="j0",
+            layer_name="OSB",
+            adjustment_type=AdjustmentType.TRIM,
+            amount=0.182,
+            connecting_wall_id="W2",
+            midspan_u=15.0,
+            amount_neg=0.146,
+        )
+
+        # Serialize
+        serialized = _serialize_adjustment(adj)
+        assert "amount_neg" in serialized
+        assert abs(serialized["amount_neg"] - 0.146) < 1e-6
+        assert abs(serialized["amount"] - 0.182) < 1e-6
+
+        # Create another without amount_neg
+        adj_sym = LayerAdjustment(
+            wall_id="W1",
+            end="midspan",
+            junction_id="j0",
+            layer_name="Gyp",
+            adjustment_type=AdjustmentType.TRIM,
+            amount=0.146,
+            connecting_wall_id="W2",
+            midspan_u=15.0,
+        )
+        serialized_sym = _serialize_adjustment(adj_sym)
+        assert "amount_neg" not in serialized_sym
+
+    def test_amount_neg_in_junction_graph_serialization(self):
+        """Verify amount_neg survives JunctionGraph.to_dict() round-trip."""
+        from tests.wall_junctions.conftest import create_mock_wall
+
+        wall_a = create_mock_wall("A", (0, 10, 0), (30, 10, 0))
+        wall_b = create_mock_wall("B", (15, 0, 0), (15, 20, 0))
+        # Asymmetric assembly
+        wall_a["wall_assembly"] = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)]
+        )
+        wall_b["wall_assembly"] = _make_assembly(
+            [("Siding", 0.167)], 0.292, [("Gyp", 0.042)]
+        )
+
+        graph = analyze_junctions([wall_a, wall_b])
+        graph_dict = graph.to_dict()
+
+        # Check that amount_neg appears in serialized wall_adjustments
+        found_amount_neg = False
+        for wall_id, adjs in graph_dict["wall_adjustments"].items():
+            for adj in adjs:
+                if "amount_neg" in adj:
+                    found_amount_neg = True
+                    assert isinstance(adj["amount_neg"], float)
+
+        assert found_amount_neg, (
+            "Expected at least one adjustment with amount_neg in serialized graph"
+        )
+
+    def test_recompute_preserves_asymmetric_amounts(self):
+        """Recompute with asymmetric assemblies produces amount_neg."""
+        junctions_data = {
+            "junctions": [{
+                "id": "j0",
+                "position": {"x": 15, "y": 10, "z": 0},
+                "junction_type": "x_crossing",
+                "connections": [
+                    {
+                        "wall_id": "WA",
+                        "end": "midspan",
+                        "is_midspan": True,
+                        "midspan_u": 15.0,
+                        "wall_thickness": 0.5,
+                        "is_exterior": True,
+                        "direction": {"x": 1, "y": 0, "z": 0},
+                        "z_axis": {"x": 0, "y": -1, "z": 0},
+                    },
+                    {
+                        "wall_id": "WB",
+                        "end": "midspan",
+                        "is_midspan": True,
+                        "midspan_u": 10.0,
+                        "wall_thickness": 0.5,
+                        "is_exterior": True,
+                        "direction": {"x": 0, "y": 1, "z": 0},
+                        "z_axis": {"x": 1, "y": 0, "z": 0},
+                    },
+                ],
+            }],
+            "resolutions": [{
+                "junction_id": "j0",
+                "join_type": "butt",
+                "primary_wall_id": "WA",
+                "secondary_wall_id": "WB",
+                "confidence": 0.9,
+                "reason": "X-crossing",
+                "is_user_override": False,
+            }],
+        }
+
+        walls = [
+            {
+                "wall_id": "WA", "wall_thickness": 0.5, "wall_length": 30.0,
+                "base_plane": {
+                    "origin": {"x": 0, "y": 10, "z": 0},
+                    "x_axis": {"x": 1, "y": 0, "z": 0},
+                    "y_axis": {"x": 0, "y": 0, "z": 1},
+                    "z_axis": {"x": 0, "y": -1, "z": 0},
+                },
+                "wall_assembly": _make_assembly(
+                    [("Siding", 0.167)], 0.292, [("Gyp", 0.042)],
+                ),
+            },
+            {
+                "wall_id": "WB", "wall_thickness": 0.5, "wall_length": 20.0,
+                "base_plane": {
+                    "origin": {"x": 15, "y": 0, "z": 0},
+                    "x_axis": {"x": 0, "y": 1, "z": 0},
+                    "y_axis": {"x": 0, "y": 0, "z": 1},
+                    "z_axis": {"x": 1, "y": 0, "z": 0},
+                },
+                "wall_assembly": _make_assembly(
+                    [("Siding", 0.167)], 0.292, [("Gyp", 0.042)],
+                ),
+            },
+        ]
+        result = recompute_adjustments(junctions_data, walls)
+
+        # At least one wall should have amount_neg in its adjustments
+        found_amount_neg = False
+        for wall_id, adjs in result.items():
+            for adj in adjs:
+                if "amount_neg" in adj:
+                    found_amount_neg = True
+                    assert isinstance(adj["amount_neg"], float)
+
+        assert found_amount_neg, (
+            "Expected at least one recomputed adjustment with amount_neg"
         )
 

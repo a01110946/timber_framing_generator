@@ -116,7 +116,7 @@ Error Handling:
     - Empty results return valid JSON structure with zero counts
 
 Author: Timber Framing Generator
-Version: 1.0.0
+Version: 0.2.3
 """
 
 # =============================================================================
@@ -196,10 +196,10 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v2.2"
+COMPONENT_MESSAGE = "v2.6"
 
 # Version marker — confirms the updated script is running in GH
-print("[MLSheath] Script version v2.2 loaded (config_json consolidation + framing_system)")
+print("[MLSheath] Script version v2.6 loaded (crossed-pattern: pri_int TRIM, sec_int EXTEND at all L-corners)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -413,7 +413,9 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
     """Compute U-axis panel bounds from junction adjustments.
 
     Looks up the junction adjustments for a specific wall and face,
-    and returns the adjusted u_start_bound and u_end_bound.
+    and returns a list of (u_start, u_end) segments. For walls with no
+    midspan gaps, returns a single segment. For walls with midspan gaps
+    (T-intersections, X-crossings), returns multiple segments.
 
     ASSUMPTION: Adjustment 'amount' is measured from the wall's Revit
     centerline endpoint along the U-axis.
@@ -429,13 +431,15 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
         junctions_data: Parsed junctions_json dict, or None.
 
     Returns:
-        tuple: (u_start_bound, u_end_bound) in feet.
+        list: List of (u_start, u_end) segment tuples in feet.
+            Usually a single segment; multiple when midspan gaps exist.
     """
     u_start_bound = 0.0
     u_end_bound = wall_length
+    midspan_gaps = []  # List of (gap_center_u, amount_pos, amount_neg)
 
     if not junctions_data:
-        return u_start_bound, u_end_bound
+        return [(u_start_bound, u_end_bound)]
 
     # Use face directly as layer_name — the junction resolver emits
     # adjustments keyed by individual layer names OR aggregate face names.
@@ -454,23 +458,41 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
         adj_type = adj.get("adjustment_type")
         amount = adj.get("amount", 0.0)
 
-        if end == "start":
+        if end == "midspan":
+            # Midspan gap: asymmetric amounts for +U and -U edges.
+            # amount = positive-U edge, amount_neg = negative-U edge (defaults to amount).
+            gap_u = adj.get("midspan_u", 0.0)
+            amount_neg = adj.get("amount_neg")
+            if amount_neg is None:
+                amount_neg = amount
+            midspan_gaps.append((gap_u, amount, amount_neg))
+            log_info(
+                f"    BOUNDS-APPLY wall={wall_id} layer='{layer_name}' "
+                f"end=midspan {adj_type} amount_pos={amount:.6f} amount_neg={amount_neg:.6f} ft "
+                f"midspan_u={gap_u:.6f} -> gap at [{gap_u - amount_neg:.6f}, {gap_u + amount:.6f}]"
+            )
+        elif end == "start":
             if adj_type == "extend":
                 u_start_bound = -amount  # Extend before wall start
             elif adj_type == "trim":
                 u_start_bound = amount   # Trim after wall start
+            log_info(
+                f"    BOUNDS-APPLY wall={wall_id} layer='{layer_name}' "
+                f"end={end} {adj_type} amount={amount:.6f} ft ({amount*12:.4f} in) "
+                f"-> u_start={u_start_bound:.6f} u_end={u_end_bound:.6f} "
+                f"(wall_length={wall_length:.6f})"
+            )
         elif end == "end":
             if adj_type == "extend":
                 u_end_bound = wall_length + amount  # Extend past wall end
             elif adj_type == "trim":
                 u_end_bound = wall_length - amount  # Trim before wall end
-
-        log_info(
-            f"    BOUNDS-APPLY wall={wall_id} layer='{layer_name}' "
-            f"end={end} {adj_type} amount={amount:.6f} ft ({amount*12:.4f} in) "
-            f"-> u_start={u_start_bound:.6f} u_end={u_end_bound:.6f} "
-            f"(wall_length={wall_length:.6f})"
-        )
+            log_info(
+                f"    BOUNDS-APPLY wall={wall_id} layer='{layer_name}' "
+                f"end={end} {adj_type} amount={amount:.6f} ft ({amount*12:.4f} in) "
+                f"-> u_start={u_start_bound:.6f} u_end={u_end_bound:.6f} "
+                f"(wall_length={wall_length:.6f})"
+            )
 
     if not matched_any and wall_adjustments:
         log_info(
@@ -479,7 +501,39 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
             f"Available layer_names: {sorted(set(a.get('layer_name') for a in wall_adjustments))}"
         )
 
-    return u_start_bound, u_end_bound
+    # If no midspan gaps, return the single segment
+    if not midspan_gaps:
+        return [(u_start_bound, u_end_bound)]
+
+    # Split the single segment into sub-segments around midspan gaps.
+    # Sort gaps by U-coordinate.
+    midspan_gaps.sort(key=lambda g: g[0])
+
+    segments = []
+    current_start = u_start_bound
+    for gap_u, gap_amount_pos, gap_amount_neg in midspan_gaps:
+        gap_left = gap_u - gap_amount_neg
+        gap_right = gap_u + gap_amount_pos
+        # Add segment from current_start to gap_left (if positive length)
+        if gap_left > current_start + 0.001:
+            segments.append((current_start, gap_left))
+        current_start = gap_right
+
+    # Add final segment from last gap to u_end_bound
+    if u_end_bound > current_start + 0.001:
+        segments.append((current_start, u_end_bound))
+
+    log_info(
+        f"    BOUNDS-SPLIT wall={wall_id} layer='{layer_name}': "
+        f"{len(midspan_gaps)} midspan gaps -> {len(segments)} segments"
+    )
+    for i, (seg_s, seg_e) in enumerate(segments):
+        log_info(
+            f"      segment[{i}]: u=[{seg_s:.6f}, {seg_e:.6f}] "
+            f"length={seg_e - seg_s:.6f} ft"
+        )
+
+    return segments if segments else [(u_start_bound, u_end_bound)]
 
 
 def process_walls(walls_json, base_config, layer_configs, include_functions,
@@ -532,18 +586,6 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
     else:
         log_error("walls_json must be a dict or list")
         return [], [], "Error: Invalid format", ["Invalid walls_json format"]
-
-    # Ensure base_plane.z_axis matches the wall's exterior_normal.
-    # wall_helpers.py guarantees y_axis=(0,0,1) for framing; as a result
-    # z_axis = cross(x, y_up) which may disagree with wall.Orientation
-    # for non-standard walls.  When exterior_normal is available, use it
-    # as the authoritative z_axis for sheathing face determination.
-    for wall in walls_list:
-        en = wall.get("exterior_normal")
-        if en and isinstance(en, dict):
-            bp = wall.get("base_plane")
-            if bp and isinstance(bp, dict):
-                bp["z_axis"] = en
 
     # Inject framing_hint into wall dicts for assembly resolution (Option B).
     # When framing_json is connected, each wall gets a hint with its stud
@@ -675,12 +717,12 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
             for al in assembly_layers:
                 lname = al.get("name")
                 if lname and lname in adj_layer_names:
-                    u_start, u_end = compute_sheathing_bounds(
+                    segments = compute_sheathing_bounds(
                         wall_id, wall_length, lname, junctions_data
                     )
-                    face_bounds[lname] = (u_start, u_end)
+                    face_bounds[lname] = segments
                     log_info(
-                        f"  layer '{lname}' bounds: u=[{u_start:.4f}, {u_end:.4f}] "
+                        f"  layer '{lname}' bounds: {len(segments)} segment(s) "
                         f"(ADJUSTED, wall_length={wall_length:.4f})"
                     )
                 elif lname:
@@ -691,27 +733,29 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
 
             # Aggregate face-level bounds (fallback for layers not matched by name)
             for bf in set(faces) | {"core"}:
-                u_start, u_end = compute_sheathing_bounds(
+                segments = compute_sheathing_bounds(
                     wall_id, wall_length, bf, junctions_data
                 )
-                face_bounds[bf] = (u_start, u_end)
-                matched = "ADJUSTED" if (u_start != 0.0 or u_end != wall_length) else "unchanged"
+                face_bounds[bf] = segments
+                seg0 = segments[0] if segments else (0.0, wall_length)
+                matched = "ADJUSTED" if (len(segments) != 1 or abs(seg0[0]) > 0.0001 or abs(seg0[1] - wall_length) > 0.0001) else "unchanged"
                 log_info(
-                    f"  face '{bf}' bounds: u=[{u_start:.4f}, {u_end:.4f}] "
+                    f"  face '{bf}' bounds: {len(segments)} segment(s) "
                     f"({matched}, wall_length={wall_length:.4f})"
                 )
 
             log_info(f"  BOUNDS-DIAG final face_bounds keys: {sorted(face_bounds.keys())}")
             log_info(f"  BOUNDS-DIAG final face_bounds values:")
             for bk, bv in sorted(face_bounds.items()):
-                u_s, u_e = bv
-                changed_start = "ADJUSTED" if abs(u_s) > 0.0001 else "default"
-                changed_end = "ADJUSTED" if abs(u_e - wall_length) > 0.0001 else "default"
-                log_info(
-                    f"    '{bk}': u_start={u_s:.6f} ({changed_start}), "
-                    f"u_end={u_e:.6f} ({changed_end}), "
-                    f"effective_length={u_e - u_s:.6f} ft ({(u_e - u_s)*12:.4f} in)"
-                )
+                for si, (u_s, u_e) in enumerate(bv):
+                    changed_start = "ADJUSTED" if abs(u_s) > 0.0001 else "default"
+                    changed_end = "ADJUSTED" if abs(u_e - wall_length) > 0.0001 else "default"
+                    seg_label = f"[{si}]" if len(bv) > 1 else ""
+                    log_info(
+                        f"    '{bk}'{seg_label}: u_start={u_s:.6f} ({changed_start}), "
+                        f"u_end={u_e:.6f} ({changed_end}), "
+                        f"effective_length={u_e - u_s:.6f} ft ({(u_e - u_s)*12:.4f} in)"
+                    )
 
             # Resolve per-wall framing depth.
             # Explicit framing_depth (from config) overrides per-wall detection.
@@ -947,6 +991,7 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
         # The Junction Analyzer runs on raw Revit walls (Phase 1) and may
         # only have single-core-layer data. After assembly resolution,
         # we recompute adjustments with the real multi-layer assemblies.
+        phase2_log = []  # Captured for visible log output
         if junctions_data and junctions_data.get("resolutions"):
             try:
                 # Parse walls for assembly resolution
@@ -980,34 +1025,41 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
                 new_count = sum(len(v) for v in recomputed.values())
                 junctions_data["wall_adjustments"] = recomputed
 
-                log_info(
-                    f"Phase 2 recompute: {old_count} best-effort adjustments "
-                    f"-> {new_count} assembly-aware adjustments"
+                phase2_msg = (
+                    f"Phase 2 recompute: {old_count} -> {new_count} adjustments"
                 )
+                log_info(phase2_msg)
+                phase2_log.append(f"=== PHASE 2 RECOMPUTE (resolver v2.3-crossed-pattern) ===")
+                phase2_log.append(phase2_msg)
 
-                # Diagnostic: dump recomputed adjustments
+                # Diagnostic: dump recomputed adjustments (console + log)
                 for wid, adjs in recomputed.items():
                     log_info(f"  RECOMPUTED wall {wid}: {len(adjs)} adjustments")
+                    phase2_log.append(f"  Wall {wid}: {len(adjs)} adjustments")
                     for adj in adjs:
-                        log_info(
-                            f"    layer={adj.get('layer_name')} "
-                            f"end={adj.get('end')} "
-                            f"type={adj.get('adjustment_type')} "
-                            f"amount={adj.get('amount', 0):.6f} ft "
+                        adj_line = (
+                            f"    {adj.get('layer_name')} "
+                            f"[{adj.get('end')}] "
+                            f"{adj.get('adjustment_type').upper()} "
+                            f"{adj.get('amount', 0):.6f} ft "
                             f"({adj.get('amount', 0) * 12:.4f} in) "
-                            f"vs={adj.get('connecting_wall_id')}"
+                            f"vs {adj.get('connecting_wall_id')}"
                         )
+                        log_info(adj_line)
+                        phase2_log.append(adj_line)
             except Exception as e:
                 log_warning(
                     f"Phase 2 recompute failed, using Phase 1 adjustments: {e}"
                 )
+                phase2_log.append(f"Phase 2 FAILED: {e}")
                 import traceback as _tb
                 print(_tb.format_exc())
         elif junctions_data:
-            log_info(
+            phase2_log.append(
                 "No resolutions in junctions_json (old format?) — "
                 "using Phase 1 adjustments as-is"
             )
+            log_info(phase2_log[-1])
 
         # Process walls
         results, summary_lines, stats_text, log_lines = process_walls(
@@ -1017,6 +1069,10 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             framing_system=framing_system,
             framing_depth=framing_depth, framing_data=framing_data,
         )
+
+        # Prepend Phase 2 recompute log to visible output
+        if phase2_log:
+            log_lines = phase2_log + [""] + log_lines
 
         # Serialize results to JSON
         multi_layer_json_output = json.dumps(results, indent=2)

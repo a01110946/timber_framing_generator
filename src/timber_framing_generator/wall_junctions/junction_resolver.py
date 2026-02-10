@@ -42,7 +42,7 @@ DIAG_ENABLED = True
 
 # Version marker — printed on import to confirm updated code is loaded.
 # Bump this value whenever the adjustment logic changes.
-_RESOLVER_VERSION = "2.8-no-finish-filter"
+_RESOLVER_VERSION = "2.8-primary-dominates-butt"
 print(f"[JUNC-RESOLVER] junction_resolver.py version {_RESOLVER_VERSION} loaded")
 
 
@@ -965,9 +965,25 @@ def _calculate_t_intersection_adjustments(
         _diag(f"  midspan_cumulative = {midspan_cumulative}")
 
         if terminating_assembly_layers and continuous_assembly_layers:
-            term_ext = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
-            term_int = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
-            _diag(f"  term_ext: {len(term_ext)} layers, term_int: {len(term_int)} layers")
+            term_ext_all = _ordered_layers_core_outward(terminating_assembly_layers, "exterior")
+            term_int_all = _ordered_layers_core_outward(terminating_assembly_layers, "interior")
+            if midspan_only:
+                # X-crossing: filter out finish-function layers for gap sizing.
+                # At crossings, finish layers (siding, gypsum) are co-planar
+                # with the continuous wall's finish — they don't create
+                # additional barriers. Only substrate/structure matter.
+                term_ext = [l for l in term_ext_all if l.get("function") != "finish"]
+                term_int = [l for l in term_int_all if l.get("function") != "finish"]
+                _diag(f"  term_ext: {len(term_ext_all)} total, {len(term_ext)} structural "
+                       f"(filtered {len(term_ext_all) - len(term_ext)} finish layers)")
+                _diag(f"  term_int: {len(term_int_all)} total, {len(term_int)} structural "
+                       f"(filtered {len(term_int_all) - len(term_int)} finish layers)")
+            else:
+                # T-intersection: terminating wall stops here — ALL its layers
+                # (including finish) are physical barriers for gap sizing.
+                term_ext = term_ext_all
+                term_int = term_int_all
+                _diag(f"  term_ext: {len(term_ext)} layers, term_int: {len(term_int)} layers")
 
             # Continuous wall core: midspan TRIM by half_term_core (always)
             adjustments.append(LayerAdjustment(

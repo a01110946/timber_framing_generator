@@ -2470,9 +2470,9 @@ class TestMidspanOneSidedAndShifted:
         b_gyp = [a for a in b_midspan if a.layer_name == "Gyp"][0]
         # Secondary: full → first ext layer = half_term_core + term_ext[0].thickness
         #   ext: term_ext = [OSB (substrate)] → full: half_core + 0.036
-        #   int: term_int = [Gyp (finish)] → full: half_core + 0.042
+        #   int: term_int = [] (Gyp is finish, filtered at X-crossing) → full: half_core + 0
         expected_b_osb = half_a_core + 0.036  # half_core + OSB thickness
-        expected_b_gyp = half_a_core + 0.042  # half_core + Gyp thickness
+        expected_b_gyp = half_a_core  # no structural int layers → half_core only
         assert abs(b_osb.amount - expected_b_osb) < 1e-6, (
             f"Wall B OSB expected {expected_b_osb}, got {b_osb.amount}"
         )

@@ -304,6 +304,12 @@ def _get_layer_config(
         if resolved:
             config["material"] = resolved
 
+    # Pass assembly layer thickness so the panel geometry uses the actual
+    # layer thickness instead of the catalog material's hardcoded value.
+    layer_thickness_ft = layer.get("thickness")
+    if layer_thickness_ft is not None and layer_thickness_ft > 0:
+        config["layer_thickness_inches"] = layer_thickness_ft * 12.0
+
     # User overrides take highest priority
     if base_config:
         for key, value in base_config.items():
@@ -438,35 +444,50 @@ def generate_assembly_layers(
         # Resolve per-layer junction bounds.
         # Try individual layer name first (per-layer cumulative
         # adjustments), then fall back to aggregate face key.
+        # Values may be either (u_start, u_end) tuples (legacy) or
+        # lists of (u_start, u_end) segment tuples (midspan gaps).
         bounds_source = "default(no face_bounds)"
+        raw_bounds = None
         if face_bounds and name in face_bounds:
-            layer_u_start, layer_u_end = face_bounds[name]
+            raw_bounds = face_bounds[name]
             bounds_source = f"individual_layer_name='{name}'"
         elif face_bounds and face in face_bounds:
-            layer_u_start, layer_u_end = face_bounds[face]
+            raw_bounds = face_bounds[face]
             bounds_source = f"aggregate_face='{face}'"
-        else:
-            layer_u_start = u_start_bound
-            layer_u_end = u_end_bound
+
+        # Normalize to list of (u_start, u_end) segments
+        if raw_bounds is None:
+            segments = [(u_start_bound, u_end_bound)]
             bounds_source = f"fallback(u_start_bound={u_start_bound}, u_end_bound={u_end_bound})"
+        elif isinstance(raw_bounds, list) and raw_bounds and isinstance(raw_bounds[0], (list, tuple)):
+            segments = raw_bounds
+        else:
+            # Legacy (u_start, u_end) tuple
+            segments = [raw_bounds]
 
         print(
             f"[MLG-DIAG] Wall {wall_id} layer '{name}' (side={side}, face={face}): "
             f"bounds_source={bounds_source} -> "
-            f"u_start={layer_u_start if layer_u_start is not None else 'None'}, "
-            f"u_end={layer_u_end if layer_u_end is not None else 'None'}"
+            f"{len(segments)} segment(s)"
         )
 
-        # Generate panels using SheathingGenerator
+        # Generate panels using SheathingGenerator — once per segment.
+        # Multiple segments arise from midspan gaps (T-intersections,
+        # X-crossings) where the continuous wall sheathing is split.
+        panels = []
+        summary = {}
         try:
-            generator = SheathingGenerator(
-                wall_data, layer_config,
-                u_start_bound=layer_u_start,
-                u_end_bound=layer_u_end,
-                layer_name=name,
-            )
-            panels = generator.generate_sheathing(face=face)
-            summary = generator.get_material_summary(panels)
+            for seg_u_start, seg_u_end in segments:
+                generator = SheathingGenerator(
+                    wall_data, layer_config,
+                    u_start_bound=seg_u_start,
+                    u_end_bound=seg_u_end,
+                    layer_name=name,
+                )
+                seg_panels = generator.generate_sheathing(face=face)
+                panels.extend(seg_panels)
+            if panels:
+                summary = generator.get_material_summary(panels)
         except Exception:
             panels = []
             summary = {}

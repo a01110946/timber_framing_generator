@@ -241,6 +241,15 @@ class SheathingGenerator:
             sheathing_type = SheathingType(sheathing_type)
         self.material = get_sheathing_material(material_name, sheathing_type)
 
+        # Override panel thickness with actual assembly layer thickness when
+        # provided.  The catalog material profile has a hardcoded thickness
+        # (e.g., osb_7_16 = 0.4375") which is wrong for custom assemblies
+        # where the user specifies arbitrary layer thicknesses.
+        layer_thickness_inches = self.config.get("layer_thickness_inches")
+        if layer_thickness_inches is not None and layer_thickness_inches > 0:
+            from dataclasses import replace
+            self.material = replace(self.material, thickness_inches=layer_thickness_inches)
+
         # Parse openings
         self.openings = self._parse_openings(wall_data.get("openings", []))
 

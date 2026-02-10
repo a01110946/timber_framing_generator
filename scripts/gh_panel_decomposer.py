@@ -5,18 +5,33 @@ Decomposes framed walls into manufacturable panels with optimized joint placemen
 Handles wall corner geometry adjustments for accurate panel dimensions suitable
 for offsite construction and prefabrication workflows.
 
+Reads ``framing_segments`` from enriched walls_json (output by Junction
+Analyzer) so that panels are created within junction-adjusted framing bounds
+rather than the raw ``[0, wall_length]`` range. Walls with adjusted segments
+are panelized per-segment; multi-segment walls (e.g., X-crossing splits)
+produce independent panel runs that are merged into a single result.
+
 Key Features:
 1. Panel Decomposition
    - Splits walls into panels respecting max length constraints
    - Optimizes joint locations using dynamic programming
    - Aligns joints with stud locations for structural support
 
-2. Corner Adjustment Calculation
+2. Framing-Segment-Aware Panelization
+   - Reads ``framing_segments`` per wall (list of [u_start, u_end] pairs)
+   - Panels created within segment bounds (extended, trimmed, split)
+   - Multi-segment walls produce one panel run per segment
+   - Openings filtered and shifted to segment-local coords for optimizer
+   - Panel U coords shifted back to wall-absolute space after optimization
+   - Backward compatible: absent framing_segments defaults to full wall
+
+3. Corner Adjustment Calculation
    - Detects wall corners from endpoint proximity
    - Calculates extend/recede adjustments for face-to-face dimensions
    - Applies adjustments to panel geometry output (not Revit walls)
+   - Segment-aware walls skip this step (junctions already handled)
 
-3. Exclusion Zone Handling
+4. Exclusion Zone Handling
    - Avoids joints near openings (12" per GA-216)
    - Avoids joints near wall corners (24" default)
    - Respects shear panel boundaries
@@ -32,12 +47,14 @@ Dependencies:
     - timber_framing_generator.panels: Core panelization logic
 
 Performance Considerations:
-    - DP algorithm is O(n²) where n = number of stud positions
+    - DP algorithm is O(n^2) where n = number of stud positions
     - Typical walls process in < 100ms
-    - Corner detection is O(w²) where w = number of walls
+    - Corner detection is O(w^2) where w = number of walls
+    - Multi-segment walls add one panelization pass per segment
 
 Usage:
-    1. Connect 'walls_json' from Wall Analyzer component
+    1. Connect 'walls_json' from Junction Analyzer (enriched with framing_segments)
+       or from Wall Analyzer (backward compatible without segments)
     2. Optionally connect 'framing_json' from Framing Generator (for stud-aligned joints)
     3. Configure panel constraints (max_length, joint offsets, etc.)
     4. Set 'run' to True to execute
@@ -49,7 +66,8 @@ Usage:
 
 Input Requirements:
     walls_json (walls_json) - str:
-        JSON string from Wall Analyzer component containing wall geometry
+        JSON string from Junction Analyzer (enriched with framing_segments)
+        or from Wall Analyzer (backward compatible without segments).
         Required: Yes
         Access: Item
 
@@ -99,15 +117,18 @@ Outputs:
 Technical Details:
     - Panel geometry uses adjusted dimensions (not Revit centerlines)
     - Corner adjustments stored in results but don't modify Revit
+    - Segment-aware walls use junction bounds directly (no extra corner detection)
+    - Multi-segment panel U coords are in wall-absolute space after shift-back
     - Use gh_wall_corner_adjuster.py to apply changes to Revit walls
 
 Error Handling:
     - Invalid JSON returns empty outputs with error in debug_info
     - Missing optional inputs use sensible defaults
+    - Missing framing_segments falls back to full wall range
     - Processing errors logged but don't halt execution
 
 Author: Timber Framing Generator
-Version: 1.0.0
+Version: 1.1.0
 """
 
 # =============================================================================
@@ -134,7 +155,9 @@ from Grasshopper.Kernel.Data import GH_Path
 # Force Module Reload (CPython 3 in Rhino 8)
 # =============================================================================
 
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k
+                     or k == 'src']
 for mod in _modules_to_clear:
     del sys.modules[mod]
 
@@ -142,13 +165,21 @@ for mod in _modules_to_clear:
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path
+# Fallback: main repo path (for modules not yet in the worktree)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.panels import (
     PanelConfig,
     decompose_all_walls,
+    decompose_wall_to_panels,
 )
 from src.timber_framing_generator.utils.geometry_factory import get_factory
 
@@ -158,7 +189,7 @@ from src.timber_framing_generator.utils.geometry_factory import get_factory
 
 COMPONENT_NAME = "Panel Decomposer"
 COMPONENT_NICKNAME = "PanelDecomp"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v1.1"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Panels"
 
@@ -384,8 +415,119 @@ def create_joint_point(u_coord, wall_data):
         return None
 
 
+def _has_adjusted_segments(wall_data):
+    """Check if a wall has non-default framing segments.
+
+    Returns True when ``framing_segments`` is present and differs from
+    the default ``[[0, wall_length]]``.
+    """
+    segments = wall_data.get("framing_segments")
+    if not segments:
+        return False
+    wall_length = wall_data.get("wall_length", 0)
+    if len(segments) == 1:
+        seg = segments[0]
+        if abs(seg[0]) < 1e-6 and abs(seg[1] - wall_length) < 1e-6:
+            return False
+    return True
+
+
+def _panelize_segment(wall_data, seg_start, seg_end, seg_idx, config):
+    """Panelize a single framing segment of a wall.
+
+    Creates a working copy of *wall_data* with ``wall_length`` set to
+    the segment length and openings shifted into segment-local coords.
+    Calls ``decompose_wall_to_panels()`` in ``[0, seg_length]`` space,
+    then shifts resulting panel U coords back to wall-absolute coords.
+
+    Corner adjustments are skipped because the junction system has
+    already computed the correct segment bounds.
+
+    Args:
+        wall_data: Original wall dict (not mutated).
+        seg_start: Segment start U in wall-absolute feet.
+        seg_end: Segment end U in wall-absolute feet.
+        seg_idx: Segment index (for panel IDs).
+        config: PanelConfig instance.
+
+    Returns:
+        PanelResults dict with U coords in wall-absolute space.
+    """
+    seg_length = seg_end - seg_start
+    wall_id = wall_data.get("wall_id", "unknown")
+
+    # Build segment-local wall data
+    working = dict(wall_data)
+    working["wall_length"] = seg_length
+
+    # Prefix wall_id for multi-segment to get unique panel IDs
+    if seg_idx is not None:
+        working["wall_id"] = f"{wall_id}_seg{seg_idx}"
+
+    # Filter and shift openings into segment-local coords
+    local_openings = []
+    for o in wall_data.get("openings", []):
+        o_start = o.get("u_start", 0)
+        o_end = o.get("u_end", 0)
+        # Opening must overlap segment
+        if o_end > seg_start and o_start < seg_end:
+            shifted = dict(o)
+            shifted["u_start"] = max(o_start - seg_start, 0)
+            shifted["u_end"] = min(o_end - seg_start, seg_length)
+            local_openings.append(shifted)
+    working["openings"] = local_openings
+
+    # Panelize in [0, seg_length] space (no extra corner_adjustments)
+    result = decompose_wall_to_panels(working, None, config)
+
+    # Shift U coords back to wall-absolute space
+    for panel in result.get("panels", []):
+        panel["u_start"] += seg_start
+        panel["u_end"] += seg_start
+        # Shift corner geometry
+        corners = panel.get("corners", {})
+        _shift_corners_u(corners, seg_start, wall_data)
+
+    for joint in result.get("joints", []):
+        joint["u_coord"] += seg_start
+
+    # Restore original wall_id in result
+    result["wall_id"] = wall_id
+
+    return result
+
+
+def _shift_corners_u(corners, u_offset, wall_data):
+    """Shift panel corner positions by a U offset along the wall X axis.
+
+    Recalculates corner XY from the wall's base_plane to ensure correct
+    world coordinates after the segment-local → absolute shift.
+
+    Args:
+        corners: Panel corners dict (bottom_left, bottom_right, etc.).
+            **Modified in place.**
+        u_offset: U offset to add (feet).
+        wall_data: Original wall data with base_plane for direction.
+    """
+    base_plane = wall_data.get("base_plane", {})
+    x_axis = base_plane.get("x_axis", {"x": 1, "y": 0, "z": 0})
+    dx = x_axis.get("x", 1) * u_offset
+    dy = x_axis.get("y", 0) * u_offset
+
+    for key in ("bottom_left", "bottom_right", "top_right", "top_left"):
+        pt = corners.get(key, {})
+        if isinstance(pt, dict):
+            pt["x"] = pt.get("x", 0) + dx
+            pt["y"] = pt.get("y", 0) + dy
+
+
 def process_panelization(walls_data, framing_data, config):
     """Process walls through panelization pipeline.
+
+    Reads ``framing_segments`` per wall (injected by Junction Analyzer).
+    Walls with adjusted segments are panelized per-segment; walls without
+    segments (or with default ``[[0, wall_length]]``) go through the
+    standard ``decompose_all_walls()`` path.
 
     Args:
         walls_data: List of wall dictionaries
@@ -397,12 +539,75 @@ def process_panelization(walls_data, framing_data, config):
     """
     log_info(f"Processing {len(walls_data)} walls")
 
-    all_results = decompose_all_walls(walls_data, framing_data, config)
+    # Separate walls into segment-aware and default groups
+    default_walls = []
+    default_indices = []
+    segment_walls = []
+    segment_indices = []
 
+    for idx, wd in enumerate(walls_data):
+        if _has_adjusted_segments(wd):
+            segment_walls.append(wd)
+            segment_indices.append(idx)
+        else:
+            default_walls.append(wd)
+            default_indices.append(idx)
+
+    # Process default walls through standard pipeline (with corner detection)
+    default_framing = None
+    if framing_data and default_walls:
+        default_framing = [
+            framing_data[i] if i < len(framing_data) else None
+            for i in default_indices
+        ]
+    default_results = (
+        decompose_all_walls(default_walls, default_framing, config)
+        if default_walls else []
+    )
+
+    # Process segment-aware walls per-segment
+    segment_results = []
+    for wd in segment_walls:
+        segments = wd.get("framing_segments", [])
+        wall_id = wd.get("wall_id", "unknown")
+        wall_seg_results = []
+
+        for si, (seg_s, seg_e) in enumerate(segments):
+            seg_idx = si if len(segments) > 1 else None
+            result = _panelize_segment(wd, seg_s, seg_e, seg_idx, config)
+            wall_seg_results.append(result)
+
+        if len(wall_seg_results) == 1:
+            segment_results.append(wall_seg_results[0])
+        else:
+            # Merge multi-segment results into one entry per wall
+            merged_panels = []
+            merged_joints = []
+            for r in wall_seg_results:
+                merged_panels.extend(r.get("panels", []))
+                merged_joints.extend(r.get("joints", []))
+            segment_results.append({
+                "wall_id": wall_id,
+                "panels": merged_panels,
+                "joints": merged_joints,
+                "corner_adjustments": [],
+                "total_panel_count": len(merged_panels),
+                "original_wall_length": wd.get("wall_length", 0),
+                "adjusted_wall_length": sum(s[1] - s[0] for s in segments),
+                "metadata": {"framing_segments": segments},
+            })
+
+    # Rebuild results in original wall order
+    all_results = [None] * len(walls_data)
+    for i, idx in enumerate(default_indices):
+        all_results[idx] = default_results[i]
+    for i, idx in enumerate(segment_indices):
+        all_results[idx] = segment_results[i]
+
+    # Build visualization trees
     panel_curves = DataTree[object]()
     joint_points = DataTree[object]()
     info_lines = []
-
     total_panels = 0
     total_joints = 0
 
@@ -412,15 +617,20 @@ def process_panelization(walls_data, framing_data, config):
         joints = result["joints"]
         wall_data = walls_data[wall_idx] if wall_idx < len(walls_data) else {}
 
-        info_lines.append(f"Wall {wall_id}: {len(panels)} panels, {len(joints)} joints")
+        seg_tag = ""
+        if wall_idx in segment_indices:
+            n_segs = len(walls_data[wall_idx].get("framing_segments", []))
+            seg_tag = f" ({n_segs} segment{'s' if n_segs > 1 else ''})"
 
-        # Create panel curves
+        info_lines.append(
+            f"Wall {wall_id}{seg_tag}: {len(panels)} panels, {len(joints)} joints"
+        )
+
         for panel_idx, panel in enumerate(panels):
             curve = create_panel_boundary_curve(panel["corners"])
             if curve:
                 panel_curves.Add(curve, GH_Path(wall_idx, panel_idx))
 
-        # Create joint points
         for joint_idx, joint in enumerate(joints):
             point = create_joint_point(joint["u_coord"], wall_data)
             if point:

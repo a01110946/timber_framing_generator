@@ -6,6 +6,11 @@ geometry data and outputs per-layer extension/trim adjustments. This component
 sits between the Wall Analyzer and downstream framing/sheathing generators,
 providing each with the exact adjustment amounts needed at every wall end.
 
+Additionally, computes ``framing_segments`` from core layer adjustments and
+emits an enriched ``walls_json`` so that all downstream components (Cell
+Decomposer, Panel Decomposer, Framing Generator, MEP Router) operate on
+correct junction-adjusted framing boundaries.
+
 Key Features:
 1. Junction Detection and Classification
    - L-corners (two walls meeting at an angle)
@@ -19,7 +24,13 @@ Key Features:
    - Per-wall layer thickness overrides (exterior, core, interior)
    - User overrides for individual junction resolutions
 
-3. Debug Visualization
+3. Framing Segment Enrichment
+   - Reads core EXTEND / TRIM / midspan-split adjustments
+   - Computes ``framing_segments`` per wall (list of [u_start, u_end] pairs)
+   - Outputs enriched walls_json with segments for downstream consumption
+   - Original wall_length and base_curve data preserved untouched
+
+4. Debug Visualization
    - Junction node points at intersection locations
    - Wall edge lines from start to end point
    - Uses RhinoCommonFactory for correct assembly output
@@ -34,6 +45,7 @@ Dependencies:
     - Grasshopper: Component framework and data structures
     - json: Serialization of wall and junction data
     - timber_framing_generator.wall_junctions: Junction analysis pipeline
+    - timber_framing_generator.wall_junctions.core_adjustment: Framing segments
     - timber_framing_generator.utils.geometry_factory: RhinoCommonFactory
 
 Performance Considerations:
@@ -46,7 +58,8 @@ Usage:
     2. Optionally configure tolerance, join type, priority via 'config_json'
     3. Set 'run' to True to execute
     4. Connect 'junctions_json' to downstream framing/sheathing components
-    5. View 'summary' for junction counts and resolution statistics
+    5. Connect 'walls_json_out' to Cell Decomposer (enriched with framing_segments)
+    6. View 'summary' for junction counts and resolution statistics
 
 Input Requirements:
     Walls JSON (walls_json) - str:
@@ -85,6 +98,12 @@ Outputs:
     Graph Lines (graph_lines) - List[LineCurve]:
         Wall edges (start to end) for debug visualization.
 
+    Walls JSON (walls_json_out) - str:
+        Enriched walls_json with ``framing_segments`` per wall. Each wall dict
+        gains a ``framing_segments`` key: a list of ``[u_start, u_end]`` pairs
+        defining effective framing runs. Original fields (wall_length,
+        base_curve_start/end) are preserved unchanged.
+
     Summary (summary) - str:
         Human-readable junction summary with counts and statistics.
 
@@ -96,15 +115,18 @@ Technical Details:
     - T-intersections detected via perpendicular projection onto wall midspans
     - Priority strategy determines which wall extends vs trims at butt joins
     - All geometry output uses RhinoCommonFactory to avoid assembly mismatch
+    - Framing segments computed from core LayerAdjustments after junction resolution
+    - Default segment for walls with no core adjustments: [[0, wall_length]]
 
 Error Handling:
     - Invalid walls_json returns empty outputs with error in log
     - Invalid config_json falls back to defaults with warning
     - Individual wall processing failures do not halt the pipeline
     - Empty wall list produces valid but empty junction graph
+    - Framing segment computation failure falls back to original walls_json
 
 Author: Fernando Maytorena
-Version: 1.0.0
+Version: 1.6.0
 """
 
 # =============================================================================
@@ -159,6 +181,9 @@ sys.path.insert(0, _MAIN_REPO_PATH)
 sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.wall_junctions import analyze_junctions
+from src.timber_framing_generator.wall_junctions.core_adjustment import (
+    compute_framing_segments,
+)
 from src.timber_framing_generator.utils.geometry_factory import get_factory
 from src.timber_framing_generator.config.assembly_resolver import (
     resolve_all_walls,
@@ -171,10 +196,10 @@ from src.timber_framing_generator.config.assembly_resolver import (
 
 COMPONENT_NAME = "Junction Analyzer"
 COMPONENT_NICKNAME = "JnxAnl"
-COMPONENT_MESSAGE = "v1.5-diag"
+COMPONENT_MESSAGE = "v1.6-framing-seg"
 
 # Version marker — confirms the updated script is running in GH
-print("[JnxAnl] Script version v1.5-diag loaded (worktree path + assembly resolution + diagnostics)")
+print("[JnxAnl] Script version v1.6-framing-seg loaded (worktree + assembly + framing_segments)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "0-Analysis"
 
@@ -288,6 +313,8 @@ def setup_component() -> None:
          "Junction node positions for debug visualization"),
         ("Graph Lines", "graph_lines",
          "Wall edges (start to end) for debug visualization"),
+        ("Walls JSON", "walls_json_out",
+         "Enriched walls_json with framing_segments per wall"),
         ("Summary", "summary",
          "Human-readable junction summary"),
         ("Log", "log",
@@ -516,11 +543,15 @@ def build_summary_text(graph, walls_data: list = None) -> str:
 
     stats = graph._build_summary()
 
+    ext_c = stats.get('exterior_corners', 0)
+    int_c = stats.get('interior_corners', 0)
+    l_detail = f"  ({ext_c} exterior, {int_c} interior)" if (ext_c + int_c) > 0 else ""
+
     lines = [
-        "=== Junction Analysis Summary (v1.1) ===",
+        "=== Junction Analysis Summary (v1.2) ===",
         "",
         f"Total Junctions: {stats['total_junctions']}",
-        f"  L-Corners:        {stats['l_corners']}",
+        f"  L-Corners:        {stats['l_corners']}{l_detail}",
         f"  T-Intersections:  {stats['t_intersections']}",
         f"  X-Crossings:      {stats['x_crossings']}",
         f"  Free Ends:        {stats['free_ends']}",
@@ -794,7 +825,7 @@ def main(
         run_input: Boolean trigger.
 
     Returns:
-        tuple: (junctions_json, graph_pts, graph_lines, summary, log)
+        tuple: (junctions_json, graph_pts, graph_lines, walls_json_out, summary, log)
     """
     setup_component()
 
@@ -804,6 +835,7 @@ def main(
     graph_lines = []
     summary_text = ""
     log_lines = []
+    walls_json_out = ""
 
     try:
         # Validate inputs
@@ -812,7 +844,7 @@ def main(
             if error_msg and "not running" not in error_msg.lower():
                 log_warning(error_msg)
             log_lines.append(error_msg or "Validation failed")
-            return junctions_json, graph_pts, graph_lines, summary_text, "\n".join(log_lines)
+            return junctions_json, graph_pts, graph_lines, walls_json_out, summary_text, "\n".join(log_lines)
 
         log_lines.append("Junction Analyzer v1.1-diag")
         log_lines.append("Inputs validated successfully")
@@ -1041,6 +1073,28 @@ def main(
         graph_dict = graph.to_dict()
         junctions_json = json.dumps(graph_dict, indent=2)
 
+        # Enrich walls with framing_segments from core adjustments
+        try:
+            enriched_walls = compute_framing_segments(graph_dict, walls_data)
+            walls_json_out = json.dumps(enriched_walls, indent=2)
+            seg_count = sum(
+                len(w.get("framing_segments", []))
+                for w in enriched_walls
+            )
+            multi_seg = sum(
+                1 for w in enriched_walls
+                if len(w.get("framing_segments", [])) > 1
+            )
+            log_lines.append(
+                f"Framing segments: {seg_count} segments across "
+                f"{len(enriched_walls)} walls ({multi_seg} multi-segment)"
+            )
+        except Exception as e:
+            log_warning(f"Framing segment computation failed: {e}")
+            log_lines.append(f"Framing segments FAILED: {e}")
+            # Fallback: pass through original walls_json unchanged
+            walls_json_out = json.dumps(walls_data, indent=2)
+
         # Build summary (pass walls_data for assembly inspection)
         summary_text = build_summary_text(graph, walls_data)
 
@@ -1056,7 +1110,10 @@ def main(
         log_lines.append("")
         log_lines.append("=== RESULTS ===")
         log_lines.append(f"Junctions found: {stats.get('total_junctions', 0)}")
-        log_lines.append(f"  L-Corners: {stats.get('l_corners', 0)}")
+        ext_c = stats.get('exterior_corners', 0)
+        int_c = stats.get('interior_corners', 0)
+        l_detail = f" ({ext_c} exterior, {int_c} interior)" if (ext_c + int_c) > 0 else ""
+        log_lines.append(f"  L-Corners: {stats.get('l_corners', 0)}{l_detail}")
         log_lines.append(f"  T-Intersections: {stats.get('t_intersections', 0)}")
         log_lines.append(f"  X-Crossings: {stats.get('x_crossings', 0)}")
         log_lines.append(f"  Free Ends: {stats.get('free_ends', 0)}")
@@ -1086,7 +1143,7 @@ def main(
         log_lines.append(f"Error: {type(e).__name__}: {e}")
         log_lines.append(traceback.format_exc())
 
-    return junctions_json, graph_pts, graph_lines, summary_text, "\n".join(log_lines)
+    return junctions_json, graph_pts, graph_lines, walls_json_out, summary_text, "\n".join(log_lines)
 
 # =============================================================================
 # Execution
@@ -1095,7 +1152,7 @@ def main(
 # Resolve GH global inputs with safe defaults.
 # In GHPython, input variables are injected as globals based on NickName.
 # NOTE: After pasting this script, you may need to:
-#   1. Set the correct number of inputs (3) and outputs (6, including 'out')
+#   1. Set the correct number of inputs (3) and outputs (7, including 'out')
 #   2. Right-click each input and set type hints:
 #      Input 0 (walls_json): str
 #      Input 1 (config_json): str
@@ -1117,6 +1174,6 @@ except NameError:
     _run = False
 
 if __name__ == "__main__":
-    junctions_json, graph_pts, graph_lines, summary, log = main(
+    junctions_json, graph_pts, graph_lines, walls_json_out, summary, log = main(
         _walls_json, _config_json, _run
     )

@@ -5,18 +5,31 @@ Decomposes wall data into cells (stud regions, opening regions, cripple regions)
 and serializes to JSON format. Supports both whole-wall and panel-aware
 decomposition for offsite construction workflows.
 
+Reads ``framing_segments`` from enriched walls_json (output by Junction
+Analyzer) so that cells are created within junction-adjusted framing
+bounds rather than the raw ``[0, wall_length]`` range. Multi-segment walls
+(e.g., X-crossing splits) produce one CellData entry per segment.
+
 Key Features:
 1. Cell Decomposition
    - Splits walls into stud cells (SC), opening cells (OC)
    - Creates header cripple cells (HCC) above openings
    - Creates sill cripple cells (SCC) below windows
 
-2. Panel-Aware Mode
+2. Framing-Segment-Aware Decomposition
+   - Reads ``framing_segments`` per wall (list of [u_start, u_end] pairs)
+   - Cells created within adjusted framing bounds (extended, trimmed, split)
+   - Multi-segment walls produce one CellData per segment
+   - Cell IDs include segment index for multi-segment walls (wall_1_seg0_SC_0)
+   - CellData metadata includes segment_u_start, segment_u_end, segment_index
+   - Backward compatible: absent framing_segments defaults to [0, wall_length]
+
+3. Panel-Aware Mode
    - Integrates with Panel Decomposer output
    - Decomposes cells within panel boundaries
    - Generates panel-aware cell IDs (wall_1_panel_0_SC_0)
 
-3. Legacy Mode
+4. Legacy Mode
    - Works without Panel Decomposer
    - Decomposes entire walls as single units
    - Backward compatible with existing workflows
@@ -35,22 +48,25 @@ Dependencies:
 Performance Considerations:
     - Processing time scales linearly with wall count
     - Panel-aware mode adds overhead per panel
+    - Multi-segment walls add one decomposition pass per segment
     - Typical walls process in < 50ms
 
 Usage:
     Option A - Without panelization (legacy mode):
-        1. Connect 'wall_json' from Wall Analyzer
+        1. Connect 'wall_json' from Junction Analyzer (enriched walls_json)
+           or from Wall Analyzer (original walls_json, backward compatible)
         2. Leave 'panels_json' empty
         3. Set 'run' to True to execute
 
     Option B - With panelization (recommended for offsite construction):
-        1. Connect 'wall_json' from Wall Analyzer
+        1. Connect 'wall_json' from Junction Analyzer or Wall Analyzer
         2. Connect 'panels_json' from Panel Decomposer
         3. Set 'run' to True to execute
 
 Input Requirements:
     Walls JSON (wall_json) - str:
-        JSON string from Wall Analyzer component
+        JSON string from Junction Analyzer (enriched with framing_segments)
+        or from Wall Analyzer (backward compatible without segments).
         Required: Yes
         Access: Item
 
@@ -78,17 +94,20 @@ Outputs:
         Debug information and status messages
 
 Technical Details:
-    - Cell IDs without panels: wall_1_SC_0
+    - Cell IDs without panels or segments: wall_1_SC_0
+    - Cell IDs with segments: wall_1_seg0_SC_0
     - Cell IDs with panels: wall_1_panel_0_SC_0
-    - Openings clipped to panel boundaries
+    - Openings filtered to segment/panel range before decomposition
+    - CellData metadata includes segment bounds for downstream consumers
 
 Error Handling:
     - Invalid JSON returns empty outputs with error in debug_info
     - Missing panels falls back to legacy mode
+    - Missing framing_segments falls back to full wall range
     - Processing errors logged but don't halt execution
 
 Author: Timber Framing Generator
-Version: 1.1.0
+Version: 1.2.0
 """
 
 # =============================================================================
@@ -577,12 +596,23 @@ def decompose_panel_to_cells(wall_dict, panel, wall_index, panel_index):
     return cell_data, surfaces, type_labels
 
 
-def decompose_wall_json_to_cells(wall_dict, wall_index):
-    """Decompose a single wall from JSON to cells (legacy mode).
+def decompose_wall_json_to_cells(wall_dict, wall_index, seg_start=None, seg_end=None, seg_idx=None):
+    """Decompose a single wall (or wall segment) from JSON to cells (legacy mode).
+
+    When *seg_start*/*seg_end* are provided, cells are created within
+    those bounds instead of the full ``[0, wall_length]`` range.  This
+    supports framing-segment-aware decomposition where junction
+    adjustments extend, trim, or split the wall's framing domain.
 
     Args:
-        wall_dict: Wall data dictionary from JSON
-        wall_index: Index for this wall
+        wall_dict: Wall data dictionary from JSON.
+        wall_index: Index for this wall.
+        seg_start: Optional framing segment start U in feet.
+            Defaults to 0 when ``None``.
+        seg_end: Optional framing segment end U in feet.
+            Defaults to ``wall_length`` when ``None``.
+        seg_idx: Optional segment index for multi-segment walls.
+            When not ``None``, added to cell IDs and CellData metadata.
 
     Returns:
         Tuple of (CellData, list of surfaces, list of type labels)
@@ -592,37 +622,57 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
     wall_height = wall_dict.get('wall_height', 0)
     base_elevation = wall_dict.get('base_elevation', 0)
 
+    # Effective framing bounds (may differ from 0 / wall_length)
+    eff_start = seg_start if seg_start is not None else 0
+    eff_end = seg_end if seg_end is not None else wall_length
+
     base_plane = wall_dict.get('base_plane', {})
     origin = base_plane.get('origin', {'x': 0, 'y': 0, 'z': 0})
     x_axis = base_plane.get('x_axis', {'x': 1, 'y': 0, 'z': 0})
 
+    # ID prefix — include segment index when multi-segment
+    id_prefix = f"{wall_id}_seg{seg_idx}" if seg_idx is not None else wall_id
+
     cells = []
     surfaces = []
     type_labels = []
-    openings = wall_dict.get('openings', [])
+    all_openings = wall_dict.get('openings', [])
 
-    log_debug(f"Wall {wall_id}: L={wall_length:.2f}, H={wall_height:.2f}, {len(openings)} openings")
+    # Filter openings to those overlapping this segment
+    openings = [
+        o for o in all_openings
+        if o.get('u_end', 0) > eff_start and o.get('u_start', 0) < eff_end
+    ]
+
+    log_debug(f"Wall {wall_id} seg=[{eff_start:.3f}, {eff_end:.3f}]: "
+              f"H={wall_height:.2f}, {len(openings)}/{len(all_openings)} openings")
 
     if not openings:
         corners = CellCorners(
-            bottom_left=Point3D(origin['x'], origin['y'], base_elevation),
+            bottom_left=Point3D(
+                origin['x'] + x_axis['x'] * eff_start,
+                origin['y'] + x_axis['y'] * eff_start,
+                base_elevation),
             bottom_right=Point3D(
-                origin['x'] + x_axis['x'] * wall_length,
-                origin['y'] + x_axis['y'] * wall_length,
+                origin['x'] + x_axis['x'] * eff_end,
+                origin['y'] + x_axis['y'] * eff_end,
                 base_elevation
             ),
             top_right=Point3D(
-                origin['x'] + x_axis['x'] * wall_length,
-                origin['y'] + x_axis['y'] * wall_length,
+                origin['x'] + x_axis['x'] * eff_end,
+                origin['y'] + x_axis['y'] * eff_end,
                 base_elevation + wall_height
             ),
-            top_left=Point3D(origin['x'], origin['y'], base_elevation + wall_height),
+            top_left=Point3D(
+                origin['x'] + x_axis['x'] * eff_start,
+                origin['y'] + x_axis['y'] * eff_start,
+                base_elevation + wall_height),
         )
         cell = CellInfo(
-            id=f"{wall_id}_SC_0",
+            id=f"{id_prefix}_SC_0",
             cell_type="SC",
-            u_start=0,
-            u_end=wall_length,
+            u_start=eff_start,
+            u_end=eff_end,
             v_start=0,
             v_end=wall_height,
             corners=corners,
@@ -634,7 +684,7 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
         type_labels.append("SC")
     else:
         sorted_openings = sorted(openings, key=lambda o: o.get('u_start', 0))
-        current_u = 0
+        current_u = eff_start
         cell_idx = 0
 
         for opening in sorted_openings:
@@ -670,7 +720,7 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
                     ),
                 )
                 cell = CellInfo(
-                    id=f"{wall_id}_SC_{cell_idx}",
+                    id=f"{id_prefix}_SC_{cell_idx}",
                     cell_type="SC",
                     u_start=current_u,
                     u_end=o_u_start,
@@ -710,7 +760,7 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
                     ),
                 )
                 cell = CellInfo(
-                    id=f"{wall_id}_HCC_{cell_idx}",
+                    id=f"{id_prefix}_HCC_{cell_idx}",
                     cell_type="HCC",
                     u_start=o_u_start,
                     u_end=o_u_end,
@@ -750,7 +800,7 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
                 ),
             )
             cell = CellInfo(
-                id=f"{wall_id}_OC_{cell_idx}",
+                id=f"{id_prefix}_OC_{cell_idx}",
                 cell_type="OC",
                 u_start=o_u_start,
                 u_end=o_u_end,
@@ -792,7 +842,7 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
                     ),
                 )
                 cell = CellInfo(
-                    id=f"{wall_id}_SCC_{cell_idx}",
+                    id=f"{id_prefix}_SCC_{cell_idx}",
                     cell_type="SCC",
                     u_start=o_u_start,
                     u_end=o_u_end,
@@ -811,7 +861,7 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
             current_u = o_u_end
 
         # Final stud cell after last opening
-        if current_u < wall_length:
+        if current_u < eff_end:
             corners = CellCorners(
                 bottom_left=Point3D(
                     origin['x'] + x_axis['x'] * current_u,
@@ -819,13 +869,13 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
                     base_elevation
                 ),
                 bottom_right=Point3D(
-                    origin['x'] + x_axis['x'] * wall_length,
-                    origin['y'] + x_axis['y'] * wall_length,
+                    origin['x'] + x_axis['x'] * eff_end,
+                    origin['y'] + x_axis['y'] * eff_end,
                     base_elevation
                 ),
                 top_right=Point3D(
-                    origin['x'] + x_axis['x'] * wall_length,
-                    origin['y'] + x_axis['y'] * wall_length,
+                    origin['x'] + x_axis['x'] * eff_end,
+                    origin['y'] + x_axis['y'] * eff_end,
                     base_elevation + wall_height
                 ),
                 top_left=Point3D(
@@ -835,10 +885,10 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
                 ),
             )
             cell = CellInfo(
-                id=f"{wall_id}_SC_{cell_idx}",
+                id=f"{id_prefix}_SC_{cell_idx}",
                 cell_type="SC",
                 u_start=current_u,
-                u_end=wall_length,
+                u_end=eff_end,
                 v_start=0,
                 v_end=wall_height,
                 corners=corners,
@@ -849,13 +899,63 @@ def decompose_wall_json_to_cells(wall_dict, wall_index):
                 surfaces.append(srf)
             type_labels.append("SC")
 
+    # Build metadata — include segment info when applicable
+    meta = {
+        'wall_length': wall_length,
+        'wall_height': wall_height,
+        'segment_u_start': eff_start,
+        'segment_u_end': eff_end,
+    }
+    if seg_idx is not None:
+        meta['segment_index'] = seg_idx
+
     cell_data = CellData(
         wall_id=wall_id,
         cells=cells,
-        metadata={'wall_length': wall_length, 'wall_height': wall_height}
+        metadata=meta,
     )
 
     return cell_data, surfaces, type_labels
+
+
+def _decompose_wall_by_segments(wall_dict, wall_idx):
+    """Decompose a wall into cells, iterating framing segments if present.
+
+    Reads the ``framing_segments`` field (injected by Junction Analyzer)
+    and calls :func:`decompose_wall_json_to_cells` once per segment.
+    Falls back to the full ``[0, wall_length]`` range when the field is
+    absent — fully backward compatible.
+
+    Args:
+        wall_dict: Wall data dictionary from JSON.
+        wall_idx: Index for this wall.
+
+    Returns:
+        List of ``(CellData, surfaces, type_labels)`` tuples, one per
+        framing segment.
+    """
+    segments = wall_dict.get('framing_segments')
+    results = []
+
+    if segments and len(segments) > 1:
+        # Multi-segment wall (e.g., X-crossing splits)
+        for si, (seg_s, seg_e) in enumerate(segments):
+            results.append(decompose_wall_json_to_cells(
+                wall_dict, wall_idx,
+                seg_start=seg_s, seg_end=seg_e, seg_idx=si,
+            ))
+    elif segments and len(segments) == 1:
+        # Single segment — bounds may differ from [0, wall_length]
+        seg_s, seg_e = segments[0]
+        results.append(decompose_wall_json_to_cells(
+            wall_dict, wall_idx,
+            seg_start=seg_s, seg_end=seg_e,
+        ))
+    else:
+        # No framing_segments — default full wall (backward compatible)
+        results.append(decompose_wall_json_to_cells(wall_dict, wall_idx))
+
+    return results
 
 
 def process_decomposition(wall_list, panels_data):
@@ -889,17 +989,16 @@ def process_decomposition(wall_list, panels_data):
                 wall_panels = get_panels_for_wall(panels_data, wall_id)
 
                 if not wall_panels:
-                    log_lines.append(f"Wall {wall_idx} ({wall_id}): No panels, using whole-wall mode")
-                    cell_data, surfaces, type_labels = decompose_wall_json_to_cells(wall_dict, wall_idx)
-                    all_cell_data.append(cell_data)
-
-                    for j, srf in enumerate(surfaces):
-                        cell_srf.Add(srf, GH_Path(tree_idx, j))
-                    for j, label in enumerate(type_labels):
-                        cell_types.Add(label, GH_Path(tree_idx, j))
-
-                    log_lines.append(f"  Cells: {len(cell_data.cells)}")
-                    tree_idx += 1
+                    log_lines.append(f"Wall {wall_idx} ({wall_id}): No panels, using segment mode")
+                    seg_results = _decompose_wall_by_segments(wall_dict, wall_idx)
+                    for cell_data, surfaces, type_labels in seg_results:
+                        all_cell_data.append(cell_data)
+                        for j, srf in enumerate(surfaces):
+                            cell_srf.Add(srf, GH_Path(tree_idx, j))
+                        for j, label in enumerate(type_labels):
+                            cell_types.Add(label, GH_Path(tree_idx, j))
+                        log_lines.append(f"  Segment: {len(cell_data.cells)} cells")
+                        tree_idx += 1
                 else:
                     log_lines.append(f"Wall {wall_idx} ({wall_id}): {len(wall_panels)} panels")
 
@@ -918,16 +1017,20 @@ def process_decomposition(wall_list, panels_data):
                         log_lines.append(f"  Panel {panel_idx}: {len(cell_data.cells)} cells")
                         tree_idx += 1
             else:
-                cell_data, surfaces, type_labels = decompose_wall_json_to_cells(wall_dict, wall_idx)
-                all_cell_data.append(cell_data)
+                seg_results = _decompose_wall_by_segments(wall_dict, wall_idx)
+                for cell_data, surfaces, type_labels in seg_results:
+                    all_cell_data.append(cell_data)
+                    for j, srf in enumerate(surfaces):
+                        cell_srf.Add(srf, GH_Path(tree_idx, j))
+                    for j, label in enumerate(type_labels):
+                        cell_types.Add(label, GH_Path(tree_idx, j))
 
-                for j, srf in enumerate(surfaces):
-                    cell_srf.Add(srf, GH_Path(tree_idx, j))
-                for j, label in enumerate(type_labels):
-                    cell_types.Add(label, GH_Path(tree_idx, j))
-
-                log_lines.append(f"Wall {wall_idx} ({wall_id}): {len(cell_data.cells)} cells")
-                tree_idx += 1
+                    seg_info = cell_data.metadata.get('segment_index', '-')
+                    log_lines.append(
+                        f"Wall {wall_idx} ({wall_id}) seg {seg_info}: "
+                        f"{len(cell_data.cells)} cells"
+                    )
+                    tree_idx += 1
 
         except Exception as e:
             log_lines.append(f"Wall {wall_idx}: ERROR - {str(e)}")

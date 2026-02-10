@@ -43,6 +43,8 @@ from .junction_resolver import (
     build_default_wall_layers,
 )
 
+from .core_adjustment import compute_framing_segments
+
 __all__ = [
     # Main entry points
     "analyze_junctions",
@@ -68,4 +70,6 @@ __all__ = [
     "build_wall_layers_map",
     "build_wall_adjustments_map",
     "build_default_wall_layers",
+    # Core adjustment
+    "compute_framing_segments",
 ]

@@ -5,6 +5,12 @@ Generates framing elements using the strategy pattern based on material type.
 Outputs JSON data (no geometry) for downstream geometry conversion. Supports
 multiple material systems through a modular strategy architecture.
 
+Reads segment metadata from Cell Decomposer (``segment_u_start``,
+``segment_u_end``) and injects ``_segment_bounds`` into wall data so that
+the WBC (Wall Boundary Cell) is built at the correct junction-adjusted U
+range. This propagates extend/trim/split adjustments into plates, studs,
+and all framing elements.
+
 Key Features:
 1. Multi-Material Support
    - Timber framing (2x4, 2x6, etc.)
@@ -17,7 +23,13 @@ Key Features:
    - Cripple studs above/below openings
    - End studs at wall and panel boundaries
 
-3. Panel-Aware Framing
+3. Junction-Aware Framing
+   - Reads segment bounds from cell_data metadata
+   - Injects _segment_bounds into wall data for WBC construction
+   - Framing elements correctly extend/trim at L-corners and T-intersections
+   - Multi-segment walls (X-crossings) produce independent framing runs
+
+4. Panel-Aware Framing
    - Passes panel_id through element metadata
    - Supports panelization-before-framing workflow
    - Enables per-panel framing for prefab construction
@@ -40,14 +52,16 @@ Performance Considerations:
 
 Usage:
     1. Connect 'cell_json' from Cell Decomposer
-    2. Connect 'walls_json' from Wall Analyzer
+    2. Connect 'walls_json' from Wall Analyzer (or Junction Analyzer enriched)
     3. Set 'material_type' to "timber" or "cfs"
     4. Set 'run' to True to execute
     5. Connect 'framing_json' to Geometry Converter component
 
 Input Requirements:
     Cell JSON (cell_json) - str:
-        JSON string from Cell Decomposer with cell decomposition data
+        JSON string from Cell Decomposer with cell decomposition data.
+        May include segment metadata (segment_u_start, segment_u_end) from
+        junction-adjusted framing segments.
         Required: Yes
         Access: Item
 
@@ -86,14 +100,16 @@ Technical Details:
     - Elements stored as centerline + profile (no geometry)
     - Geometry created in separate Geometry Converter component
     - Panel_id passed through metadata for traceability
+    - Segment bounds from cell metadata override WBC [0, wall_length] range
 
 Error Handling:
     - Invalid JSON returns empty results with error in log
     - Unknown material type defaults to timber with warning
     - Missing cells logged but don't halt execution
+    - Missing segment metadata falls back to full wall range (backward compatible)
 
 Author: Timber Framing Generator
-Version: 1.1.0
+Version: 1.2.0
 """
 
 # =============================================================================
@@ -448,6 +464,16 @@ def process_framing(cell_list, wall_lookup, strategy, config):
     for i, cell_data_dict in enumerate(cell_list):
         wall_id = cell_data_dict.get('wall_id', f'wall_{i}')
         wall_data_dict = wall_lookup.get(wall_id, {})
+
+        # Inject segment bounds from cell metadata so that
+        # reconstruct_wall_data() builds the WBC at the correct
+        # framing U range (junction-adjusted, not raw wall_length).
+        meta = cell_data_dict.get('metadata', {})
+        seg_start = meta.get('segment_u_start')
+        seg_end = meta.get('segment_u_end')
+        if seg_start is not None and seg_end is not None:
+            wall_data_dict = dict(wall_data_dict)  # shallow copy
+            wall_data_dict['_segment_bounds'] = [seg_start, seg_end]
 
         elements, wall_log = generate_framing_for_wall(
             cell_data_dict, wall_data_dict, strategy, config

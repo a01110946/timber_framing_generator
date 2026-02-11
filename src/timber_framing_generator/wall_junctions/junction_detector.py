@@ -169,18 +169,12 @@ def _extract_direction(wall: Dict) -> Tuple[float, float, float]:
 
 
 def _extract_z_axis(wall: Dict) -> Tuple[float, float, float]:
-    """Extract wall normal (z_axis) from exterior_normal or base_plane.z_axis.
+    """Extract wall normal (z_axis) from base_plane.z_axis.
 
-    Prefers ``exterior_normal`` (Revit wall.Orientation) when available,
-    as it is the authoritative exterior direction. Falls back to
-    ``base_plane.z_axis`` otherwise.
+    The Wall Analyzer ensures ``base_plane.z_axis`` equals Revit's
+    ``wall.Orientation`` (the authoritative exterior face direction),
+    so this is the single source of truth for the wall normal.
     """
-    # Prefer exterior_normal (from Revit wall.Orientation)
-    en = wall.get("exterior_normal")
-    if isinstance(en, dict):
-        return (en["x"], en["y"], en["z"])
-
-    # Fallback to base_plane.z_axis
     bp = wall.get("base_plane", {})
     z_axis = bp.get("z_axis")
     if isinstance(z_axis, dict):
@@ -303,6 +297,169 @@ def _group_close_endpoints(
         groups[root].append(endpoints[i])
 
     return groups
+
+
+# =============================================================================
+# X-Crossing Detection (centerline segment intersection)
+# =============================================================================
+
+
+def _line_line_intersection_2d(
+    p1: Tuple[float, float],
+    d1: Tuple[float, float],
+    p2: Tuple[float, float],
+    d2: Tuple[float, float],
+    len1: float,
+    len2: float,
+    endpoint_exclusion: float = 0.05,
+) -> Optional[Tuple[Tuple[float, float], float, float]]:
+    """2D line-segment intersection.
+
+    Each line is defined as ``point + t * direction`` where ``t`` ranges
+    from 0 to ``len`` (absolute, in feet — not normalised to [0,1]).
+
+    Args:
+        p1: Origin of line 1 (x, y).
+        d1: Unit direction of line 1 (dx, dy).
+        p2: Origin of line 2 (x, y).
+        d2: Unit direction of line 2 (dx, dy).
+        len1: Length of segment 1 in feet.
+        len2: Length of segment 2 in feet.
+        endpoint_exclusion: Exclude crossings within this fraction of
+            each segment's length from its endpoints (avoids
+            double-counting with L-corners / T-intersections).
+
+    Returns:
+        ``(intersection_point, t1, t2)`` where ``t1`` / ``t2`` are
+        absolute distances along each segment, or ``None`` if the
+        segments do not cross (parallel, or crossing outside
+        the interior of both segments).
+    """
+    # Solve  p1 + t1*d1 = p2 + t2*d2
+    # =>  t1*d1x - t2*d2x = p2x - p1x
+    #     t1*d1y - t2*d2y = p2y - p1y
+    det = d1[0] * (-d2[1]) - d1[1] * (-d2[0])
+    if abs(det) < 1e-10:
+        return None  # parallel or degenerate
+
+    rhs_x = p2[0] - p1[0]
+    rhs_y = p2[1] - p1[1]
+    t1 = (rhs_x * (-d2[1]) - rhs_y * (-d2[0])) / det
+    t2 = (d1[0] * rhs_y - d1[1] * rhs_x) / det
+
+    # Both parameters must be strictly inside the segment (excl. endpoints)
+    eps1 = endpoint_exclusion * len1
+    eps2 = endpoint_exclusion * len2
+    if t1 <= eps1 or t1 >= len1 - eps1:
+        return None
+    if t2 <= eps2 or t2 >= len2 - eps2:
+        return None
+
+    ix = p1[0] + t1 * d1[0]
+    iy = p1[1] + t1 * d1[1]
+    return (ix, iy), t1, t2
+
+
+def _detect_x_crossings(
+    walls_data: List[Dict],
+    groups: Dict[int, List[Dict]],
+    endpoints: List[Dict],
+) -> None:
+    """Detect X-crossings via 2D centerline-segment intersection.
+
+    For every pair of walls whose centerlines cross *strictly inside*
+    both segments (excluding near-endpoint regions), a new group is
+    created with two midspan connections — one per wall.
+
+    This handles cases where two walls cross each other but no endpoints
+    are near the crossing point.
+
+    Args:
+        walls_data: Original wall data list.
+        groups: Existing endpoint groups (modified in-place — new groups
+            are added for detected crossings).
+        endpoints: All endpoint dicts (used to determine the next
+            available group id).
+    """
+    # Find the next available group id
+    next_group_id = max(groups.keys(), default=-1) + 1
+
+    # Track which wall-pairs already share a group (L-corner, T, etc.)
+    # to avoid double-counting.
+    already_connected: set = set()
+    for members in groups.values():
+        wall_ids_in_group = {m["wall_id"] for m in members}
+        if len(wall_ids_in_group) >= 2:
+            for wid_a in wall_ids_in_group:
+                for wid_b in wall_ids_in_group:
+                    if wid_a < wid_b:
+                        already_connected.add((wid_a, wid_b))
+
+    for i in range(len(walls_data)):
+        for j in range(i + 1, len(walls_data)):
+            wi = walls_data[i]
+            wj = walls_data[j]
+            wid_i = wi["wall_id"]
+            wid_j = wj["wall_id"]
+
+            pair_key = (min(wid_i, wid_j), max(wid_i, wid_j))
+            if pair_key in already_connected:
+                continue
+
+            # Extract 2D start + direction
+            si = _extract_point(wi, "start")
+            di = _extract_direction(wi)
+            li = wi.get("wall_length", 0.0)
+
+            sj = _extract_point(wj, "start")
+            dj = _extract_direction(wj)
+            lj = wj.get("wall_length", 0.0)
+
+            result = _line_line_intersection_2d(
+                (si[0], si[1]), (di[0], di[1]),
+                (sj[0], sj[1]), (dj[0], dj[1]),
+                li, lj,
+            )
+            if result is None:
+                continue
+
+            (ix, iy), t_i, t_j = result
+
+            logger.info(
+                "X-crossing detected: %s (u=%.2f) x %s (u=%.2f) at (%.4f, %.4f)",
+                wid_i, t_i, wid_j, t_j, ix, iy,
+            )
+
+            # Build two midspan connections
+            midspan_i = {
+                "wall_id": wid_i,
+                "end": "midspan",
+                "position": (ix, iy, si[2]),
+                "direction": di,
+                "z_axis": _extract_z_axis(wi),
+                "thickness": wi.get("wall_thickness", 0.3958),
+                "length": li,
+                "is_exterior": wi.get("is_exterior", False),
+                "is_midspan": True,
+                "midspan_u": t_i,
+                "group_id": None,
+            }
+            midspan_j = {
+                "wall_id": wid_j,
+                "end": "midspan",
+                "position": (ix, iy, sj[2]),
+                "direction": dj,
+                "z_axis": _extract_z_axis(wj),
+                "thickness": wj.get("wall_thickness", 0.3958),
+                "length": lj,
+                "is_exterior": wj.get("is_exterior", False),
+                "is_midspan": True,
+                "midspan_u": t_j,
+                "group_id": None,
+            }
+
+            groups[next_group_id] = [midspan_i, midspan_j]
+            next_group_id += 1
 
 
 # =============================================================================
@@ -433,6 +590,9 @@ def _classify_junction(
 
     if n == 2:
         if has_midspan:
+            # Two midspan connections = X-crossing detected via segment intersection
+            if all(c.is_midspan for c in connections):
+                return JunctionType.X_CROSSING
             return JunctionType.T_INTERSECTION
 
         # Calculate angle between the two walls' outward directions
@@ -537,6 +697,9 @@ def build_junction_graph(
     _detect_t_intersections(
         endpoints, walls_data, groups, t_intersection_tolerance
     )
+
+    # Step 3.5: Detect X-crossings (segment-segment intersections)
+    _detect_x_crossings(walls_data, groups, endpoints)
 
     # Step 4: Create JunctionNodes
     nodes: Dict[str, JunctionNode] = {}

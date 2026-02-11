@@ -92,15 +92,20 @@ def get_wall_base_plane(
     The origin is set at the wall's X,Y position and the absolute Z elevation
     from base_elevation (which is level elevation + offset).
 
-    The Z-axis of the plane is set to ``revit_wall.Orientation``, which is the
-    outward normal of the wall's **default** exterior face.  This property is
-    purely geometric (derived from the location curve direction and world-Z)
-    and does **not** change when the wall is flipped in Revit.  Downstream
-    code therefore uses +z_axis = wall.Orientation consistently, without any
-    flip-based negation.
+    The Z-axis of the plane is initially set to ``revit_wall.Orientation``,
+    which is the outward normal of the wall's exterior face.  Empirical
+    testing shows that ``wall.Orientation`` **does** change when the wall
+    is flipped in Revit (e.g. ``(0,1,0)`` becomes ``(0,-1,0)``).
 
-    Note: revit_wall.Flipped indicates which face is exterior, NOT the wall direction.
-    We always use the curve endpoints in their natural order to match get_wall_base_curve.
+    **Important**: The Y-axis safety guard below can make the final
+    ``base_plane.z_axis`` differ from ``wall.Orientation`` for certain
+    wall directions (when ``cross(z_dir, x_dir)`` produces a downward Y).
+    The Wall Analyzer overrides ``z_axis`` with ``wall.Orientation`` after
+    serialization so that ``walls_json.base_plane.z_axis`` is always the
+    authoritative exterior face direction.
+
+    Note: We always use the curve endpoints in their natural order to match
+    get_wall_base_curve.
     """
     # Get the wall's location curve.
     location_curve = revit_wall.Location.Curve
@@ -125,12 +130,13 @@ def get_wall_base_plane(
     else:
         x_dir = rg.Vector3d(1, 0, 0)
 
-    # Use Revit's wall.Orientation as the authoritative Z-axis.
-    # wall.Orientation is the normal to the exterior face, computed from
-    # cross(curve_tangent, world_Z).  It does NOT change when the wall
-    # is flipped — the Flipped property only affects compound structure
-    # layer ordering, not this geometric normal.  Using it directly
-    # means +z_axis always matches the building-layout exterior direction.
+    # Use Revit's wall.Orientation as the initial Z-axis.
+    # wall.Orientation is the normal to the exterior face.  It DOES change
+    # when the wall is flipped in Revit.  Note: the Y-axis safety guard
+    # below may override this value to keep Y pointing up, so the final
+    # base_plane.z_axis may differ from wall.Orientation.  The Wall Analyzer
+    # corrects this by overriding z_axis with wall.Orientation before
+    # serializing to walls_json.
     orientation = revit_wall.Orientation
     z_dir = rg.Vector3d(orientation.X, orientation.Y, orientation.Z)
     if z_dir.IsZero:

@@ -20,6 +20,7 @@ from src.timber_framing_generator.wall_junctions.junction_detector import (
     _calculate_angle,
     _extract_point,
     _extract_direction,
+    _line_line_intersection_2d,
 )
 from src.timber_framing_generator.wall_junctions.junction_types import (
     JunctionType,
@@ -431,3 +432,188 @@ class TestThicknessAwareMatching:
                 f"Formula {formula} < geometric {geometric} "
                 f"for t1={t1}, t2={t2}"
             )
+
+
+# =============================================================================
+# Line-Line Intersection Tests
+# =============================================================================
+
+
+class TestLineLineIntersection2D:
+    """Tests for _line_line_intersection_2d."""
+
+    def test_perpendicular_crossing(self):
+        """Two perpendicular segments crossing at their midpoints."""
+        result = _line_line_intersection_2d(
+            p1=(0, 5), d1=(1, 0),  # horizontal line at y=5
+            p2=(5, 0), d2=(0, 1),  # vertical line at x=5
+            len1=10.0, len2=10.0,
+        )
+        assert result is not None
+        (ix, iy), t1, t2 = result
+        assert abs(ix - 5.0) < 0.001
+        assert abs(iy - 5.0) < 0.001
+        assert abs(t1 - 5.0) < 0.001
+        assert abs(t2 - 5.0) < 0.001
+
+    def test_parallel_lines_no_intersection(self):
+        """Parallel lines never intersect."""
+        result = _line_line_intersection_2d(
+            p1=(0, 0), d1=(1, 0),
+            p2=(0, 1), d2=(1, 0),
+            len1=10.0, len2=10.0,
+        )
+        assert result is None
+
+    def test_intersection_near_endpoint_excluded(self):
+        """Crossing near an endpoint is excluded by endpoint_exclusion."""
+        # Crossing at t1=0.5 (within 5% of len1=10, i.e. within 0.5 ft of start)
+        result = _line_line_intersection_2d(
+            p1=(0, 0), d1=(1, 0),
+            p2=(0.5, -5), d2=(0, 1),
+            len1=10.0, len2=10.0,
+            endpoint_exclusion=0.1,  # 10% exclusion zone
+        )
+        # t1=0.5, eps1=1.0 (10% of 10), 0.5 <= 1.0 → excluded
+        assert result is None
+
+    def test_crossing_outside_segments(self):
+        """Lines that cross when extended but not within segment lengths."""
+        result = _line_line_intersection_2d(
+            p1=(0, 0), d1=(1, 0),
+            p2=(15, -5), d2=(0, 1),  # x=15 is beyond len1=10
+            len1=10.0, len2=10.0,
+        )
+        assert result is None
+
+    def test_diagonal_crossing(self):
+        """Two diagonal segments crossing."""
+        import math
+        d1 = (math.cos(math.radians(45)), math.sin(math.radians(45)))
+        d2 = (math.cos(math.radians(135)), math.sin(math.radians(135)))
+
+        result = _line_line_intersection_2d(
+            p1=(0, 0), d1=d1,
+            p2=(10, 0), d2=d2,
+            len1=10.0, len2=10.0,
+        )
+        assert result is not None
+        (ix, iy), t1, t2 = result
+        assert abs(ix - 5.0) < 0.1
+        assert abs(iy - 5.0) < 0.1
+
+
+# =============================================================================
+# X-Crossing Detection Tests
+# =============================================================================
+
+
+class TestXCrossingDetection:
+    """Tests for X-crossing detection via centerline intersection."""
+
+    def test_x_crossing_detected(self, x_crossing_walls):
+        """Two crossing walls should be detected as X_CROSSING."""
+        nodes = build_junction_graph(x_crossing_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        assert len(x_nodes) == 1, (
+            f"Expected 1 X-crossing, got {len(x_nodes)}. "
+            f"Types: {[n.junction_type.value for n in nodes.values()]}"
+        )
+
+    def test_x_crossing_has_two_midspan_connections(self, x_crossing_walls):
+        """X-crossing should have exactly 2 midspan connections."""
+        nodes = build_junction_graph(x_crossing_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        assert len(x_nodes) == 1
+        assert len(x_nodes[0].connections) == 2
+        assert all(c.is_midspan for c in x_nodes[0].connections)
+
+    def test_x_crossing_midspan_u_values(self, x_crossing_walls):
+        """midspan_u values match the crossing point.
+
+        Wall A: (0,10)→(30,10), length=30, crossing at x=15 → u=15
+        Wall B: (15,0)→(15,20), length=20, crossing at y=10 → u=10
+        """
+        nodes = build_junction_graph(x_crossing_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        assert len(x_nodes) == 1
+
+        conns_by_wall = {c.wall_id: c for c in x_nodes[0].connections}
+        assert abs(conns_by_wall["wall_A"].midspan_u - 15.0) < 0.5
+        assert abs(conns_by_wall["wall_B"].midspan_u - 10.0) < 0.5
+
+    def test_x_crossing_position(self, x_crossing_walls):
+        """X-crossing position should be near (15, 10, 0)."""
+        nodes = build_junction_graph(x_crossing_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        pos = x_nodes[0].position
+        assert abs(pos[0] - 15.0) < 0.5
+        assert abs(pos[1] - 10.0) < 0.5
+
+    def test_x_crossing_both_walls_in_connections(self, x_crossing_walls):
+        """Both walls should appear in the X-crossing connections."""
+        nodes = build_junction_graph(x_crossing_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        wall_ids = {c.wall_id for c in x_nodes[0].connections}
+        assert wall_ids == {"wall_A", "wall_B"}
+
+    def test_parallel_walls_no_x_crossing(self, parallel_close_walls):
+        """Parallel walls should NOT produce an X-crossing."""
+        nodes = build_junction_graph(parallel_close_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        assert len(x_nodes) == 0
+
+    def test_l_corner_not_x_crossing(self, l_corner_walls):
+        """L-corner walls that meet at an endpoint should NOT produce X-crossing."""
+        nodes = build_junction_graph(l_corner_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        assert len(x_nodes) == 0
+
+    def test_t_intersection_not_x_crossing(self, t_intersection_walls):
+        """T-intersection walls should NOT produce X-crossing (endpoint-based)."""
+        nodes = build_junction_graph(t_intersection_walls)
+
+        x_nodes = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.X_CROSSING
+        ]
+        assert len(x_nodes) == 0
+
+    def test_x_crossing_free_ends_preserved(self, x_crossing_walls):
+        """X-crossing walls should still have free-end nodes for their endpoints."""
+        nodes = build_junction_graph(x_crossing_walls)
+
+        free_ends = [
+            n for n in nodes.values()
+            if n.junction_type == JunctionType.FREE_END
+        ]
+        # 2 walls × 2 endpoints = 4 free ends
+        assert len(free_ends) == 4

@@ -73,7 +73,7 @@ Error Handling:
     - Invalid walls skipped with warning
 
 Author: Timber Framing Generator
-Version: 1.1.0
+Version: 1.2.0
 """
 
 # =============================================================================
@@ -144,7 +144,7 @@ from src.timber_framing_generator.utils.geometry_factory import get_factory
 
 COMPONENT_NAME = "Wall Analyzer"
 COMPONENT_NICKNAME = "WallAnalyze"
-COMPONENT_MESSAGE = "v1.1"
+COMPONENT_MESSAGE = "v1.2"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Analysis"
 
@@ -260,18 +260,6 @@ def validate_inputs(walls, run):
     return True, None
 
 
-def _parse_exterior_normal(wall_data):
-    """Extract exterior_normal from wall_data as a Vector3D, or None."""
-    en = wall_data.get("exterior_normal")
-    if isinstance(en, dict):
-        return Vector3D(
-            x=float(en.get("x", 0)),
-            y=float(en.get("y", 0)),
-            z=float(en.get("z", 0)),
-        )
-    return None
-
-
 def convert_wall_data_to_schema(wall_data, wall_id):
     """Convert extracted wall data dict to WallData schema.
 
@@ -297,6 +285,18 @@ def convert_wall_data_to_schema(wall_data, wall_id):
             x_axis=Vector3D(1, 0, 0),
             y_axis=Vector3D(0, 1, 0),
             z_axis=Vector3D(0, 0, 1),
+        )
+
+    # Override z_axis with wall.Orientation (authoritative exterior direction).
+    # wall_helpers.py computes base_plane with a Y-axis safety guard that can
+    # make z_axis differ from (even opposite to) wall.Orientation. Fix it here
+    # at the source so walls_json.base_plane.z_axis is always correct.
+    en = wall_data.get("exterior_normal")
+    if isinstance(en, dict):
+        plane_data.z_axis = Vector3D(
+            x=float(en.get("x", 0)),
+            y=float(en.get("y", 0)),
+            z=float(en.get("z", 0)),
         )
 
     # Extract Revit level IDs for RiR baking
@@ -363,7 +363,6 @@ def convert_wall_data_to_schema(wall_data, wall_id):
         openings=openings,
         is_exterior=wall_data.get('is_exterior_wall', False),
         is_flipped=wall_data.get('is_flipped', False),
-        exterior_normal=_parse_exterior_normal(wall_data),
         wall_type=wall_data.get('wall_type'),
         wall_assembly=wall_data.get('wall_assembly'),
         base_level_id=base_level_id,

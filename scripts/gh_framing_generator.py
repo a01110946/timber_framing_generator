@@ -80,6 +80,12 @@ Input Requirements:
         Required: No
         Access: Item
 
+    Panels JSON (panels_json) - str:
+        Optional JSON string from Panel Decomposer for panel-aware framing.
+        When provided, elements get panel_id metadata for prefab workflows.
+        Required: No
+        Access: Item
+
     Run (run) - bool:
         Boolean to trigger execution
         Required: Yes
@@ -181,6 +187,9 @@ from src.timber_framing_generator.core.json_schemas import (
     FramingResults, FramingElementData, ProfileData, Point3D, Vector3D,
     deserialize_cell_data, FramingJSONEncoder
 )
+from src.timber_framing_generator.panels.panel_decomposer import (
+    assign_panel_ids_to_elements,
+)
 
 # =============================================================================
 # Constants
@@ -262,6 +271,8 @@ def setup_component():
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Config JSON", "config_json", "Optional configuration overrides",
          Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Panels JSON", "panels_json", "Optional panels JSON from Panel Decomposer for panel-aware framing",
+         Grasshopper.Kernel.GH_ParamAccess.item),
         ("Run", "run", "Boolean to trigger execution",
          Grasshopper.Kernel.GH_ParamAccess.item),
     ]
@@ -287,6 +298,106 @@ def setup_component():
             outputs[idx].Name = name
             outputs[idx].NickName = nick
             outputs[idx].Description = desc
+
+# =============================================================================
+# Parameter Reading Helpers (read by index, not NickName globals)
+# =============================================================================
+
+def _get_first_branch(param):
+    """Get the first branch of data from a GH parameter's VolatileData.
+
+    Handles both typed (GH_Structure[GH_String]) and untyped
+    (GH_Structure[IGH_Goo]) parameters.
+
+    Args:
+        param: A GH input parameter object
+
+    Returns:
+        List-like branch data, or None if empty
+    """
+    data = param.VolatileData
+
+    # Try .Branch(0) first (works for typed parameters)
+    if hasattr(data, 'Branch'):
+        try:
+            return data.Branch(0)
+        except Exception:
+            pass
+
+    # Try get_Branch (pythonnet explicit getter)
+    if hasattr(data, 'get_Branch'):
+        try:
+            return data.get_Branch(0)
+        except Exception:
+            pass
+
+    # Fallback: iterate Branches property
+    if hasattr(data, 'Branches'):
+        try:
+            branches = list(data.Branches)
+            if branches:
+                return branches[0]
+        except Exception:
+            pass
+
+    # Last resort: AllData gives flat list of all items
+    if hasattr(data, 'AllData'):
+        try:
+            return data.AllData(True)
+        except Exception:
+            pass
+
+    return None
+
+
+def _read_string_input(inputs, index):
+    """Read a string value from a GH input by parameter index.
+
+    Args:
+        inputs: ghenv.Component.Params.Input collection
+        index: Zero-based parameter index
+
+    Returns:
+        str or None if input is empty or missing
+    """
+    if index >= inputs.Count:
+        return None
+    if inputs[index].VolatileDataCount == 0:
+        return None
+    branch = _get_first_branch(inputs[index])
+    if branch is None or len(branch) == 0:
+        return None
+    item = branch[0]
+    val = item.Value if hasattr(item, 'Value') else item
+    if val is None:
+        return None
+    return str(val)
+
+
+def _read_bool_input(inputs, index, default=False):
+    """Read a boolean value from a GH input by parameter index.
+
+    Args:
+        inputs: ghenv.Component.Params.Input collection
+        index: Zero-based parameter index
+        default: Default value if input is empty
+
+    Returns:
+        bool
+    """
+    if index >= inputs.Count:
+        return default
+    if inputs[index].VolatileDataCount == 0:
+        return default
+    branch = _get_first_branch(inputs[index])
+    if branch is None or len(branch) == 0:
+        return default
+    item = branch[0]
+    val = item.Value if hasattr(item, 'Value') else item
+    if val is None:
+        return default
+    return bool(val)
+
 
 # =============================================================================
 # Helper Functions
@@ -350,7 +461,8 @@ def get_material_system(material_type_str):
     return material_map[material_lower]
 
 
-def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
+def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config,
+                              panels=None):
     """Generate framing elements for a single wall using the strategy.
 
     Args:
@@ -358,6 +470,8 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
         wall_data_dict: Wall data for this wall
         strategy: FramingStrategy instance
         config: Configuration parameters
+        panels: Optional list of panel dicts (with 'id', 'u_start', 'u_end')
+                for panel-aware framing and panel_id assignment
 
     Returns:
         Tuple of (list of FramingElementData, generation log lines)
@@ -369,6 +483,8 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
     log_lines.append(f"Generating framing for wall {wall_id}")
     log_lines.append(f"  Material: {strategy.material_system.value}")
     log_lines.append(f"  Cells: {len(cell_data_dict.get('cells', []))}")
+    if panels:
+        log_lines.append(f"  Panels: {len(panels)}")
 
     # Capture stdout to include debug output
     old_stdout = sys.stdout
@@ -394,15 +510,10 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
                 z_axis = base_plane['z_axis']
                 wall_z_axis = (z_axis['x'], z_axis['y'], z_axis['z'])
 
-        # Extract panel_id from cell_data metadata (if panel-aware decomposition)
-        panel_id = cell_data_dict.get('metadata', {}).get('panel_id')
-
         for elem in framing_elements:
-            # Build element metadata with wall_id, panel_id, and wall direction
+            # Build element metadata with wall_id and wall direction
             elem_metadata = dict(elem.metadata) if elem.metadata else {}
             elem_metadata['wall_id'] = wall_id
-            if panel_id:
-                elem_metadata['panel_id'] = panel_id
             if wall_x_axis:
                 elem_metadata['wall_x_axis'] = wall_x_axis
             if wall_z_axis:
@@ -424,10 +535,23 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
                 v_start=elem.v_start,
                 v_end=elem.v_end,
                 cell_id=elem.cell_id,
-                panel_id=panel_id,
+                panel_id=None,  # Assigned later by assign_panel_ids_to_elements
                 metadata=elem_metadata,
             )
             elements.append(elem_data)
+
+        # Assign panel_id to elements if panels are provided
+        if panels:
+            # Convert FramingElementData objects to dicts for assignment
+            elem_dicts = [
+                {"u_coord": e.u_coord, "index": i}
+                for i, e in enumerate(elements)
+            ]
+            assign_panel_ids_to_elements(elem_dicts, panels)
+            for ed in elem_dicts:
+                elements[ed["index"]].panel_id = ed.get("panel_id")
+            assigned_count = sum(1 for e in elements if e.panel_id is not None)
+            log_lines.append(f"  Panel IDs assigned: {assigned_count}/{len(elements)}")
 
         log_lines.append(f"  Generated: {len(elements)} elements")
 
@@ -493,7 +617,8 @@ def compute_effective_segment_bounds(
     return None
 
 
-def process_framing(cell_list, wall_lookup, strategy, config):
+def process_framing(cell_list, wall_lookup, strategy, config,
+                    panels_by_wall=None):
     """Process all walls through the framing generator.
 
     Args:
@@ -501,6 +626,7 @@ def process_framing(cell_list, wall_lookup, strategy, config):
         wall_lookup: Dictionary mapping wall_id to wall data
         strategy: FramingStrategy instance
         config: Configuration parameters
+        panels_by_wall: Optional dict mapping wall_id to list of panel dicts
 
     Returns:
         Tuple of (all_elements, type_counts, log_lines)
@@ -531,8 +657,14 @@ def process_framing(cell_list, wall_lookup, strategy, config):
             wall_data_dict = dict(wall_data_dict)  # shallow copy
             wall_data_dict['_segment_bounds'] = list(bounds)
 
+        # Get panels for this wall if available
+        wall_panels = None
+        if panels_by_wall:
+            wall_panels = panels_by_wall.get(wall_id)
+
         elements, wall_log = generate_framing_for_wall(
-            cell_data_dict, wall_data_dict, strategy, config
+            cell_data_dict, wall_data_dict, strategy, config,
+            panels=wall_panels,
         )
 
         all_elements.extend(elements)
@@ -555,6 +687,21 @@ def main():
     Returns:
         tuple: (framing_json, element_count, generation_log)
     """
+    # -----------------------------------------------------------------
+    # Read inputs by parameter index (CRITICAL: NickName injection is unreliable)
+    # -----------------------------------------------------------------
+    inputs = ghenv.Component.Params.Input
+
+    cell_json_input = _read_string_input(inputs, 0)
+    walls_json_input = _read_string_input(inputs, 1)
+    material_type_input = _read_string_input(inputs, 2)
+    config_json_input = _read_string_input(inputs, 3)
+    panels_json_input = _read_string_input(inputs, 4)
+    run_val = _read_bool_input(inputs, 5, default=False)
+
+    # -----------------------------------------------------------------
+    # Setup component metadata (display only, AFTER inputs are captured)
+    # -----------------------------------------------------------------
     setup_component()
 
     # Initialize outputs
@@ -563,21 +710,8 @@ def main():
     log_lines = []
 
     try:
-        # Unwrap Grasshopper list wrappers
-        cell_json_input = cell_json
-        while isinstance(cell_json_input, (list, tuple)) and len(cell_json_input) > 0:
-            cell_json_input = cell_json_input[0]
-
-        walls_json_input = walls_json
-        if isinstance(walls_json, (list, tuple)):
-            walls_json_input = walls_json[0] if walls_json else None
-
-        config_json_input = config_json if config_json else None
-        if isinstance(config_json, (list, tuple)):
-            config_json_input = config_json[0] if config_json else None
-
         # Validate inputs
-        is_valid, error_msg = validate_inputs(cell_json_input, walls_json_input, run)
+        is_valid, error_msg = validate_inputs(cell_json_input, walls_json_input, run_val)
         if not is_valid:
             if error_msg and "not running" not in error_msg.lower():
                 log_warning(error_msg)
@@ -589,13 +723,13 @@ def main():
         wall_lookup = {w.get('wall_id'): w for w in wall_list}
         config = json.loads(config_json_input) if config_json_input else {}
 
-        # Get material system — framing_system from config_json overrides material_type input
+        # Get material system -- framing_system from config_json overrides material_type input
         framing_system = config.get("framing_system")
         if framing_system and framing_system.strip():
             material_type_val = framing_system.strip().lower()
             log_info(f"Using framing_system from config_json: {material_type_val}")
         else:
-            material_type_val = material_type if material_type else "timber"
+            material_type_val = material_type_input if material_type_input else "timber"
         material_system = get_material_system(material_type_val)
 
         # Check if strategy is available
@@ -610,6 +744,21 @@ def main():
 
         strategy = get_framing_strategy(material_system)
 
+        # Parse optional panels_json input
+        panels_by_wall = None
+        if panels_json_input:
+            try:
+                panels_list = json.loads(panels_json_input)
+                # panels_list is a list of PanelResults dicts, one per wall
+                # Build lookup: wall_id -> list of panel dicts
+                panels_by_wall = {}
+                for panel_result in panels_list:
+                    wid = panel_result.get("wall_id", "")
+                    panels_by_wall[wid] = panel_result.get("panels", [])
+                log_lines.append(f"Panels loaded: {len(panels_by_wall)} walls with panels")
+            except (json.JSONDecodeError, TypeError) as e:
+                log_lines.append(f"WARNING: Could not parse panels_json: {e}")
+
         log_lines.append(f"Framing Generator v1.2")
         log_lines.append(f"Material System: {material_type_val}")
         log_lines.append(f"Walls to process: {len(cell_list)}")
@@ -618,7 +767,8 @@ def main():
 
         # Process framing
         all_elements, type_counts, process_log = process_framing(
-            cell_list, wall_lookup, strategy, config
+            cell_list, wall_lookup, strategy, config,
+            panels_by_wall=panels_by_wall,
         )
         log_lines.extend(process_log)
 
@@ -655,32 +805,6 @@ def main():
 # Execution
 # =============================================================================
 
-# Set default values for optional inputs
-try:
-    cell_json
-except NameError:
-    cell_json = None
-
-try:
-    walls_json
-except NameError:
-    walls_json = None
-
-try:
-    material_type
-except NameError:
-    material_type = "timber"
-
-try:
-    config_json
-except NameError:
-    config_json = None
-
-try:
-    run
-except NameError:
-    run = False
-
-# Execute main
+# All inputs are read by parameter index inside main() — no NickName globals needed.
 if __name__ == "__main__":
     framing_json, element_count, generation_log = main()

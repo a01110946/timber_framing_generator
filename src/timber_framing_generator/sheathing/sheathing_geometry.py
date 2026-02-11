@@ -231,7 +231,10 @@ def calculate_layer_w_offsets(
             outward to at least ``framing_depth / 2`` from centerline.
 
     Returns:
-        Dict mapping layer name to W offset (feet from centerline).
+        Dict mapping composite key ``"name|side"`` to W offset (feet
+        from centerline).  Using composite keys prevents collisions
+        when two layers share the same name on different sides (e.g.,
+        "Gypsum Board" on both exterior and interior).
     """
     from src.timber_framing_generator.wall_data.assembly_extractor import (
         assembly_dict_to_def,
@@ -255,7 +258,7 @@ def calculate_layer_w_offsets(
     ext_layers = assembly_def.get_layers_by_side(LayerSide.EXTERIOR)
     cumulative = effective_half
     for layer in reversed(ext_layers):  # closest to core first
-        offsets[layer.name] = cumulative
+        offsets[f"{layer.name}|{layer.side.value}"] = cumulative
         cumulative += layer.thickness
 
     # Interior layers: stack inward from effective interior face
@@ -263,13 +266,13 @@ def calculate_layer_w_offsets(
     int_layers = assembly_def.get_layers_by_side(LayerSide.INTERIOR)
     cumulative = -effective_half
     for layer in int_layers:  # order from assembly (closest to core first)
-        offsets[layer.name] = cumulative  # Core-facing surface
+        offsets[f"{layer.name}|{layer.side.value}"] = cumulative  # Core-facing surface
         cumulative -= layer.thickness
 
     # Core layer
     core_layers = assembly_def.get_layers_by_side(LayerSide.CORE)
     for layer in core_layers:
-        offsets[layer.name] = -effective_half
+        offsets[f"{layer.name}|{layer.side.value}"] = -effective_half
 
     return offsets
 

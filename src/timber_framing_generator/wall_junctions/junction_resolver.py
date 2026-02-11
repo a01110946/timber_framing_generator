@@ -42,7 +42,7 @@ DIAG_ENABLED = True
 
 # Version marker — printed on import to confirm updated code is loaded.
 # Bump this value whenever the adjustment logic changes.
-_RESOLVER_VERSION = "2.9-approach-side-endpoint"
+_RESOLVER_VERSION = "2.10-layer-side-disambiguation"
 print(f"[JUNC-RESOLVER] junction_resolver.py version {_RESOLVER_VERSION} loaded")
 
 
@@ -505,6 +505,7 @@ def _calculate_butt_adjustments(
             adjustment_type=AdjustmentType.EXTEND,
             amount=half_sec_core,
             connecting_wall_id=secondary.wall_id,
+            layer_side="core",
         ))
         _diag(f"  ADJ PRIMARY core: EXTEND {half_sec_core:.6f} ft ({half_sec_core*12:.4f} in) "
                f"= half_sec_core at end={primary.end}")
@@ -530,6 +531,7 @@ def _calculate_butt_adjustments(
                 adjustment_type=pri_ext_dir,
                 amount=amount,
                 connecting_wall_id=secondary.wall_id,
+                layer_side="exterior",
             ))
             _diag(f"  ADJ PRIMARY ext[{i}] '{p_layer.get('name')}': {pri_ext_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
                    f"= half_sec_core({half_sec_core:.6f}) + cumul({cumulative:.6f}) "
@@ -557,6 +559,7 @@ def _calculate_butt_adjustments(
                 adjustment_type=pri_int_dir,
                 amount=amount,
                 connecting_wall_id=secondary.wall_id,
+                layer_side="interior",
             ))
             _diag(f"  ADJ PRIMARY int[{i}] '{p_layer.get('name')}': {pri_int_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
                    f"= half_sec_core({half_sec_core:.6f}) + cumul({cumulative:.6f}) "
@@ -571,6 +574,7 @@ def _calculate_butt_adjustments(
             adjustment_type=AdjustmentType.TRIM,
             amount=half_pri_core,
             connecting_wall_id=primary.wall_id,
+            layer_side="core",
         ))
         _diag(f"  ADJ SECONDARY core: TRIM {half_pri_core:.6f} ft ({half_pri_core*12:.4f} in) "
                f"= half_pri_core at end={secondary.end}")
@@ -596,6 +600,7 @@ def _calculate_butt_adjustments(
                 adjustment_type=sec_ext_dir,
                 amount=amount,
                 connecting_wall_id=primary.wall_id,
+                layer_side="exterior",
             ))
             _diag(f"  ADJ SECONDARY ext[{i}] '{s_layer.get('name')}': {sec_ext_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
                    f"= half_pri_core({half_pri_core:.6f}) + cumul({cumulative:.6f}) "
@@ -623,6 +628,7 @@ def _calculate_butt_adjustments(
                 adjustment_type=sec_int_dir,
                 amount=amount,
                 connecting_wall_id=primary.wall_id,
+                layer_side="interior",
             ))
             _diag(f"  ADJ SECONDARY int[{i}] '{s_layer.get('name')}': {sec_int_dir.value.upper()} {amount:.6f} ft ({amount*12:.4f} in) "
                    f"= half_pri_core({half_pri_core:.6f}) + cumul({cumulative:.6f}) "
@@ -653,6 +659,7 @@ def _calculate_butt_adjustments(
                 junction_id=junction_id, layer_name=layer_name,
                 adjustment_type=adj_type, amount=amount,
                 connecting_wall_id=secondary.wall_id,
+                layer_side=layer_name,
             ))
 
         # SECONDARY wall — "full" adds opposing layer thickness, "shifted" uses half_core only
@@ -670,6 +677,7 @@ def _calculate_butt_adjustments(
                 junction_id=junction_id, layer_name=layer_name,
                 adjustment_type=adj_type, amount=amount,
                 connecting_wall_id=primary.wall_id,
+                layer_side=layer_name,
             ))
 
     return adjustments
@@ -741,6 +749,7 @@ def _calculate_miter_adjustments(
                 connecting_wall_id=(
                     conn_b.wall_id if conn is conn_a else conn_a.wall_id
                 ),
+                layer_side=layer_name,
             ))
 
     return adjustments
@@ -862,6 +871,7 @@ def _calculate_t_intersection_adjustments(
                 amount=half_cont_core,
                 connecting_wall_id=continuous.wall_id,
                 midspan_u=term_midspan_u,
+                layer_side="core",
             ))
             _diag(f"  ADJ TERM core: TRIM {half_cont_core:.6f} ft ({half_cont_core*12:.4f} in) "
                    f"= half_cont_core")
@@ -883,6 +893,7 @@ def _calculate_t_intersection_adjustments(
                     amount=amount,
                     connecting_wall_id=continuous.wall_id,
                     midspan_u=term_midspan_u,
+                    layer_side="exterior",
                 ))
                 _diag(f"  ADJ TERM ext[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
                        f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
@@ -905,6 +916,7 @@ def _calculate_t_intersection_adjustments(
                     amount=amount,
                     connecting_wall_id=continuous.wall_id,
                     midspan_u=term_midspan_u,
+                    layer_side="interior",
                 ))
                 _diag(f"  ADJ TERM int[{i}] '{t_layer.get('name')}': TRIM {amount:.6f} ft ({amount*12:.4f} in) "
                        f"= half_cont_core({half_cont_core:.6f}) + cumul({cumulative:.6f}) "
@@ -930,6 +942,7 @@ def _calculate_t_intersection_adjustments(
                     adjustment_type=AdjustmentType.TRIM, amount=amount,
                     connecting_wall_id=continuous.wall_id,
                     midspan_u=term_midspan_u,
+                    layer_side=layer_name,
                 ))
                 _diag(f"  ADJ TERM '{layer_name}': TRIM {amount:.6f} ft ({amount*12:.4f} in)")
     else:
@@ -1007,6 +1020,7 @@ def _calculate_t_intersection_adjustments(
                     amount=half_term_core,
                     connecting_wall_id=terminating.wall_id,
                     midspan_u=midspan_u,
+                    layer_side="core",
                 ))
                 _diag(f"  ADJ CONT core: TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f} "
                        f"(secondary wall core terminates at X-crossing)")
@@ -1061,6 +1075,7 @@ def _calculate_t_intersection_adjustments(
                         connecting_wall_id=terminating.wall_id,
                         midspan_u=midspan_u,
                         amount_neg=adj_amount_neg,
+                        layer_side="exterior",
                     ))
                     _diag(f"  ADJ CONT ext[{i}] '{c_layer.get('name')}': TRIM "
                            f"amount_pos={amount_pos:.6f} amount_neg={amount_neg_val:.6f} ft "
@@ -1102,6 +1117,7 @@ def _calculate_t_intersection_adjustments(
                         connecting_wall_id=terminating.wall_id,
                         midspan_u=midspan_u,
                         amount_neg=adj_amount_neg,
+                        layer_side="interior",
                     ))
                     _diag(f"  ADJ CONT int[{i}] '{c_layer.get('name')}': TRIM "
                            f"amount_pos={amount_pos:.6f} amount_neg={amount_neg_val:.6f} ft "
@@ -1123,6 +1139,7 @@ def _calculate_t_intersection_adjustments(
                     amount=half_term_core,
                     connecting_wall_id=terminating.wall_id,
                     midspan_u=midspan_u,
+                    layer_side="core",
                 ))
                 _diag(f"  ADJ CONT 'core': TRIM {half_term_core:.6f} ft at midspan_u={midspan_u:.4f}")
             else:
@@ -1151,6 +1168,7 @@ def _calculate_t_intersection_adjustments(
                     connecting_wall_id=terminating.wall_id,
                     midspan_u=midspan_u,
                     amount_neg=adj_amount_neg,
+                    layer_side="exterior",
                 ))
                 _diag(f"  ADJ CONT 'exterior': TRIM pos={ext_amount_pos:.6f} neg={ext_amount_neg:.6f} ft "
                        f"at midspan_u={midspan_u:.4f}")
@@ -1169,6 +1187,7 @@ def _calculate_t_intersection_adjustments(
                     connecting_wall_id=terminating.wall_id,
                     midspan_u=midspan_u,
                     amount_neg=adj_amount_neg,
+                    layer_side="interior",
                 ))
                 _diag(f"  ADJ CONT 'interior': TRIM pos={int_amount_pos:.6f} neg={int_amount_neg:.6f} ft "
                        f"at midspan_u={midspan_u:.4f}")

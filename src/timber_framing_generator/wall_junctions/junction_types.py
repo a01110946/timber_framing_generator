@@ -325,6 +325,7 @@ class LayerAdjustment:
     connecting_wall_id: str = ""
     midspan_u: Optional[float] = None  # U-coordinate for midspan gap (T/X-intersections)
     amount_neg: Optional[float] = None  # For asymmetric midspan gaps: negative-U edge amount. When None, defaults to amount.
+    layer_side: Optional[str] = None  # "exterior", "interior", or "core" — disambiguates same-named layers on different sides
 
 
 @dataclass
@@ -499,6 +500,8 @@ def _serialize_adjustment(adj: LayerAdjustment) -> Dict:
         result["midspan_u"] = round(adj.midspan_u, 6)
     if adj.amount_neg is not None:
         result["amount_neg"] = round(adj.amount_neg, 6)
+    if adj.layer_side is not None:
+        result["layer_side"] = adj.layer_side
     return result
 
 

@@ -525,44 +525,45 @@ class TestLayerWOffsets:
 
     def test_returns_offsets_for_all_layers(self, four_layer_assembly):
         offsets = calculate_layer_w_offsets(four_layer_assembly)
-        assert "siding" in offsets
-        assert "osb" in offsets
-        assert "core" in offsets
-        assert "gypsum" in offsets
+        # Keys are composite "name|side" to disambiguate same-named layers
+        assert "siding|exterior" in offsets
+        assert "osb|exterior" in offsets
+        assert "core|core" in offsets
+        assert "gypsum|interior" in offsets
 
     def test_osb_starts_at_core_exterior_face(self, four_layer_assembly):
         """OSB (closest exterior layer) starts at core's outer face + gap."""
         offsets = calculate_layer_w_offsets(four_layer_assembly)
         core_half = 0.30 / 2.0
-        assert abs(offsets["osb"] - (core_half + SHEATHING_GAP)) < 0.001
+        assert abs(offsets["osb|exterior"] - (core_half + SHEATHING_GAP)) < 0.001
 
     def test_siding_starts_after_osb(self, four_layer_assembly):
         """Siding starts where OSB ends."""
         offsets = calculate_layer_w_offsets(four_layer_assembly)
         core_half = 0.30 / 2.0
         expected = core_half + SHEATHING_GAP + 0.04  # after OSB (gap included)
-        assert abs(offsets["siding"] - expected) < 0.001
+        assert abs(offsets["siding|exterior"] - expected) < 0.001
 
     def test_gypsum_starts_at_core_interior_face(self, four_layer_assembly):
         """Gypsum core-facing surface is at core interior face - gap."""
         offsets = calculate_layer_w_offsets(four_layer_assembly)
         core_half = 0.30 / 2.0
         expected = -(core_half + SHEATHING_GAP)  # Core-facing surface (mirrors exterior convention)
-        assert abs(offsets["gypsum"] - expected) < 0.001
+        assert abs(offsets["gypsum|interior"] - expected) < 0.001
 
     def test_core_starts_at_negative_half(self, four_layer_assembly):
         offsets = calculate_layer_w_offsets(four_layer_assembly)
         core_half = 0.30 / 2.0
-        assert abs(offsets["core"] - (-(core_half + SHEATHING_GAP))) < 0.001
+        assert abs(offsets["core|core"] - (-(core_half + SHEATHING_GAP))) < 0.001
 
     def test_exterior_layers_are_positive(self, four_layer_assembly):
         offsets = calculate_layer_w_offsets(four_layer_assembly)
-        assert offsets["osb"] > 0
-        assert offsets["siding"] > 0
+        assert offsets["osb|exterior"] > 0
+        assert offsets["siding|exterior"] > 0
 
     def test_interior_layers_are_negative(self, four_layer_assembly):
         offsets = calculate_layer_w_offsets(four_layer_assembly)
-        assert offsets["gypsum"] < 0
+        assert offsets["gypsum|interior"] < 0
 
     def test_layers_dont_overlap(self, four_layer_assembly):
         """Layer offsets should stack without gaps or overlaps."""
@@ -570,8 +571,8 @@ class TestLayerWOffsets:
         # OSB: [core_half + gap, core_half + gap + 0.04]
         # Siding: [core_half + gap + 0.04, core_half + gap + 0.04 + 0.05]
         core_half = 0.15
-        assert abs(offsets["osb"] - (core_half + SHEATHING_GAP)) < 0.001
-        assert abs(offsets["siding"] - (core_half + SHEATHING_GAP + 0.04)) < 0.001
+        assert abs(offsets["osb|exterior"] - (core_half + SHEATHING_GAP)) < 0.001
+        assert abs(offsets["siding|exterior"] - (core_half + SHEATHING_GAP + 0.04)) < 0.001
 
 
 class TestLayerWOffsetsWithFramingDepth:
@@ -607,7 +608,7 @@ class TestLayerWOffsetsWithFramingDepth:
         core_half = 0.30 / 2.0
         small_depth = 0.20  # < core_thickness (0.30)
         offsets = calculate_layer_w_offsets(four_layer_assembly, framing_depth=small_depth)
-        assert abs(offsets["osb"] - (core_half + SHEATHING_GAP)) < 0.001
+        assert abs(offsets["osb|exterior"] - (core_half + SHEATHING_GAP)) < 0.001
 
     def test_framing_depth_larger_pushes_layers_out(self, four_layer_assembly):
         """framing_depth larger than core should push layers outward."""
@@ -619,13 +620,13 @@ class TestLayerWOffsetsWithFramingDepth:
         offsets = calculate_layer_w_offsets(four_layer_assembly, framing_depth=large_depth)
 
         # OSB should start at framing_half + gap, not core_half
-        assert abs(offsets["osb"] - (framing_half + SHEATHING_GAP)) < 0.001
+        assert abs(offsets["osb|exterior"] - (framing_half + SHEATHING_GAP)) < 0.001
         # Siding should stack after OSB
-        assert abs(offsets["siding"] - (framing_half + SHEATHING_GAP + 0.04)) < 0.001
+        assert abs(offsets["siding|exterior"] - (framing_half + SHEATHING_GAP + 0.04)) < 0.001
         # Interior gypsum should start at -(framing_half + gap)
-        assert abs(offsets["gypsum"] - (-(framing_half + SHEATHING_GAP))) < 0.001
+        assert abs(offsets["gypsum|interior"] - (-(framing_half + SHEATHING_GAP))) < 0.001
         # Core should be at -(framing_half + gap)
-        assert abs(offsets["core"] - (-(framing_half + SHEATHING_GAP))) < 0.001
+        assert abs(offsets["core|core"] - (-(framing_half + SHEATHING_GAP))) < 0.001
 
     def test_2x6_framing_on_2x4_assembly(self):
         """2x6 framing depth on 2x4 assembly: sheathing starts at 2x6 bounds."""
@@ -649,6 +650,6 @@ class TestLayerWOffsetsWithFramingDepth:
         offsets = calculate_layer_w_offsets(assembly, framing_depth=depth_2x6)
 
         # OSB should be at framing_half + gap (0.2302), not core_half (0.1458)
-        assert offsets["osb"] == pytest.approx(framing_half + SHEATHING_GAP, abs=1e-6)
+        assert offsets["osb|exterior"] == pytest.approx(framing_half + SHEATHING_GAP, abs=1e-6)
         # Interior gyp at -(framing_half + gap)
-        assert offsets["gyp"] == pytest.approx(-(framing_half + SHEATHING_GAP), abs=1e-6)
+        assert offsets["gyp|interior"] == pytest.approx(-(framing_half + SHEATHING_GAP), abs=1e-6)

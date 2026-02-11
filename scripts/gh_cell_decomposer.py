@@ -1002,11 +1002,30 @@ def process_decomposition(wall_list, panels_data):
                 else:
                     log_lines.append(f"Wall {wall_idx} ({wall_id}): {len(wall_panels)} panels")
 
+                    # Read framing_segments so we can inject segment bounds
+                    # into panel cell metadata for the Framing Generator.
+                    framing_segs = wall_dict.get('framing_segments')
+
                     for panel_idx, panel in enumerate(wall_panels):
                         panel_id = panel.get('id', f'{wall_id}_panel_{panel_idx}')
                         cell_data, surfaces, type_labels = decompose_panel_to_cells(
                             wall_dict, panel, wall_idx, panel_idx
                         )
+
+                        # Inject framing segment bounds into cell metadata.
+                        # The Framing Generator reads segment_u_start/segment_u_end
+                        # to build the WBC with junction-adjusted boundaries.
+                        if framing_segs:
+                            p_u_start = panel.get('u_start', 0)
+                            p_u_end = panel.get('u_end', wall_dict.get('wall_length', 0))
+                            # Find which segment contains this panel's midpoint
+                            p_mid = (p_u_start + p_u_end) / 2.0
+                            for seg_s, seg_e in framing_segs:
+                                if seg_s - 0.01 <= p_mid <= seg_e + 0.01:
+                                    cell_data.metadata['segment_u_start'] = seg_s
+                                    cell_data.metadata['segment_u_end'] = seg_e
+                                    break
+
                         all_cell_data.append(cell_data)
 
                         for j, srf in enumerate(surfaces):

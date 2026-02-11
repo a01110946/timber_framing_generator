@@ -442,13 +442,17 @@ def generate_assembly_layers(
         layer_config = _get_layer_config(layer, rules_config, layer_override or config)
 
         # Resolve per-layer junction bounds.
-        # Try individual layer name first (per-layer cumulative
-        # adjustments), then fall back to aggregate face key.
+        # Try composite key "name|side" first (disambiguates same-named
+        # layers on different sides), then fall back to aggregate face key.
         # Values may be either (u_start, u_end) tuples (legacy) or
         # lists of (u_start, u_end) segment tuples (midspan gaps).
+        layer_key = f"{name}|{side}"
         bounds_source = "default(no face_bounds)"
         raw_bounds = None
-        if face_bounds and name in face_bounds:
+        if face_bounds and layer_key in face_bounds:
+            raw_bounds = face_bounds[layer_key]
+            bounds_source = f"composite_key='{layer_key}'"
+        elif face_bounds and name in face_bounds:
             raw_bounds = face_bounds[name]
             bounds_source = f"individual_layer_name='{name}'"
         elif face_bounds and face in face_bounds:
@@ -497,7 +501,7 @@ def generate_assembly_layers(
         # issues where the geometry converter's flatten step doesn't
         # have access to the layer-level w_offset (e.g., when
         # _safe_calculate_w_offsets failed or JSON round-trip lost it).
-        w_offset_value = w_offsets.get(name)
+        w_offset_value = w_offsets.get(f"{name}|{side}") or w_offsets.get(name)
         panel_dicts: List[Dict[str, Any]] = []
         for p in panels:
             pd = p.to_dict()

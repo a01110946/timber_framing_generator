@@ -409,7 +409,7 @@ def parse_config(config_json):
             assembly_mode, framing_system, assembly_overrides)
 
 
-def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
+def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data, layer_side=None):
     """Compute U-axis panel bounds from junction adjustments.
 
     Looks up the junction adjustments for a specific wall and face,
@@ -429,6 +429,10 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
             Must match the ``layer_name`` values emitted by the
             junction resolver.
         junctions_data: Parsed junctions_json dict, or None.
+        layer_side: Optional layer side ("exterior", "interior", "core")
+            for disambiguating same-named layers on different sides.
+            When provided, adjustments that carry a ``layer_side`` field
+            must match this value in addition to ``layer_name``.
 
     Returns:
         list: List of (u_start, u_end) segment tuples in feet.
@@ -451,6 +455,12 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data):
     matched_any = False
     for adj in wall_adjustments:
         if adj.get("layer_name") != layer_name:
+            continue
+        # When both the adjustment and the query carry a layer_side,
+        # require them to match.  This disambiguates same-named layers
+        # on different sides (e.g., "Gypsum Board" on ext vs int).
+        adj_side = adj.get("layer_side")
+        if layer_side and adj_side and adj_side != layer_side:
             continue
 
         matched_any = True
@@ -716,18 +726,22 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
             )
             for al in assembly_layers:
                 lname = al.get("name")
+                lside = al.get("side", "exterior")
+                lkey = f"{lname}|{lside}"
                 if lname and lname in adj_layer_names:
                     segments = compute_sheathing_bounds(
-                        wall_id, wall_length, lname, junctions_data
+                        wall_id, wall_length, lname, junctions_data,
+                        layer_side=lside,
                     )
-                    face_bounds[lname] = segments
+                    face_bounds[lkey] = segments
                     log_info(
-                        f"  layer '{lname}' bounds: {len(segments)} segment(s) "
+                        f"  layer '{lname}' (side={lside}, key='{lkey}') bounds: "
+                        f"{len(segments)} segment(s) "
                         f"(ADJUSTED, wall_length={wall_length:.4f})"
                     )
                 elif lname:
                     log_info(
-                        f"  layer '{lname}': no matching adjustment "
+                        f"  layer '{lname}' (side={lside}): no matching adjustment "
                         f"(will use face fallback)"
                     )
 

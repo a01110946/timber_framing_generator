@@ -5,6 +5,12 @@ Generates framing elements using the strategy pattern based on material type.
 Outputs JSON data (no geometry) for downstream geometry conversion. Supports
 multiple material systems through a modular strategy architecture.
 
+Reads segment metadata from Cell Decomposer (``segment_u_start``,
+``segment_u_end``) and injects ``_segment_bounds`` into wall data so that
+the WBC (Wall Boundary Cell) is built at the correct junction-adjusted U
+range. This propagates extend/trim/split adjustments into plates, studs,
+and all framing elements.
+
 Key Features:
 1. Multi-Material Support
    - Timber framing (2x4, 2x6, etc.)
@@ -17,7 +23,13 @@ Key Features:
    - Cripple studs above/below openings
    - End studs at wall and panel boundaries
 
-3. Panel-Aware Framing
+3. Junction-Aware Framing
+   - Reads segment bounds from cell_data metadata
+   - Injects _segment_bounds into wall data for WBC construction
+   - Framing elements correctly extend/trim at L-corners and T-intersections
+   - Multi-segment walls (X-crossings) produce independent framing runs
+
+4. Panel-Aware Framing
    - Passes panel_id through element metadata
    - Supports panelization-before-framing workflow
    - Enables per-panel framing for prefab construction
@@ -40,14 +52,16 @@ Performance Considerations:
 
 Usage:
     1. Connect 'cell_json' from Cell Decomposer
-    2. Connect 'walls_json' from Wall Analyzer
+    2. Connect 'walls_json' from Wall Analyzer (or Junction Analyzer enriched)
     3. Set 'material_type' to "timber" or "cfs"
     4. Set 'run' to True to execute
     5. Connect 'framing_json' to Geometry Converter component
 
 Input Requirements:
     Cell JSON (cell_json) - str:
-        JSON string from Cell Decomposer with cell decomposition data
+        JSON string from Cell Decomposer with cell decomposition data.
+        May include segment metadata (segment_u_start, segment_u_end) from
+        junction-adjusted framing segments.
         Required: Yes
         Access: Item
 
@@ -86,14 +100,16 @@ Technical Details:
     - Elements stored as centerline + profile (no geometry)
     - Geometry created in separate Geometry Converter component
     - Panel_id passed through metadata for traceability
+    - Segment bounds from cell metadata override WBC [0, wall_length] range
 
 Error Handling:
     - Invalid JSON returns empty results with error in log
     - Unknown material type defaults to timber with warning
     - Missing cells logged but don't halt execution
+    - Missing segment metadata falls back to full wall range (backward compatible)
 
 Author: Timber Framing Generator
-Version: 1.1.0
+Version: 1.2.0
 """
 
 # =============================================================================
@@ -122,7 +138,13 @@ from Grasshopper.Kernel.Data import GH_Path
 # Force Module Reload (CPython 3 in Rhino 8)
 # =============================================================================
 
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+# Clear timber_framing_generator modules AND the 'src' package itself.
+# Other GH components may have already imported 'src', caching its
+# __path__ to the main repo.  Clearing it forces Python to re-resolve
+# 'src' from the updated sys.path (worktree at index 0).
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k
+                     or k == 'src']
 for mod in _modules_to_clear:
     del sys.modules[mod]
 
@@ -130,12 +152,27 @@ for mod in _modules_to_clear:
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path (contains element_adapters fixes, etc.)
+# Fallback: main repo path (for modules not yet in the worktree)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+# Ensure worktree path has highest priority (index 0) in sys.path.
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 # Import materials module to trigger strategy registration
+# Import material strategies to trigger registration.
+# Both timber and cfs are imported so the strategy is available
+# regardless of which framing_system the Config Builder sets.
 from src.timber_framing_generator.materials import timber  # noqa: F401
+try:
+    from src.timber_framing_generator.materials import cfs  # noqa: F401
+except ImportError:
+    pass  # CFS module may not exist yet
 
 from src.timber_framing_generator.core.material_system import (
     MaterialSystem, get_framing_strategy, list_available_materials
@@ -151,7 +188,7 @@ from src.timber_framing_generator.core.json_schemas import (
 
 COMPONENT_NAME = "Framing Generator"
 COMPONENT_NICKNAME = "FrameGen"
-COMPONENT_MESSAGE = "v1.1"
+COMPONENT_MESSAGE = "v1.2"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Framing"
 
@@ -387,6 +424,7 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
                 v_start=elem.v_start,
                 v_end=elem.v_end,
                 cell_id=elem.cell_id,
+                panel_id=panel_id,
                 metadata=elem_metadata,
             )
             elements.append(elem_data)
@@ -408,6 +446,53 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
     return elements, log_lines
 
 
+def compute_effective_segment_bounds(
+    panel_start: "float | None",
+    panel_end: "float | None",
+    seg_start: "float | None",
+    seg_end: "float | None",
+    wall_length: float,
+    tolerance: float = 0.01,
+) -> "tuple[float, float] | None":
+    """Compute effective _segment_bounds for a cell/panel.
+
+    In **panel mode** (panel_start/panel_end present), plates are bounded by
+    panel edges.  Junction adjustments (seg_start/seg_end) only apply at the
+    wall's own endpoints — i.e. the first panel inherits seg_start if its
+    panel_start is near 0, and the last panel inherits seg_end if its
+    panel_end is near wall_length.
+
+    In **segment mode** (no panel bounds), the raw junction-adjusted segment
+    bounds are used directly.
+
+    Args:
+        panel_start: Panel U-start from metadata (None if not panel mode).
+        panel_end: Panel U-end from metadata (None if not panel mode).
+        seg_start: Junction-adjusted segment U-start from metadata.
+        seg_end: Junction-adjusted segment U-end from metadata.
+        wall_length: Full wall length for endpoint comparison.
+        tolerance: How close to 0 / wall_length counts as "at wall endpoint".
+
+    Returns:
+        (eff_start, eff_end) tuple, or None if no bounds to inject.
+    """
+    if panel_start is not None and panel_end is not None:
+        # Panel mode: plates bounded by panel edges
+        eff_start = panel_start
+        eff_end = panel_end
+        # First panel inherits junction extension at wall start
+        if seg_start is not None and panel_start <= tolerance:
+            eff_start = seg_start
+        # Last panel inherits junction extension at wall end
+        if seg_end is not None and panel_end >= wall_length - tolerance:
+            eff_end = seg_end
+        return (eff_start, eff_end)
+    elif seg_start is not None and seg_end is not None:
+        # Segment mode (no panels): junction-adjusted bounds
+        return (seg_start, seg_end)
+    return None
+
+
 def process_framing(cell_list, wall_lookup, strategy, config):
     """Process all walls through the framing generator.
 
@@ -427,6 +512,24 @@ def process_framing(cell_list, wall_lookup, strategy, config):
     for i, cell_data_dict in enumerate(cell_list):
         wall_id = cell_data_dict.get('wall_id', f'wall_{i}')
         wall_data_dict = wall_lookup.get(wall_id, {})
+
+        # Inject segment bounds from cell metadata so that
+        # reconstruct_wall_data() builds the WBC at the correct
+        # framing U range (junction-adjusted, not raw wall_length).
+        # In panel mode, plates are bounded by panel edges with
+        # junction adjustments only at the wall's own endpoints.
+        meta = cell_data_dict.get('metadata', {})
+        wall_length = wall_data_dict.get('wall_length', 0)
+        bounds = compute_effective_segment_bounds(
+            panel_start=meta.get('panel_u_start'),
+            panel_end=meta.get('panel_u_end'),
+            seg_start=meta.get('segment_u_start'),
+            seg_end=meta.get('segment_u_end'),
+            wall_length=wall_length,
+        )
+        if bounds is not None:
+            wall_data_dict = dict(wall_data_dict)  # shallow copy
+            wall_data_dict['_segment_bounds'] = list(bounds)
 
         elements, wall_log = generate_framing_for_wall(
             cell_data_dict, wall_data_dict, strategy, config
@@ -480,8 +583,19 @@ def main():
                 log_warning(error_msg)
             return framing_json, element_count, error_msg
 
-        # Get material system and strategy
-        material_type_val = material_type if material_type else "timber"
+        # Parse inputs (config must be parsed BEFORE framing_system extraction)
+        cell_list = json.loads(cell_json_input)
+        wall_list = json.loads(walls_json_input)
+        wall_lookup = {w.get('wall_id'): w for w in wall_list}
+        config = json.loads(config_json_input) if config_json_input else {}
+
+        # Get material system — framing_system from config_json overrides material_type input
+        framing_system = config.get("framing_system")
+        if framing_system and framing_system.strip():
+            material_type_val = framing_system.strip().lower()
+            log_info(f"Using framing_system from config_json: {material_type_val}")
+        else:
+            material_type_val = material_type if material_type else "timber"
         material_system = get_material_system(material_type_val)
 
         # Check if strategy is available
@@ -496,13 +610,7 @@ def main():
 
         strategy = get_framing_strategy(material_system)
 
-        # Parse inputs
-        cell_list = json.loads(cell_json_input)
-        wall_list = json.loads(walls_json_input)
-        wall_lookup = {w.get('wall_id'): w for w in wall_list}
-        config = json.loads(config_json_input) if config_json_input else {}
-
-        log_lines.append(f"Framing Generator v1.1")
+        log_lines.append(f"Framing Generator v1.2")
         log_lines.append(f"Material System: {material_type_val}")
         log_lines.append(f"Walls to process: {len(cell_list)}")
         log_lines.append(f"Strategy: {strategy.__class__.__name__}")

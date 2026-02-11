@@ -21,6 +21,14 @@ Usage:
 
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional, Any
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Small outward nudge applied to layer W offsets so sheathing faces never
+# sit co-planar with framing faces.  Prevents Z-fighting and AABB overlap
+# artifacts in the Rhino viewport.  ~0.012 in ≈ 0.3 mm — invisible in practice.
+SHEATHING_GAP: float = 0.001
 
 
 @dataclass
@@ -114,37 +122,167 @@ def get_extrusion_vector(
 def calculate_w_offset(
     face: str,
     wall_thickness: float,
-    panel_thickness: float
+    panel_thickness: float,
+    wall_assembly: Optional[Dict[str, Any]] = None,
 ) -> float:
     """
     Calculate the W offset for panel placement.
 
     Panels are placed on the exterior or interior face of the wall,
-    offset from the wall centerline.
+    offset from the wall centerline. When assembly data is available,
+    the offset is computed from the actual layer stack (core + exterior
+    or core + interior thicknesses), which is more accurate for
+    asymmetric assemblies.
 
     Args:
         face: "exterior" or "interior"
-        wall_thickness: Wall thickness in feet
+        wall_thickness: Wall thickness in feet (fallback)
         panel_thickness: Sheathing panel thickness in feet
+        wall_assembly: Optional assembly dict from wall_data. When present,
+            layer stack thicknesses are used instead of wall_thickness/2.
 
     Returns:
         W offset from wall centerline in feet
     """
+    if wall_assembly:
+        return _calculate_w_offset_from_assembly(
+            face, wall_assembly, panel_thickness
+        )
+
+    # Fallback: simple half-thickness (symmetric assumption)
     half_wall = wall_thickness / 2.0
 
     if face == "exterior":
-        # Exterior face: panel outside surface at wall outer face
+        # Exterior face: panel core-facing surface at wall outer face
         return half_wall
     else:
-        # Interior face: panel inside surface at wall inner face
-        return -half_wall - panel_thickness
+        # Interior face: panel core-facing surface at wall inner face
+        # (mirrors exterior: extrusion in -Z places panel against wall)
+        return -half_wall
+
+
+def _calculate_w_offset_from_assembly(
+    face: str,
+    wall_assembly: Dict[str, Any],
+    panel_thickness: float,
+) -> float:
+    """
+    Calculate W offset from assembly layer stack.
+
+    Uses the actual cumulative layer thicknesses from the wall assembly
+    instead of dividing total thickness by 2. This produces correct
+    positioning for asymmetric assemblies where exterior and interior
+    layer thicknesses differ.
+
+    The centerline (W=0) is at the center of the structural core.
+
+    Args:
+        face: "exterior" or "interior"
+        wall_assembly: Assembly dictionary with "layers" list.
+        panel_thickness: Sheathing panel thickness in feet.
+
+    Returns:
+        W offset from wall centerline in feet.
+    """
+    try:
+        from src.timber_framing_generator.wall_data.assembly_extractor import (
+            assembly_dict_to_def,
+        )
+        assembly_def = assembly_dict_to_def(wall_assembly)
+    except Exception:
+        # If conversion fails, fall back to total thickness
+        total = sum(l.get("thickness", 0) for l in wall_assembly.get("layers", []))
+        half = total / 2.0
+        if face == "exterior":
+            return half
+        return -half
+
+    core_half = assembly_def.core_thickness / 2.0
+
+    if face == "exterior":
+        # Panel starts at the wall's exterior face
+        # = core center + half core + all exterior layers
+        return core_half + assembly_def.exterior_thickness
+    else:
+        # Panel core-facing surface at wall's interior face
+        # (mirrors exterior: extrusion in -Z places panel against wall)
+        return -(core_half + assembly_def.interior_thickness)
+
+
+def calculate_layer_w_offsets(
+    wall_assembly: Dict[str, Any],
+    framing_depth: Optional[float] = None,
+) -> Dict[str, float]:
+    """
+    Compute W offset for each layer's core-facing surface.
+
+    Returns a dictionary mapping layer name to its W position where
+    the layer starts (the face closest to the structural core).
+
+    When ``framing_depth`` is provided, the starting offset is
+    ``max(core_half, framing_depth / 2)`` so that sheathing layers
+    never start inside the framing zone even when the assembly
+    catalog core thickness differs from the actual framing profile.
+
+    Args:
+        wall_assembly: Assembly dictionary with "layers" list.
+        framing_depth: Optional actual framing profile depth in feet
+            (e.g., 3.5/12 for 2x4). When provided, layers are pushed
+            outward to at least ``framing_depth / 2`` from centerline.
+
+    Returns:
+        Dict mapping composite key ``"name|side"`` to W offset (feet
+        from centerline).  Using composite keys prevents collisions
+        when two layers share the same name on different sides (e.g.,
+        "Gypsum Board" on both exterior and interior).
+    """
+    from src.timber_framing_generator.wall_data.assembly_extractor import (
+        assembly_dict_to_def,
+    )
+    from src.timber_framing_generator.wall_junctions.junction_types import LayerSide
+
+    assembly_def = assembly_dict_to_def(wall_assembly)
+    offsets: Dict[str, float] = {}
+    core_half = assembly_def.core_thickness / 2.0
+
+    # Use actual framing depth when it exceeds assembly core
+    effective_half = core_half
+    if framing_depth is not None:
+        effective_half = max(core_half, framing_depth / 2.0)
+
+    # Tiny outward nudge so sheathing faces never sit co-planar with
+    # framing faces (prevents Z-fighting and AABB overlap artifacts).
+    effective_half += SHEATHING_GAP
+
+    # Exterior layers: stack outward from effective exterior face
+    ext_layers = assembly_def.get_layers_by_side(LayerSide.EXTERIOR)
+    cumulative = effective_half
+    for layer in reversed(ext_layers):  # closest to core first
+        offsets[f"{layer.name}|{layer.side.value}"] = cumulative
+        cumulative += layer.thickness
+
+    # Interior layers: stack inward from effective interior face
+    # Store core-facing surface (matching exterior convention)
+    int_layers = assembly_def.get_layers_by_side(LayerSide.INTERIOR)
+    cumulative = -effective_half
+    for layer in int_layers:  # order from assembly (closest to core first)
+        offsets[f"{layer.name}|{layer.side.value}"] = cumulative  # Core-facing surface
+        cumulative -= layer.thickness
+
+    # Core layer
+    core_layers = assembly_def.get_layers_by_side(LayerSide.CORE)
+    for layer in core_layers:
+        offsets[f"{layer.name}|{layer.side.value}"] = -effective_half
+
+    return offsets
 
 
 def create_panel_brep(
     panel_data: Dict[str, Any],
     base_plane: Dict[str, Any],
     wall_thickness: float,
-    factory: Any
+    factory: Any,
+    wall_assembly: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """
     Create a Brep for a sheathing panel.
@@ -154,6 +292,7 @@ def create_panel_brep(
         base_plane: Wall's base plane (origin, x_axis, y_axis, z_axis)
         wall_thickness: Wall thickness in feet
         factory: RhinoCommonFactory instance
+        wall_assembly: Optional assembly dict for layer-aware W offset
 
     Returns:
         RhinoCommon Brep or None if creation fails
@@ -167,9 +306,25 @@ def create_panel_brep(
     # Panel thickness (convert inches to feet)
     thickness_ft = panel_data["thickness_inches"] / 12.0
 
-    # Calculate W offset based on face
+    # Calculate W offset for panel placement.
+    # Per-layer offset (from multi-layer generator) takes priority over
+    # face-level offset, since it correctly positions each layer in the
+    # assembly stack (e.g., siding further out than OSB).
     face = panel_data.get("face", "exterior")
-    w_offset = calculate_w_offset(face, wall_thickness, thickness_ft)
+    layer_w_offset = panel_data.get("layer_w_offset")
+    if layer_w_offset is not None:
+        w_offset = layer_w_offset
+        logger.debug(
+            "Panel %s: using layer_w_offset=%.4f",
+            panel_data.get("id", "?"), w_offset,
+        )
+    else:
+        w_offset = calculate_w_offset(face, wall_thickness, thickness_ft, wall_assembly)
+        logger.debug(
+            "Panel %s: FALLBACK w_offset=%.4f (face=%s, wall_t=%.4f, has_assembly=%s)",
+            panel_data.get("id", "?"), w_offset, face, wall_thickness,
+            wall_assembly is not None,
+        )
 
     # Create panel corners in world coordinates
     # Order: bottom-left, bottom-right, top-right, top-left (counter-clockwise)
@@ -291,14 +446,16 @@ def create_cutout_brep(
         uvw_to_world(u_start, v_end, w_start, base_plane),
     ]
 
-    # Extrusion vector through panel
+    # Extrusion vector through panel: always from w_start toward w_end (+Z).
+    # Corners are placed at w_start (the more-negative W boundary), so the
+    # extrusion must go in the +Z direction to reach w_end and fully
+    # encompass the panel for both exterior and interior faces.
     extrusion_depth = abs(w_end - w_start)
     z_axis = base_plane["z_axis"]
-    direction = 1.0 if face == "exterior" else -1.0
     extrusion_vector = (
-        z_axis["x"] * extrusion_depth * direction,
-        z_axis["y"] * extrusion_depth * direction,
-        z_axis["z"] * extrusion_depth * direction
+        z_axis["x"] * extrusion_depth,
+        z_axis["y"] * extrusion_depth,
+        z_axis["z"] * extrusion_depth,
     )
 
     return factory.create_box_from_corners_and_thickness(corners, extrusion_vector)
@@ -330,10 +487,15 @@ def create_sheathing_breps(
     if wall_thickness > 2.0:  # Likely in inches
         wall_thickness = wall_thickness / 12.0
 
+    # Get assembly data for layer-aware W offset (Phase 3)
+    wall_assembly = wall_data.get("wall_assembly")
+
     panels = sheathing_data.get("sheathing_panels", [])
 
     for panel_data in panels:
-        brep = create_panel_brep(panel_data, base_plane, wall_thickness, factory)
+        brep = create_panel_brep(
+            panel_data, base_plane, wall_thickness, factory, wall_assembly
+        )
 
         if brep is not None:
             geometry = SheathingPanelGeometry(

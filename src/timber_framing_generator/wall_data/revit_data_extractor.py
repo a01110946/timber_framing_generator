@@ -160,6 +160,24 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         wall_function_param = wall_type.get_Parameter(DB.BuiltInParameter.FUNCTION_PARAM)
         is_exterior_wall = wall_function_param and (wall_function_param.AsInteger() == 1)
 
+        # 4a. Get wall flip state.
+        # When Flipped=True, the exterior face is on the negative Z-axis side
+        # (opposite to the default cross(curve_direction, world_Z) direction).
+        is_flipped = bool(revit_wall.Flipped)
+
+        # 4a-ii. Store wall.Orientation as the geometric exterior normal.
+        # wall.Orientation = cross(curve_tangent, world_Z) — purely geometric,
+        # does NOT change when wall.Flipped=True.
+        # The flip correction (negating when Flipped=True) is applied in the
+        # Wall Analyzer GH component (gh_wall_analyzer.py) to avoid module
+        # cache issues with this imported module.
+        orientation = revit_wall.Orientation
+        exterior_normal = {
+            "x": float(orientation.X),
+            "y": float(orientation.Y),
+            "z": float(orientation.Z),
+        }
+
         # 4b. Determine if the wall is load-bearing.
         # WALL_STRUCTURAL_USAGE_PARAM values:
         # 0 = Non-bearing, 1 = Bearing, 2 = Shear, 3 = Structural Combined
@@ -377,6 +395,21 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         wall_thickness = wall_type.Width  # In Revit internal units (feet)
         print(f"Wall thickness from WallType.Width: {wall_thickness} ft ({wall_thickness * 12:.2f} inches)")
 
+        # 7c. Extract CompoundStructure for multi-layer assembly data.
+        wall_assembly_dict = None
+        try:
+            from src.timber_framing_generator.wall_data.assembly_extractor import (
+                extract_compound_structure,
+            )
+            wall_assembly_dict = extract_compound_structure(wall_type, doc)
+            if wall_assembly_dict:
+                layer_count = len(wall_assembly_dict.get("layers", []))
+                print(f"Extracted CompoundStructure: {layer_count} layers from {wall_type.Name}")
+            else:
+                print(f"No CompoundStructure available for {wall_type.Name}, using defaults")
+        except Exception as cs_err:
+            print(f"CompoundStructure extraction failed: {cs_err}")
+
         # 8. Decompose the wall into cells.
         cell_data_dict = decompose_wall_to_cells(
             wall_length=wall_length,
@@ -401,7 +434,10 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
             "wall_top_elevation": wall_top_elevation,
             "wall_height": wall_height,
             "is_exterior_wall": is_exterior_wall,
+            "is_flipped": is_flipped,
+            "exterior_normal": exterior_normal,
             "is_load_bearing": is_load_bearing,
+            "wall_assembly": wall_assembly_dict,
             "openings": openings_data,
             "cells": cells_list,
         }

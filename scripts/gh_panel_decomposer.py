@@ -648,8 +648,18 @@ def process_panelization(walls_data, framing_data, config):
 # Main Function
 # =============================================================================
 
-def main():
+def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
+         joint_corner_in, stud_space_in, run_in):
     """Main entry point for the component.
+
+    Args:
+        walls_json_in: JSON string with wall data.
+        framing_json_in: JSON string with framing data (optional).
+        max_length_in: Max panel length in feet (optional).
+        joint_opening_in: Min joint-to-opening distance (optional).
+        joint_corner_in: Min joint-to-corner distance (optional).
+        stud_space_in: Stud spacing in feet (optional).
+        run_in: Boolean trigger.
 
     Returns:
         tuple: (panels_json, panel_curves, joint_points, debug_info)
@@ -664,7 +674,7 @@ def main():
 
     try:
         # Validate inputs
-        is_valid, error_msg = validate_inputs(walls_json, run)
+        is_valid, error_msg = validate_inputs(walls_json_in, run_in)
         if not is_valid:
             if error_msg and "not running" not in error_msg.lower():
                 log_warning(error_msg)
@@ -672,16 +682,16 @@ def main():
             return panels_json, panel_curves, joint_points, "\n".join(debug_lines)
 
         # Parse inputs
-        walls_data = parse_walls_json(walls_json)
-        framing_data = parse_framing_json(framing_json) if framing_json else None
+        walls_data = parse_walls_json(walls_json_in)
+        framing_data = parse_framing_json(framing_json_in) if framing_json_in else None
         debug_lines.append(f"Parsed {len(walls_data)} walls")
 
         # Build configuration
         config = PanelConfig(
-            max_panel_length=max_length if max_length else 24.0,
-            min_joint_to_opening=joint_opening if joint_opening else 1.0,
-            min_joint_to_corner=joint_corner if joint_corner else 2.0,
-            stud_spacing=stud_space if stud_space else 1.333,
+            max_panel_length=max_length_in if max_length_in else 24.0,
+            min_joint_to_opening=joint_opening_in if joint_opening_in else 1.0,
+            min_joint_to_corner=joint_corner_in if joint_corner_in else 2.0,
+            stud_spacing=stud_space_in if stud_space_in else 1.333,
         )
         debug_lines.append(f"Config: max={config.max_panel_length}ft, stud={config.stud_spacing}ft")
 
@@ -741,6 +751,9 @@ try:
 except NameError:
     run = False
 
-# Execute main
+# Execute main — pass inputs explicitly to avoid CPython 3 exec() scope issues
 if __name__ == "__main__":
-    panels_json, panel_curves, joint_points, debug_info = main()
+    panels_json, panel_curves, joint_points, debug_info = main(
+        walls_json, framing_json, max_length, joint_opening,
+        joint_corner, stud_space, run
+    )

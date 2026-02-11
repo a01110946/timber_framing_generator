@@ -165,11 +165,12 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
         # (opposite to the default cross(curve_direction, world_Z) direction).
         is_flipped = bool(revit_wall.Flipped)
 
-        # 4a-ii. Store wall.Orientation as the authoritative exterior normal.
-        # This is the geometric outward normal = cross(curve_tangent, world_Z).
-        # It does NOT change when the wall is flipped.  Stored separately
-        # from base_plane so sheathing code can determine face direction
-        # independently of the framing coordinate system.
+        # 4a-ii. Store wall.Orientation as the geometric exterior normal.
+        # wall.Orientation = cross(curve_tangent, world_Z) — purely geometric,
+        # does NOT change when wall.Flipped=True.
+        # The flip correction (negating when Flipped=True) is applied in the
+        # Wall Analyzer GH component (gh_wall_analyzer.py) to avoid module
+        # cache issues with this imported module.
         orientation = revit_wall.Orientation
         exterior_normal = {
             "x": float(orientation.X),

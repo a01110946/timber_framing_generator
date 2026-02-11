@@ -85,6 +85,10 @@ Outputs:
     Panel IDs (panel_ids) - list[str]:
         Panel IDs for selection feedback
 
+    Panel Functions (panel_functions) - list[str]:
+        Layer function per panel (e.g., "finish", "substrate", "structure").
+        Parallel to breps and panel_ids. Use to group/filter panels by function.
+
     Summary (summary) - str:
         Text summary with panel counts and areas
 
@@ -161,10 +165,10 @@ from src.timber_framing_generator.sheathing.sheathing_geometry import (
 
 COMPONENT_NAME = "Sheathing Geometry Converter"
 COMPONENT_NICKNAME = "SheathGeo"
-COMPONENT_MESSAGE = "v1.3"
+COMPONENT_MESSAGE = "v1.4"
 
 # Version marker — confirms updated script is running in GH
-print("[SheathGeo] Script version v1.3 loaded (flip normalization)")
+print("[SheathGeo] Script version v1.4 loaded (panel_functions output)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Geometry"
 
@@ -253,6 +257,7 @@ def setup_component():
         ("Breps", "breps", "All sheathing panels as Breps"),
         ("By Wall", "by_wall", "DataTree of Breps by wall ID"),
         ("Panel IDs", "panel_ids", "Panel IDs for selection"),
+        ("Panel Functions", "panel_functions", "Layer function per panel (finish/substrate/structure)"),
         ("Summary", "summary", "Panel counts and area summary"),
         ("Debug Info", "debug_info", "Debug information and status"),
     ]
@@ -373,10 +378,13 @@ def _flatten_multi_layer_entry(entry):
         layer_name = layer_result.get("layer_name", "unknown")
         w_offset = layer_result.get("w_offset")
 
+        layer_function = layer_result.get("layer_function", "unknown")
+
         for panel in layer_result.get("panels", []):
             # Add layer metadata to each panel for downstream use
             enriched_panel = dict(panel)
             enriched_panel["layer_name"] = layer_name
+            enriched_panel["layer_function"] = layer_function
             if w_offset is not None:
                 enriched_panel["layer_w_offset"] = w_offset
             all_panels.append(enriched_panel)
@@ -405,10 +413,6 @@ def parse_walls_json(walls_json):
     data = json.loads(walls_json)
 
     walls_by_id = {}
-
-    # z_axis in walls_json is already set by the Wall Analyzer using
-    # Revit's wall.Orientation (geometric exterior normal, flip-independent).
-    # No flip correction needed — +z_axis = building-layout exterior.
 
     # If it's a list of walls
     if isinstance(data, list):
@@ -439,11 +443,12 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
         factory: RhinoCommonFactory instance
 
     Returns:
-        tuple: (breps, wall_groups, panel_ids, stats)
+        tuple: (breps, wall_groups, panel_ids, panel_functions, stats)
     """
     breps = []
     wall_groups = {}
     panel_ids = []
+    panel_functions = []
     stats = {
         "total_panels": 0,
         "panels_with_cutouts": 0,
@@ -493,6 +498,13 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
             else:
                 w_offset_diag["fallback"] += 1
 
+        # Build panel_id -> layer_function lookup from raw panel dicts
+        func_lookup = {}
+        for p in panels:
+            pid = p.get("id")
+            if pid:
+                func_lookup[pid] = p.get("layer_function", "unknown")
+
         # Create geometry for this wall's panels
         geometries = create_sheathing_breps(sheathing_data, wall_data, factory)
 
@@ -500,6 +512,7 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
             if geom.brep is not None:
                 breps.append(geom.brep)
                 panel_ids.append(geom.panel_id)
+                panel_functions.append(func_lookup.get(geom.panel_id, "unknown"))
 
                 # Group by wall
                 if wall_id not in wall_groups:
@@ -517,7 +530,7 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
     # Append W offset diagnostics to stats
     stats["w_offset_diag"] = w_offset_diag
 
-    return breps, wall_groups, panel_ids, stats
+    return breps, wall_groups, panel_ids, panel_functions, stats
 
 
 def format_summary(stats):
@@ -553,7 +566,7 @@ def main():
     """Main entry point for the component.
 
     Returns:
-        tuple: (breps, by_wall, panel_ids, summary, debug_info)
+        tuple: (breps, by_wall, panel_ids, panel_functions, summary, debug_info)
     """
     setup_component()
 
@@ -561,6 +574,7 @@ def main():
     breps = []
     by_wall = DataTree[object]()
     panel_ids = []
+    panel_functions = []
     summary = ""
     log_lines = []
 
@@ -583,7 +597,7 @@ def main():
         if not is_valid:
             if error_msg and "not running" not in error_msg.lower():
                 log_warning(error_msg)
-            return breps, by_wall, panel_ids, summary, error_msg
+            return breps, by_wall, panel_ids, panel_functions, summary, error_msg
 
         # Get geometry factory
         factory = get_factory()
@@ -592,7 +606,7 @@ def main():
         sheathing_list = parse_sheathing_json(sheathing_json_input)
         walls_by_id = parse_walls_json(walls_json_input)
 
-        log_lines.append(f"Sheathing Geometry Converter v1.2")
+        log_lines.append(f"Sheathing Geometry Converter v1.4")
         log_lines.append(f"Sheathing entries: {len(sheathing_list)}")
         log_lines.append(f"Walls available: {len(walls_by_id)}")
 
@@ -638,7 +652,7 @@ def main():
             log_lines.append(f"Wall Filter: {wall_filter}")
 
         # Process geometry
-        breps, wall_groups, panel_ids, stats = process_sheathing_geometry(
+        breps, wall_groups, panel_ids, panel_functions, stats = process_sheathing_geometry(
             sheathing_list, walls_by_id, wall_filter, factory
         )
 
@@ -697,7 +711,11 @@ def main():
         log_lines.append(f"ERROR: {str(e)}")
         log_lines.append(traceback.format_exc())
 
-    return breps, by_wall, panel_ids, summary, "\n".join(log_lines)
+    # Diagnostic: confirm panel_functions data
+    print(f"[DEBUG] panel_functions: {len(panel_functions)} items, "
+          f"sample={panel_functions[:3] if panel_functions else 'empty'}")
+
+    return breps, by_wall, panel_ids, panel_functions, summary, "\n".join(log_lines)
 
 # =============================================================================
 # Execution
@@ -726,4 +744,4 @@ except NameError:
 
 # Execute main
 if __name__ == "__main__":
-    breps, by_wall, panel_ids, summary, debug_info = main()
+    breps, by_wall, panel_ids, panel_functions, summary, debug_info = main()

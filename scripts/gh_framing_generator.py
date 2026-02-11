@@ -424,6 +424,7 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
                 v_start=elem.v_start,
                 v_end=elem.v_end,
                 cell_id=elem.cell_id,
+                panel_id=panel_id,
                 metadata=elem_metadata,
             )
             elements.append(elem_data)
@@ -443,6 +444,53 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config):
             log_lines.append("--- END DEBUG ---")
 
     return elements, log_lines
+
+
+def compute_effective_segment_bounds(
+    panel_start: "float | None",
+    panel_end: "float | None",
+    seg_start: "float | None",
+    seg_end: "float | None",
+    wall_length: float,
+    tolerance: float = 0.01,
+) -> "tuple[float, float] | None":
+    """Compute effective _segment_bounds for a cell/panel.
+
+    In **panel mode** (panel_start/panel_end present), plates are bounded by
+    panel edges.  Junction adjustments (seg_start/seg_end) only apply at the
+    wall's own endpoints — i.e. the first panel inherits seg_start if its
+    panel_start is near 0, and the last panel inherits seg_end if its
+    panel_end is near wall_length.
+
+    In **segment mode** (no panel bounds), the raw junction-adjusted segment
+    bounds are used directly.
+
+    Args:
+        panel_start: Panel U-start from metadata (None if not panel mode).
+        panel_end: Panel U-end from metadata (None if not panel mode).
+        seg_start: Junction-adjusted segment U-start from metadata.
+        seg_end: Junction-adjusted segment U-end from metadata.
+        wall_length: Full wall length for endpoint comparison.
+        tolerance: How close to 0 / wall_length counts as "at wall endpoint".
+
+    Returns:
+        (eff_start, eff_end) tuple, or None if no bounds to inject.
+    """
+    if panel_start is not None and panel_end is not None:
+        # Panel mode: plates bounded by panel edges
+        eff_start = panel_start
+        eff_end = panel_end
+        # First panel inherits junction extension at wall start
+        if seg_start is not None and panel_start <= tolerance:
+            eff_start = seg_start
+        # Last panel inherits junction extension at wall end
+        if seg_end is not None and panel_end >= wall_length - tolerance:
+            eff_end = seg_end
+        return (eff_start, eff_end)
+    elif seg_start is not None and seg_end is not None:
+        # Segment mode (no panels): junction-adjusted bounds
+        return (seg_start, seg_end)
+    return None
 
 
 def process_framing(cell_list, wall_lookup, strategy, config):
@@ -468,12 +516,20 @@ def process_framing(cell_list, wall_lookup, strategy, config):
         # Inject segment bounds from cell metadata so that
         # reconstruct_wall_data() builds the WBC at the correct
         # framing U range (junction-adjusted, not raw wall_length).
+        # In panel mode, plates are bounded by panel edges with
+        # junction adjustments only at the wall's own endpoints.
         meta = cell_data_dict.get('metadata', {})
-        seg_start = meta.get('segment_u_start')
-        seg_end = meta.get('segment_u_end')
-        if seg_start is not None and seg_end is not None:
+        wall_length = wall_data_dict.get('wall_length', 0)
+        bounds = compute_effective_segment_bounds(
+            panel_start=meta.get('panel_u_start'),
+            panel_end=meta.get('panel_u_end'),
+            seg_start=meta.get('segment_u_start'),
+            seg_end=meta.get('segment_u_end'),
+            wall_length=wall_length,
+        )
+        if bounds is not None:
             wall_data_dict = dict(wall_data_dict)  # shallow copy
-            wall_data_dict['_segment_bounds'] = [seg_start, seg_end]
+            wall_data_dict['_segment_bounds'] = list(bounds)
 
         elements, wall_log = generate_framing_for_wall(
             cell_data_dict, wall_data_dict, strategy, config

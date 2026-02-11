@@ -170,7 +170,7 @@ import Grasshopper
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-family-resolver"
+PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
 if PROJECT_PATH not in sys.path:
     sys.path.insert(0, PROJECT_PATH)
 
@@ -564,4 +564,18 @@ except NameError:
 # =============================================================================
 
 if __name__ == "__main__":
-    resolved_json, missing, status, info = main()
+    # Debug: show what globals GH actually injected
+    print("[DEBUG] run=%r, framing_json type=%s" % (run, type(framing_json).__name__))
+    try:
+        resolved_json, missing, status, info = main()
+    except Exception as _main_err:
+        import traceback
+        print("[FATAL] main() crashed: %s" % _main_err)
+        print(traceback.format_exc())
+        resolved_json, missing, status, info = "", [], "failed", [str(_main_err)]
+    # Print info to console so it's always visible regardless of output binding
+    if info:
+        if isinstance(info, list):
+            print("\n".join(str(x) for x in info))
+        else:
+            print(info)

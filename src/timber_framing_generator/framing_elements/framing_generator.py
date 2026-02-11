@@ -76,12 +76,19 @@ class FramingGenerator:
         self,
         wall_data: Dict[str, Union[str, float, bool, List, Any]],
         framing_config=None,
+        panels_data: Optional[List[Dict[str, Any]]] = None,
     ):
         logger.debug("Initializing FramingGenerator")
         logger.debug(f"Wall data keys: {list(wall_data.keys())}")
-        
+
         # Store the wall data for use throughout the generation process
         self.wall_data = wall_data
+
+        # Panel data for panel-aware plate splitting and element assignment
+        # Each dict should have 'id', 'u_start', 'u_end' at minimum
+        self.panels_data = panels_data
+        if panels_data:
+            logger.info(f"Panel-aware mode: {len(panels_data)} panels provided")
 
         # Set default configuration if none provided
         self.framing_config = {
@@ -194,10 +201,14 @@ class FramingGenerator:
             self.framing_elements["row_blocking"] = []
             self.generation_status["blocking_generated"] = True
         
+        # Assign panel IDs to all non-plate elements (plates get IDs during creation)
+        if self.panels_data:
+            self._assign_panel_ids_to_elements()
+
         end_time = datetime.datetime.now()
         elapsed_time = (end_time - start_time).total_seconds()
         logger.info(f"Framing generation complete in {elapsed_time:.2f} seconds")
-        
+
         # Display debugging info for wall
         self._log_wall_data_diagnostic()
         
@@ -223,15 +234,33 @@ class FramingGenerator:
     def _generate_plates(self):
         """
         Generate top and bottom wall plates.
+
+        When panels_data is available, plates are split at panel boundaries.
+        Each resulting plate segment carries its panel_id.
         """
         try:
             logger.debug("Starting plate generation")
             logger.debug("Wall base curve type: " + str(type(self.wall_data.get("wall_base_curve"))))
-            
+
             # Skip if plates already generated
             if self.generation_status["plates_generated"]:
                 logger.debug("Plates already generated, skipping")
                 return
+
+            # Build panel_boundaries from panels_data if available
+            panel_boundaries = None
+            if self.panels_data:
+                panel_boundaries = [
+                    {
+                        "u_start": p["u_start"],
+                        "u_end": p["u_end"],
+                        "panel_id": p["id"],
+                    }
+                    for p in self.panels_data
+                ]
+                logger.info(
+                    f"Panel-aware plate generation: {len(panel_boundaries)} panels"
+                )
 
             logger.debug("Creating bottom plates")
             self.framing_elements["bottom_plates"] = create_plates(
@@ -239,6 +268,7 @@ class FramingGenerator:
                 plate_type="bottom_plate",
                 representation_type=self.framing_config["representation_type"],
                 layers=self.framing_config["bottom_plate_layers"],
+                panel_boundaries=panel_boundaries,
             )
 
             logger.debug("Creating top plates")
@@ -247,6 +277,7 @@ class FramingGenerator:
                 plate_type="top_plate",
                 representation_type=self.framing_config["representation_type"],
                 layers=self.framing_config["top_plate_layers"],
+                panel_boundaries=panel_boundaries,
             )
 
             self.generation_status["plates_generated"] = True
@@ -1654,6 +1685,76 @@ class FramingGenerator:
         # Generate the blocking elements
         return blocking_generator.generate_blocking()
         
+    def _assign_panel_ids_to_elements(self) -> None:
+        """Assign panel_id to all non-plate framing elements based on U-coordinate.
+
+        Plates already receive panel_id during creation (via panel_boundaries
+        in create_plates). This method handles vertical and horizontal elements
+        like studs, king studs, trimmers, cripples, headers, sills, and blocking.
+
+        For each element, projects its center point onto the wall's U-axis and
+        assigns the panel whose [u_start, u_end] range contains that coordinate.
+        """
+        if not self.panels_data:
+            return
+
+        base_plane = self.wall_data.get("base_plane")
+        if base_plane is None:
+            logger.warning("No base plane available for panel ID assignment")
+            return
+
+        sorted_panels = sorted(self.panels_data, key=lambda p: p["u_start"])
+        last_idx = len(sorted_panels) - 1
+
+        element_types = [
+            "king_studs", "headers", "sills", "trimmers",
+            "header_cripples", "sill_cripples", "studs", "row_blocking",
+        ]
+
+        total_assigned = 0
+        for elem_type in element_types:
+            elements = self.framing_elements.get(elem_type, [])
+            for element in elements:
+                # Get element center U-coordinate by projecting bounding box center
+                try:
+                    bbox = safe_get_bounding_box(element, True)
+                    if not bbox.IsValid:
+                        continue
+                    center = rg.Point3d(
+                        (bbox.Min.X + bbox.Max.X) / 2,
+                        (bbox.Min.Y + bbox.Max.Y) / 2,
+                        (bbox.Min.Z + bbox.Max.Z) / 2,
+                    )
+                    u_coord = self._project_point_to_u_coordinate(center, base_plane)
+
+                    # Find matching panel
+                    assigned = False
+                    for i, panel in enumerate(sorted_panels):
+                        u_start = panel["u_start"]
+                        u_end = panel["u_end"]
+                        if i == last_idx:
+                            if u_start <= u_coord <= u_end:
+                                element._panel_id = panel["id"]
+                                assigned = True
+                                total_assigned += 1
+                                break
+                        else:
+                            if u_start <= u_coord < u_end:
+                                element._panel_id = panel["id"]
+                                assigned = True
+                                total_assigned += 1
+                                break
+                    if not assigned:
+                        element._panel_id = None
+                except Exception as e:
+                    logger.debug(
+                        f"Could not assign panel_id to {elem_type} element: {e}"
+                    )
+
+        logger.info(
+            f"Assigned panel_id to {total_assigned} elements across {len(element_types)} types"
+        )
+
     def _log_wall_data_diagnostic(self):
         """Log diagnostic information about wall data"""
         logger.info("\n===== WALL DATA DIAGNOSTIC =====")

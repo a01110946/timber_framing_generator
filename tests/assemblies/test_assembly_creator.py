@@ -14,6 +14,7 @@ from src.timber_framing_generator.assemblies.assembly_creator import (
     AssemblyBatchResult,
     AssemblyResult,
     PanelElementGroup,
+    enrich_panels_with_framing_data,
 )
 
 
@@ -310,3 +311,163 @@ class TestCreateAssemblies:
         assert [r.panel_id for r in batch.results] == [
             "wall_1_panel_0", "wall_1_panel_1", "wall_1_panel_2",
         ]
+
+
+# =============================================================================
+# enrich_panels_with_framing_data Tests
+# =============================================================================
+
+class TestEnrichPanelsWithFramingData:
+    """Tests for enrich_panels_with_framing_data()."""
+
+    def _make_framing_json(self, elements):
+        """Helper: build framing_json string from element dicts."""
+        return json.dumps({"elements": elements})
+
+    def _make_panels_json_wall_results(self, wall_results):
+        """Helper: build panels_json as list of wall results."""
+        return json.dumps(wall_results)
+
+    def test_basic_enrichment(self) -> None:
+        """Elements with panel_id populate the correct panel's element_ids."""
+        panels_json = self._make_panels_json_wall_results([
+            {
+                "wall_id": "wall_1",
+                "panels": [
+                    {"id": "wall_1_panel_0", "u_start": 0, "u_end": 10, "element_ids": []},
+                    {"id": "wall_1_panel_1", "u_start": 10, "u_end": 20, "element_ids": []},
+                ],
+            },
+        ])
+        framing_json = self._make_framing_json([
+            {"id": "stud_1", "panel_id": "wall_1_panel_0"},
+            {"id": "stud_2", "panel_id": "wall_1_panel_0"},
+            {"id": "stud_3", "panel_id": "wall_1_panel_1"},
+        ])
+
+        result = json.loads(enrich_panels_with_framing_data(panels_json, framing_json))
+        p0 = result[0]["panels"][0]
+        p1 = result[0]["panels"][1]
+
+        assert sorted(p0["element_ids"]) == ["stud_1", "stud_2"]
+        assert p1["element_ids"] == ["stud_3"]
+
+    def test_no_panel_ids_returns_unchanged(self) -> None:
+        """When framing elements have no panel_id, panels_json is unchanged."""
+        panels_json = json.dumps([
+            {
+                "wall_id": "wall_1",
+                "panels": [
+                    {"id": "wall_1_panel_0", "u_start": 0, "u_end": 10, "element_ids": []},
+                ],
+            },
+        ])
+        framing_json = self._make_framing_json([
+            {"id": "stud_1"},  # No panel_id
+            {"id": "stud_2", "panel_id": None},
+        ])
+
+        result = enrich_panels_with_framing_data(panels_json, framing_json)
+        parsed = json.loads(result)
+        assert parsed[0]["panels"][0]["element_ids"] == []
+
+    def test_multi_wall(self) -> None:
+        """Enrichment works across multiple walls."""
+        panels_json = self._make_panels_json_wall_results([
+            {
+                "wall_id": "wall_1",
+                "panels": [
+                    {"id": "w1p0", "u_start": 0, "u_end": 10, "element_ids": []},
+                ],
+            },
+            {
+                "wall_id": "wall_2",
+                "panels": [
+                    {"id": "w2p0", "u_start": 0, "u_end": 8, "element_ids": []},
+                ],
+            },
+        ])
+        framing_json = self._make_framing_json([
+            {"id": "e1", "panel_id": "w1p0"},
+            {"id": "e2", "panel_id": "w2p0"},
+            {"id": "e3", "panel_id": "w2p0"},
+        ])
+
+        result = json.loads(enrich_panels_with_framing_data(panels_json, framing_json))
+        assert result[0]["panels"][0]["element_ids"] == ["e1"]
+        assert sorted(result[1]["panels"][0]["element_ids"]) == ["e2", "e3"]
+
+    def test_flat_panel_list_format(self) -> None:
+        """Handles flat list of panel dicts (no wall_id wrapper)."""
+        panels_json = json.dumps([
+            {"id": "p0", "u_start": 0, "u_end": 10, "element_ids": []},
+            {"id": "p1", "u_start": 10, "u_end": 20, "element_ids": []},
+        ])
+        framing_json = self._make_framing_json([
+            {"id": "s1", "panel_id": "p0"},
+            {"id": "s2", "panel_id": "p1"},
+        ])
+
+        result = json.loads(enrich_panels_with_framing_data(panels_json, framing_json))
+        assert result[0]["element_ids"] == ["s1"]
+        assert result[1]["element_ids"] == ["s2"]
+
+    def test_single_wall_result_format(self) -> None:
+        """Handles single wall result dict: {"wall_id": ..., "panels": [...]}."""
+        panels_json = json.dumps({
+            "wall_id": "wall_1",
+            "panels": [
+                {"id": "wall_1_panel_0", "u_start": 0, "u_end": 10, "element_ids": []},
+            ],
+        })
+        framing_json = self._make_framing_json([
+            {"id": "e1", "panel_id": "wall_1_panel_0"},
+        ])
+
+        result = json.loads(enrich_panels_with_framing_data(panels_json, framing_json))
+        assert result["panels"][0]["element_ids"] == ["e1"]
+
+    def test_empty_framing_elements(self) -> None:
+        """Empty elements list returns panels unchanged."""
+        panels_json = json.dumps([
+            {
+                "wall_id": "w1",
+                "panels": [{"id": "p0", "element_ids": []}],
+            },
+        ])
+        framing_json = self._make_framing_json([])
+
+        result = json.loads(enrich_panels_with_framing_data(panels_json, framing_json))
+        assert result[0]["panels"][0]["element_ids"] == []
+
+    def test_unmatched_panel_id_ignored(self) -> None:
+        """Elements with panel_ids not in panels_json are silently skipped."""
+        panels_json = json.dumps([
+            {
+                "wall_id": "w1",
+                "panels": [{"id": "p0", "element_ids": []}],
+            },
+        ])
+        framing_json = self._make_framing_json([
+            {"id": "e1", "panel_id": "nonexistent_panel"},
+            {"id": "e2", "panel_id": "p0"},
+        ])
+
+        result = json.loads(enrich_panels_with_framing_data(panels_json, framing_json))
+        assert result[0]["panels"][0]["element_ids"] == ["e2"]
+
+    def test_overwrites_existing_empty_element_ids(self) -> None:
+        """Enrichment replaces existing empty element_ids with actual IDs."""
+        panels_json = json.dumps([
+            {
+                "wall_id": "w1",
+                "panels": [{"id": "p0", "element_ids": []}],
+            },
+        ])
+        framing_json = self._make_framing_json([
+            {"id": "stud_1", "panel_id": "p0"},
+            {"id": "plate_1", "panel_id": "p0"},
+        ])
+
+        result = json.loads(enrich_panels_with_framing_data(panels_json, framing_json))
+        assert len(result[0]["panels"][0]["element_ids"]) == 2

@@ -229,6 +229,73 @@ def _extract_panels_list(
     return None
 
 
+def enrich_panels_with_framing_data(
+    panels_json: str,
+    framing_json: str,
+) -> str:
+    """Enrich panels_json with element_ids derived from framing_json.
+
+    The panel decomposer runs before the framing generator in the GH pipeline,
+    so panels_json typically has empty element_ids. The framing generator assigns
+    panel_id to every element. This function maps those panel_ids back to each
+    panel's element_ids list, enabling the reliable element-ID-based grouping
+    path in group_elements_by_panel().
+
+    Args:
+        panels_json: JSON from panel decomposer (various formats accepted).
+        framing_json: JSON from framing generator with panel_id per element.
+
+    Returns:
+        Enriched panels_json string with element_ids populated.
+        Returns the original panels_json unchanged if framing data has no
+        panel_id assignments.
+    """
+    panels_raw = json.loads(panels_json)
+    framing_data = json.loads(framing_json)
+
+    # Build panel_id -> [element_ids] map from framing elements
+    panel_element_map: Dict[str, List[str]] = {}
+    for element in framing_data.get("elements", []):
+        pid = element.get("panel_id")
+        eid = element.get("id", "")
+        if pid and eid:
+            panel_element_map.setdefault(pid, []).append(eid)
+
+    if not panel_element_map:
+        logger.debug("No panel_id assignments found in framing_json")
+        return panels_json
+
+    enriched_count = 0
+
+    def _enrich_panels_list(panels_list: List[Dict[str, Any]]) -> None:
+        nonlocal enriched_count
+        for panel in panels_list:
+            pid = panel.get("id")
+            if pid and pid in panel_element_map:
+                panel["element_ids"] = panel_element_map[pid]
+                enriched_count += len(panel_element_map[pid])
+
+    # Handle the various panels_json formats
+    if isinstance(panels_raw, dict) and "panels" in panels_raw:
+        # Single wall result: {"wall_id": ..., "panels": [...]}
+        _enrich_panels_list(panels_raw["panels"])
+    elif isinstance(panels_raw, list):
+        if panels_raw and isinstance(panels_raw[0], dict):
+            if "panels" in panels_raw[0]:
+                # List of wall results: [{"wall_id": ..., "panels": [...]}, ...]
+                for wall_result in panels_raw:
+                    _enrich_panels_list(wall_result.get("panels", []))
+            elif "id" in panels_raw[0]:
+                # Flat list of panel dicts
+                _enrich_panels_list(panels_raw)
+
+    logger.info(
+        "Enriched panels with %d element_ids across %d panels",
+        enriched_count, len(panel_element_map),
+    )
+    return json.dumps(panels_raw)
+
+
 def group_elements_by_panel(
     baking_data_json: str,
     panels_json: Optional[str],
@@ -329,12 +396,21 @@ def _group_by_element_ids(
     sheathing_ids: Optional[List[Any]],
     sheathing_panel_map: Dict[str, List[int]],
 ) -> List[PanelElementGroup]:
-    """Group elements by matching panel element_ids to baking data member IDs."""
-    # Build element index: member_id -> {classification, geometry_index}
-    element_index: Dict[str, Dict[str, Any]] = {}
+    """Group elements by matching panel element_ids to baking data member IDs.
+
+    IMPORTANT: Framing element IDs (e.g., "p0_stud_0", "p1_bottom_plate_0")
+    are unique per wall because they are prefixed with the panel index by the
+    framing generator.  The element index is keyed by (wall_id, member_id) to
+    avoid cross-wall collisions.
+    """
+    # Build element index: (wall_id, member_id) -> {classification, geometry_index}
+    # Keyed by tuple because member IDs repeat across walls (e.g., every wall
+    # has a "p0_stud_0", etc.)
+    element_index: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for wall_id, wall_data in baking_data.get("walls", {}).items():
         for member in wall_data.get("members", []):
-            element_index[member["id"]] = {
+            key = (wall_id, member["id"])
+            element_index[key] = {
                 "classification": member["classification"],
                 "geometry_index": member["geometry_index"],
             }
@@ -343,20 +419,23 @@ def _group_by_element_ids(
 
     for panel in panels_data:
         panel_id = panel["id"]
+        panel_wall_id = panel["wall_id"]
         group = PanelElementGroup(
             panel_id=panel_id,
-            wall_id=panel["wall_id"],
+            wall_id=panel_wall_id,
             panel_index=panel.get("panel_index", 0),
         )
 
         for elem_id_str in panel.get("element_ids", []):
-            info = element_index.get(elem_id_str)
+            info = element_index.get((panel_wall_id, elem_id_str))
             if not info:
                 continue
             idx = info["geometry_index"]
-            if info["classification"] == "column" and idx < len(column_ids):
+            cls = info["classification"]
+
+            if cls == "column" and idx < len(column_ids):
                 group.column_element_ids.append(column_ids[idx])
-            elif info["classification"] == "beam" and idx < len(beam_ids):
+            elif cls == "beam" and idx < len(beam_ids):
                 group.beam_element_ids.append(beam_ids[idx])
 
         if sheathing_ids and panel_id in sheathing_panel_map:
@@ -805,6 +884,118 @@ def _fix_assembly_orientation(
         return False
 
 
+def _preflight_duplicate_check(
+    groups: List[PanelElementGroup],
+) -> int:
+    """Detect duplicate Revit ElementIds across panel groups.
+
+    If the same Revit element appears in multiple groups, only the first
+    assembly will succeed -- all others will fail with "should not be a
+    member of an existing assembly."
+
+    Args:
+        groups: Element groups from group_elements_by_panel()
+
+    Returns:
+        Number of duplicate element references found
+    """
+    seen: Dict[str, str] = {}  # str(eid) -> first panel_id
+    duplicate_count = 0
+    sample_duplicates: List[Tuple[str, str, str]] = []
+
+    for group in groups:
+        for eid in group.all_element_ids:
+            eid_key = str(eid)
+            if eid_key in seen:
+                duplicate_count += 1
+                if len(sample_duplicates) < 10:
+                    sample_duplicates.append(
+                        (eid_key, seen[eid_key], group.panel_id),
+                    )
+            else:
+                seen[eid_key] = group.panel_id
+
+    total_refs = sum(g.element_count for g in groups)
+    unique_refs = len(seen)
+
+    if duplicate_count > 0:
+        logger.warning(
+            "DUPLICATE ELEMENT CHECK: %d duplicates found! "
+            "Total refs: %d, Unique: %d across %d groups",
+            duplicate_count, total_refs, unique_refs, len(groups),
+        )
+        for eid_key, first_panel, second_panel in sample_duplicates:
+            logger.warning(
+                "  ElementId '%s': first in '%s', also in '%s'",
+                eid_key, first_panel, second_panel,
+            )
+    else:
+        logger.info(
+            "Duplicate check OK: %d unique elements across %d groups",
+            unique_refs, len(groups),
+        )
+
+    return duplicate_count
+
+
+def _build_valid_element_list(
+    doc: Any,
+    element_ids: List[Any],
+    assembly_name: str,
+) -> Tuple[Any, int, int]:
+    """Build a .NET List<ElementId> with only valid, unassembled elements.
+
+    Filters out:
+    - Elements that don't exist in the document
+    - Elements already in another assembly
+
+    Args:
+        doc: Revit Document object
+        element_ids: Raw element IDs (ElementId, int, or str)
+        assembly_name: Assembly name for logging context
+
+    Returns:
+        Tuple of (NetList[ElementId], skipped_invalid_count, skipped_in_assembly_count)
+    """
+    id_list = NetList[ElementId]()
+    skipped_invalid = 0
+    skipped_in_assembly = 0
+
+    for eid in element_ids:
+        try:
+            eid_obj = _to_element_id(eid)
+        except (ValueError, TypeError):
+            skipped_invalid += 1
+            continue
+
+        elem = doc.GetElement(eid_obj)
+        if elem is None:
+            skipped_invalid += 1
+            continue
+
+        # Check if element is already in an assembly
+        try:
+            assembly_inst_id = elem.AssemblyInstanceId
+            if assembly_inst_id != ElementId.InvalidElementId:
+                skipped_in_assembly += 1
+                continue
+        except AttributeError:
+            # Element type doesn't support AssemblyInstanceId -- allow it
+            pass
+
+        id_list.Add(eid_obj)
+
+    if skipped_invalid > 0 or skipped_in_assembly > 0:
+        logger.warning(
+            "'%s': %d valid, %d invalid/missing, %d already in assembly "
+            "(from %d total)",
+            assembly_name, id_list.Count, skipped_invalid,
+            skipped_in_assembly, len(element_ids),
+        )
+
+    return id_list, skipped_invalid, skipped_in_assembly
+
+
 def create_assemblies(
     doc: Any,
     groups: List[PanelElementGroup],
@@ -863,7 +1054,13 @@ def create_assemblies(
     batch = AssemblyBatchResult()
     batch.total_assemblies = len(groups)
 
-    for group in groups:
+    # Pre-flight: detect duplicate Revit ElementIds across groups.
+    # If two framing elements in different panels map to the same
+    # geometry_index (same Revit element), assembly creation will fail
+    # for all groups after the first.
+    _preflight_duplicate_check(groups)
+
+    for group_idx, group in enumerate(groups):
         assembly_name = generate_assembly_name(
             group.wall_id, group.panel_index, naming_prefix,
         )
@@ -875,12 +1072,18 @@ def create_assemblies(
         )
 
         try:
-            # Build .NET List<ElementId>
-            # ElementIds may arrive as actual ElementId, int, or str
-            # (GH untyped params often unwrap to str via .Value)
-            id_list = NetList[ElementId]()
-            for eid in group.all_element_ids:
-                id_list.Add(_to_element_id(eid))
+            # Build .NET List<ElementId>, filtering out elements that
+            # are invalid, missing, or already in an assembly.
+            id_list, skipped_invalid, skipped_in_assembly = (
+                _build_valid_element_list(doc, group.all_element_ids, assembly_name)
+            )
+
+            if id_list.Count == 0:
+                raise ValueError(
+                    "No valid elements remaining after filtering "
+                    "(%d invalid, %d already in assembly)"
+                    % (skipped_invalid, skipped_in_assembly)
+                )
 
             # Transaction 1: Create assembly instance
             t1 = Transaction(doc, "Create Assembly: %s" % assembly_name)
@@ -950,8 +1153,8 @@ def create_assemblies(
             result.status = "created"
             batch.successful += 1
             logger.info(
-                "Created assembly '%s' with %d elements",
-                assembly_name, group.element_count,
+                "[%d/%d] Created assembly '%s' with %d elements",
+                group_idx + 1, len(groups), assembly_name, group.element_count,
             )
 
         except Exception as e:
@@ -959,10 +1162,18 @@ def create_assemblies(
             result.error = str(e)
             batch.failed += 1
             logger.error(
-                "Failed to create assembly '%s': %s", assembly_name, e,
+                "[%d/%d] Failed to create assembly '%s': %s",
+                group_idx + 1, len(groups), assembly_name, e,
             )
 
         batch.results.append(result)
+
+        # Force Revit to regenerate after each assembly to prevent
+        # document-server overload and crashes in large batches.
+        try:
+            doc.Regenerate()
+        except Exception:
+            pass
 
     logger.info(
         "Assembly batch complete: %d/%d successful",

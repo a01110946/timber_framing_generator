@@ -56,10 +56,11 @@ Usage:
     2. Connect 'column_ids' from RiR "Add Structural Column" output
     3. Connect 'beam_ids' from RiR "Add Structural Framing" output
     4. Optionally connect 'panels_json' for panel-level grouping
-    5. Optionally connect 'sheathing_ids' and 'sheathing_data_json'
-    6. Set 'run' to True to create assemblies
-    7. Optionally connect 'view_config_json' to customize view settings
-    8. Check 'assembly_json' and 'info' for results
+    5. Connect 'framing_json' from Framing Generator for accurate panel grouping
+    6. Optionally connect 'sheathing_ids' and 'sheathing_data_json'
+    7. Set 'run' to True to create assemblies
+    8. Optionally connect 'view_config_json' to customize view settings
+    9. Check 'assembly_json' and 'info' for results
 
 Input Requirements:
     Baking Data JSON (baking_data_json) - str:
@@ -129,6 +130,16 @@ Input Requirements:
         Access: Item
         Type hint: str (set via GH UI)
 
+    Framing JSON (framing_json) - str:
+        JSON from Framing Generator (gh_framing_generator.py) with panel_id
+        on each element. When provided, enriches panels_json with element_ids
+        for accurate panel-level grouping. Without this, falls back to
+        geometry-based grouping which can misassign elements near panel
+        boundaries.
+        Required: No (but strongly recommended for panel-level assemblies)
+        Access: Item
+        Type hint: str (set via GH UI)
+
     Run (run) - bool:
         Boolean toggle to trigger execution. Assembly creation modifies
         the Revit document, so this acts as a safety guard.
@@ -165,7 +176,7 @@ Error Handling:
     - All errors reported via dual logging (console + GH runtime messages)
 
 Author: Fernando Maytorena
-Version: 1.1.0
+Version: 1.3.0
 """
 
 import sys
@@ -221,6 +232,7 @@ if PROJECT_PATH not in sys.path:
     sys.path.insert(0, PROJECT_PATH)
 
 from src.timber_framing_generator.assemblies.assembly_creator import (
+    enrich_panels_with_framing_data,
     group_elements_by_panel,
     create_assemblies,
     _derive_wall_axis,
@@ -235,7 +247,7 @@ from src.timber_framing_generator.assemblies.assembly_views import (
 
 COMPONENT_NAME = "Revit Assembly Creator"
 COMPONENT_NICKNAME = "AssemCr"
-COMPONENT_MESSAGE = "v1.2"
+COMPONENT_MESSAGE = "v1.3"
 COMPONENT_CATEGORY = "TFG"
 COMPONENT_SUBCATEGORY = "Revit"
 
@@ -306,6 +318,7 @@ def setup_component() -> None:
         naming_prefix: str
         create_views: bool
         view_config_json: str
+        framing_json: str
         run: bool
     """
     # Component metadata
@@ -347,6 +360,9 @@ def setup_component() -> None:
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("View Config JSON", "view_config_json",
          "JSON configuring assembly views (optional)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Framing JSON", "framing_json",
+         "JSON from Framing Generator with panel_id per element (optional, enables accurate panel grouping)",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Run", "run",
          "Boolean to trigger execution",
@@ -583,7 +599,8 @@ def main():
     naming_prefix_val = _read_string_input(inputs, 6)
     create_views_val = _read_bool_input(inputs, 7, default=False)
     view_config_json_val = _read_string_input(inputs, 8)
-    run_val = _read_bool_input(inputs, 9, default=False)
+    framing_json_val = _read_string_input(inputs, 9)
+    run_val = _read_bool_input(inputs, 10, default=False)
 
     # -----------------------------------------------------------------
     # Setup component metadata (display only, AFTER inputs are captured)
@@ -609,7 +626,7 @@ def main():
         # Build diagnostic info
         # -----------------------------------------------------------------
         info_lines = [
-            "Revit Assembly Creator v1.1",
+            "Revit Assembly Creator v1.3",
             "=" * 40,
         ]
 
@@ -657,13 +674,37 @@ def main():
         info_lines.append("  Members: %d" % total_members)
 
         # -----------------------------------------------------------------
+        # Enrich panels with element_ids from framing data
+        # -----------------------------------------------------------------
+        # The panel decomposer runs before the framing generator, so
+        # panels_json has empty element_ids. If framing_json is provided,
+        # map each element's panel_id back to its panel's element_ids list.
+        # This enables the reliable element-ID-based grouping path.
+        enriched_panels_json = panels_json_val
+        if framing_json_val and panels_json_val:
+            try:
+                enriched_panels_json = enrich_panels_with_framing_data(
+                    panels_json_val, framing_json_val,
+                )
+                log_info("Enriched panels with framing element_ids")
+                info_lines.append("  Framing JSON: provided (panels enriched with element_ids)")
+            except Exception as e:
+                log_warning("Failed to enrich panels: %s" % str(e))
+                enriched_panels_json = panels_json_val
+                info_lines.append("  Framing JSON: provided but enrichment failed: %s" % str(e))
+        elif framing_json_val:
+            info_lines.append("  Framing JSON: provided but no panels_json to enrich")
+        else:
+            info_lines.append("  Framing JSON: not provided (using geometry-based grouping)")
+
+        # -----------------------------------------------------------------
         # Group elements by panel
         # -----------------------------------------------------------------
         log_info("Grouping elements by panel...")
 
         groups = group_elements_by_panel(
             baking_data_json_val,
-            panels_json_val,
+            enriched_panels_json,
             column_ids_val,
             beam_ids_val,
             sheathing_ids_val if sheathing_ids_val else None,
@@ -682,6 +723,44 @@ def main():
                 % (g.panel_id, len(g.column_element_ids),
                    len(g.beam_element_ids), len(g.sheathing_element_ids))
             )
+
+        # Check for duplicate Revit ElementIds across groups
+        if groups:
+            all_eid_strs = []
+            eid_to_panel = {}
+            dup_samples = []
+            for g in groups:
+                for eid in g.all_element_ids:
+                    eid_str = str(eid)
+                    if eid_str in eid_to_panel:
+                        if len(dup_samples) < 10:
+                            dup_samples.append(
+                                (eid_str, eid_to_panel[eid_str], g.panel_id)
+                            )
+                    else:
+                        eid_to_panel[eid_str] = g.panel_id
+                    all_eid_strs.append(eid_str)
+
+            unique_count = len(eid_to_panel)
+            dup_count = len(all_eid_strs) - unique_count
+            info_lines.append("")
+            info_lines.append("Duplicate Element Check:")
+            info_lines.append(
+                "  Total element refs: %d, Unique: %d, Duplicates: %d"
+                % (len(all_eid_strs), unique_count, dup_count)
+            )
+            if dup_count > 0:
+                log_warning(
+                    "DUPLICATE ELEMENTS: %d elements shared across panels!"
+                    % dup_count
+                )
+                for eid_str, first_panel, second_panel in dup_samples:
+                    info_lines.append(
+                        "  ElementId '%s': in '%s' AND '%s'"
+                        % (eid_str, first_panel, second_panel)
+                    )
+            else:
+                info_lines.append("  No duplicates -- all elements unique")
 
         if not groups:
             msg = "No element groups created -- check baking_data_json and panels_json"
@@ -769,7 +848,7 @@ def main():
         # -----------------------------------------------------------------
         # Create assemblies
         # -----------------------------------------------------------------
-        log_info("Creating %d assemblies..." % len(groups))
+        log_info("Creating %d assemblies (create_views=%s)..." % (len(groups), do_create_views))
 
         result = create_assemblies(
             REVIT_DOC,

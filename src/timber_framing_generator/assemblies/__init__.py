@@ -10,6 +10,7 @@ from src.timber_framing_generator.assemblies.assembly_creator import (
     PanelElementGroup,
     AssemblyResult,
     AssemblyBatchResult,
+    enrich_panels_with_framing_data,
     group_elements_by_panel,
     create_assemblies,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "AssemblyViewConfig",
     "CreatedViewInfo",
     "SheetResult",
+    "enrich_panels_with_framing_data",
     "group_elements_by_panel",
     "create_assemblies",
     "create_assembly_views",

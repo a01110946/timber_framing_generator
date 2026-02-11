@@ -1,6 +1,6 @@
 # File: timber_framing_generator/framing_elements/plates.py
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from src.timber_framing_generator.config.framing import (
     FRAMING_PARAMS,
     PlatePosition,
@@ -116,6 +116,68 @@ def _split_reference_line_at_doors(
     return segments
 
 
+def _split_reference_line_at_panel_boundaries(
+    reference_line,
+    panel_boundaries: List[Dict[str, Any]],
+) -> List[Tuple[Any, str]]:
+    """
+    Split a reference line into segments at panel boundaries.
+
+    Each panel boundary dict must have 'u_start', 'u_end', and 'panel_id'.
+    Returns one segment per panel, paired with its panel_id.
+
+    Args:
+        reference_line: The original plate centerline (rg.Curve)
+        panel_boundaries: List of dicts with 'u_start', 'u_end', 'panel_id'
+
+    Returns:
+        List of (LineCurve segment, panel_id) tuples
+    """
+    import Rhino.Geometry as rg
+
+    if not panel_boundaries:
+        return [(reference_line, None)]
+
+    line_start = reference_line.PointAtStart
+    line_end = reference_line.PointAtEnd
+
+    wall_direction = rg.Vector3d(line_end - line_start)
+    wall_length = wall_direction.Length
+    wall_direction.Unitize()
+
+    # Sort panels by u_start
+    sorted_panels = sorted(panel_boundaries, key=lambda p: p["u_start"])
+
+    segments = []
+    for panel in sorted_panels:
+        u_start = panel["u_start"]
+        u_end = panel["u_end"]
+        panel_id = panel["panel_id"]
+
+        # Clamp to reference line bounds
+        u_start = max(0.0, u_start)
+        u_end = min(wall_length, u_end)
+
+        if u_end - u_start < 0.01:  # Skip degenerate segments
+            continue
+
+        seg_start = rg.Point3d.Add(
+            line_start, rg.Vector3d.Multiply(wall_direction, u_start)
+        )
+        seg_end = rg.Point3d.Add(
+            line_start, rg.Vector3d.Multiply(wall_direction, u_end)
+        )
+        segments.append((rg.LineCurve(seg_start, seg_end), panel_id))
+        logger.debug(
+            f"Created panel plate segment '{panel_id}' from U={u_start:.3f} to U={u_end:.3f}"
+        )
+
+    logger.info(
+        f"Split plate into {len(segments)} panel segments"
+    )
+    return segments
+
+
 def create_plates(
     wall_data: Dict,
     plate_type: str = "bottom_plate",
@@ -123,6 +185,7 @@ def create_plates(
     profile_override: Optional[str] = None,
     layers: Optional[int] = None,
     openings: Optional[List[Dict[str, Any]]] = None,
+    panel_boundaries: Optional[List[Dict[str, Any]]] = None,
 ) -> List[PlateGeometry]:
     """
     Creates plate geometry objects for a wall with full configuration options.
@@ -132,12 +195,17 @@ def create_plates(
     2. Different representation methods (structural or schematic)
     3. Custom profile overrides
     4. Single or multiple plate layers
+    5. Panel-aware splitting at panel joint locations
 
     The representation_type parameter controls plate positioning:
     - "structural": Places plates in their actual construction position
                    (e.g., bottom plate centered below wall base)
     - "schematic": Places plates for clear visualization
                    (e.g., bottom plate centered above wall base)
+
+    When panel_boundaries is provided, plates are split at panel joint locations.
+    For bottom plates, door splits compose with panel splits:
+    panel split first, then door split within each panel segment.
 
     Args:
         wall_data: Dictionary containing wall information including:
@@ -155,6 +223,9 @@ def create_plates(
                If None, uses default from FRAMING_PARAMS
         openings: Optional list of wall openings. For bottom plates, door openings
                  will cause the plate to be split into segments.
+        panel_boundaries: Optional list of panel boundary dicts, each with
+                         'u_start', 'u_end', and 'panel_id'. When provided,
+                         plates are split at panel boundaries.
 
     Returns:
         List[PlateGeometry]: A list of PlateGeometry objects representing the plates
@@ -167,19 +238,27 @@ def create_plates(
             representation_type="structural"
         )
 
-        # Create schematic double top plates
+        # Create panel-aware top plates (one per panel)
         top_plates = create_plates(
             wall_data,
             plate_type="top_plate",
             representation_type="schematic",
-            layers=2
+            layers=2,
+            panel_boundaries=[
+                {"u_start": 0.0, "u_end": 12.0, "panel_id": "wall1_panel_0"},
+                {"u_start": 12.0, "u_end": 24.0, "panel_id": "wall1_panel_1"},
+            ]
         )
     """
+    import Rhino.Geometry as rg
+
     logger.info(f"Creating plates with configuration:")
     logger.info(f"- Plate type: {plate_type}")
     logger.info(f"- Representation: {representation_type}")
     logger.info(f"- Profile override: {profile_override}")
     logger.info(f"- Layers: {layers}")
+    if panel_boundaries:
+        logger.info(f"- Panel boundaries: {len(panel_boundaries)} panels")
     logger.trace(f"Wall data: {wall_data}")
 
     plates = []
@@ -256,33 +335,94 @@ def create_plates(
         # Create and append the plate geometry object(s)
         logger.debug(f"- Creating plate geometry")
         try:
-            # Check if this is a bottom plate and if there are door openings
-            # If so, split the plate into segments that skip door areas
-            if plate_type == "bottom_plate" and openings:
-                doors = _get_door_openings(openings)
-                if doors:
-                    logger.info(f"Found {len(doors)} door openings - splitting bottom plate")
-                    reference_line = location_data["reference_line"]
-                    base_plane = location_data["base_plane"]
-                    segments = _split_reference_line_at_doors(reference_line, doors, base_plane)
+            reference_line = location_data["reference_line"]
+            base_plane = location_data["base_plane"]
 
-                    for seg_idx, segment in enumerate(segments):
-                        # Create modified location data with the segment as reference line
-                        segment_location_data = dict(location_data)
-                        segment_location_data["reference_line"] = segment
-                        plate = PlateGeometry(segment_location_data, parameters)
-                        plates.append(plate)
-                        logger.debug(f"  Created {current_plate_type} segment {seg_idx + 1}/{len(segments)}")
-                else:
-                    # No doors, create single plate
-                    plate = PlateGeometry(location_data, parameters)
-                    plates.append(plate)
-                    logger.info(f"  Successfully created {current_plate_type} geometry")
+            # Step 1: Split by panel boundaries (if provided)
+            if panel_boundaries:
+                panel_segments = _split_reference_line_at_panel_boundaries(
+                    reference_line, panel_boundaries
+                )
             else:
-                # Top plates or bottom plates without openings - create single plate
-                plate = PlateGeometry(location_data, parameters)
-                plates.append(plate)
-                logger.info(f"  Successfully created {current_plate_type} geometry")
+                # No panels -> single segment spanning entire wall, no panel_id
+                panel_segments = [(reference_line, None)]
+
+            # Step 2: For each panel segment, optionally apply door splits
+            # (bottom plates only)
+            for panel_seg, panel_id in panel_segments:
+                if plate_type == "bottom_plate" and openings:
+                    doors = _get_door_openings(openings)
+                    if doors:
+                        # Filter doors to only those within this panel segment's range
+                        seg_start_pt = panel_seg.PointAtStart
+                        seg_end_pt = panel_seg.PointAtEnd
+                        seg_direction = rg.Vector3d(seg_end_pt - seg_start_pt)
+                        seg_length = seg_direction.Length
+
+                        # Calculate the U offset of this segment relative to wall start
+                        wall_start = location_data["reference_line"].PointAtStart
+                        seg_u_offset = rg.Vector3d(seg_start_pt - wall_start).Length
+
+                        # Adjust door coordinates relative to this segment
+                        segment_doors = []
+                        for door in doors:
+                            door_u_start = door.get("start_u_coordinate", 0)
+                            door_u_end = door_u_start + door.get("rough_width", 0)
+
+                            # Check if door overlaps with this panel segment
+                            panel_u_start = seg_u_offset
+                            panel_u_end = seg_u_offset + seg_length
+
+                            if door_u_end > panel_u_start + 0.01 and door_u_start < panel_u_end - 0.01:
+                                # Clamp door bounds to segment bounds
+                                local_start = max(door_u_start - seg_u_offset, 0.0)
+                                local_end = min(door_u_end - seg_u_offset, seg_length)
+                                segment_doors.append({
+                                    "start_u_coordinate": local_start,
+                                    "rough_width": local_end - local_start,
+                                    "opening_type": "door",
+                                })
+
+                        if segment_doors:
+                            door_segments = _split_reference_line_at_doors(
+                                panel_seg, segment_doors, base_plane
+                            )
+                            for seg_idx, door_seg in enumerate(door_segments):
+                                seg_loc = dict(location_data)
+                                seg_loc["reference_line"] = door_seg
+                                plate = PlateGeometry(seg_loc, parameters, panel_id=panel_id)
+                                plates.append(plate)
+                                logger.debug(
+                                    f"  Created {current_plate_type} panel+door segment "
+                                    f"{seg_idx + 1}/{len(door_segments)} (panel={panel_id})"
+                                )
+                        else:
+                            # No doors in this panel segment
+                            seg_loc = dict(location_data)
+                            seg_loc["reference_line"] = panel_seg
+                            plate = PlateGeometry(seg_loc, parameters, panel_id=panel_id)
+                            plates.append(plate)
+                            logger.info(
+                                f"  Created {current_plate_type} (panel={panel_id})"
+                            )
+                    else:
+                        # No door openings at all
+                        seg_loc = dict(location_data)
+                        seg_loc["reference_line"] = panel_seg
+                        plate = PlateGeometry(seg_loc, parameters, panel_id=panel_id)
+                        plates.append(plate)
+                        logger.info(
+                            f"  Created {current_plate_type} (panel={panel_id})"
+                        )
+                else:
+                    # Top plates or bottom plates without openings
+                    seg_loc = dict(location_data)
+                    seg_loc["reference_line"] = panel_seg
+                    plate = PlateGeometry(seg_loc, parameters, panel_id=panel_id)
+                    plates.append(plate)
+                    logger.info(
+                        f"  Created {current_plate_type} (panel={panel_id})"
+                    )
         except Exception as e:
             logger.error(f"Failed to create geometry for {current_plate_type}: {str(e)}")
             import traceback

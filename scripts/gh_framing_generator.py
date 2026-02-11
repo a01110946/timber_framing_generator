@@ -635,6 +635,17 @@ def process_framing(cell_list, wall_lookup, strategy, config,
     all_elements = []
     type_counts = {}
 
+    # In panel mode, each wall produces multiple cell_data entries (one per
+    # panel).  Each call to generate_framing_for_wall() starts element-ID
+    # counters at 0, so "stud_0" would appear once per panel.  Prefix IDs
+    # with "p{N}_" to make them unique per wall.
+    # Pre-scan to find walls that appear more than once in cell_list.
+    wall_entry_counts = {}
+    for cd in cell_list:
+        wid = cd.get('wall_id', '')
+        wall_entry_counts[wid] = wall_entry_counts.get(wid, 0) + 1
+    wall_call_counter = {}
+
     for i, cell_data_dict in enumerate(cell_list):
         wall_id = cell_data_dict.get('wall_id', f'wall_{i}')
         wall_data_dict = wall_lookup.get(wall_id, {})
@@ -666,6 +677,17 @@ def process_framing(cell_list, wall_lookup, strategy, config,
             cell_data_dict, wall_data_dict, strategy, config,
             panels=wall_panels,
         )
+
+        # Make element IDs unique when a wall has multiple cell_data entries
+        # (panel mode).  Each call generates IDs from 0 (stud_0, top_plate_0,
+        # etc.) so without a prefix the same ID appears in multiple panels,
+        # causing the baking element_index to overwrite and multiple panels
+        # to resolve to the same Revit ElementId.
+        panel_idx = wall_call_counter.get(wall_id, 0)
+        wall_call_counter[wall_id] = panel_idx + 1
+        if wall_entry_counts.get(wall_id, 1) > 1:
+            for elem in elements:
+                elem.id = "p%d_%s" % (panel_idx, elem.id)
 
         all_elements.extend(elements)
         log_lines.extend(wall_log)

@@ -5,6 +5,10 @@ Converts sheathing JSON data to RhinoCommon geometry (Breps). This component
 is the final stage of the sheathing pipeline, transforming panel definitions
 with UVW coordinates into 3D geometry using the wall's base plane.
 
+Supports both single-layer sheathing (from Sheathing Generator) and
+multi-layer assemblies (from Multi-Layer Sheathing Generator). Multi-layer
+JSON is automatically flattened so all layer panels are converted uniformly.
+
 Key Features:
 1. Assembly-Safe Geometry Creation
    - Uses RhinoCommonFactory for correct RhinoCommon assembly
@@ -16,7 +20,12 @@ Key Features:
    - Supports both exterior and interior face placement
    - Handles panels with opening cutouts (boolean difference)
 
-3. Flexible Filtering and Organization
+3. Multi-Layer Support
+   - Accepts multi_layer_json from Multi-Layer Sheathing Generator
+   - Automatically flattens layer_results into single panel list per wall
+   - Preserves layer_name and w_offset metadata on each panel
+
+4. Flexible Filtering and Organization
    - Filter by wall ID for single-wall visualization
    - Multiple output formats (flat list, by-wall DataTree)
    - Panel IDs and summary statistics
@@ -46,7 +55,8 @@ Usage:
 
 Input Requirements:
     Sheathing JSON (sheathing_json) - str:
-        JSON string from Sheathing Generator containing panel data
+        JSON string from Sheathing Generator or Multi-Layer Sheathing Generator.
+        Accepts both single-layer and multi-layer formats.
         Required: Yes
         Access: Item
 
@@ -117,20 +127,26 @@ from Grasshopper import DataTree
 from Grasshopper.Kernel.Data import GH_Path
 
 # =============================================================================
-# Force Module Reload (CPython 3 in Rhino 8)
-# =============================================================================
-
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
-for mod in _modules_to_clear:
-    del sys.modules[mod]
-
-# =============================================================================
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path (contains latest sheathing code)
+# Fallback: main repo path (for when this file is used from the main checkout)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+# Clear timber_framing_generator modules AND 'src' to force fresh imports
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k or k == 'src']
+for mod in _modules_to_clear:
+    del sys.modules[mod]
+
+# Ensure worktree path has highest priority (index 0) in sys.path.
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.utils.geometry_factory import get_factory
 from src.timber_framing_generator.sheathing.sheathing_geometry import (
@@ -145,7 +161,10 @@ from src.timber_framing_generator.sheathing.sheathing_geometry import (
 
 COMPONENT_NAME = "Sheathing Geometry Converter"
 COMPONENT_NICKNAME = "SheathGeo"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v1.3"
+
+# Version marker — confirms updated script is running in GH
+print("[SheathGeo] Script version v1.3 loaded (flip normalization)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "Geometry"
 
@@ -283,34 +302,95 @@ def validate_inputs(sheathing_json, walls_json, run):
 
 
 def parse_sheathing_json(sheathing_json):
-    """Parse sheathing JSON, handling both single wall and multi-wall formats.
+    """Parse sheathing JSON, handling single-layer, multi-layer, and multi-wall formats.
+
+    Supports three formats:
+    1. Single-layer (from Sheathing Generator):
+       [{"wall_id": "...", "sheathing_panels": [...]}]
+    2. Multi-layer (from Multi-Layer Sheathing Generator):
+       [{"wall_id": "...", "layer_results": [{"panels": [...]}]}]
+    3. Single wall dict (either format)
+
+    Multi-layer results are flattened: per-layer panels are merged into a
+    single "sheathing_panels" list per wall so the geometry converter can
+    process them uniformly.
 
     Args:
         sheathing_json: JSON string with sheathing data
 
     Returns:
-        list: List of sheathing data dictionaries (one per wall)
+        list: List of sheathing data dictionaries (one per wall),
+              each containing "sheathing_panels" list
     """
     data = json.loads(sheathing_json)
 
-    # If it's already a list, return as-is
-    if isinstance(data, list):
-        return data
-
-    # If it's a single wall result, wrap in list
+    # Normalize to list
     if isinstance(data, dict):
-        # Check if it has wall_id at top level (single wall format)
         if "wall_id" in data:
-            return [data]
-        # Check if it has a "walls" or "results" key containing list
-        if "walls" in data and isinstance(data["walls"], list):
-            return data["walls"]
-        if "results" in data and isinstance(data["results"], list):
-            return data["results"]
-        # Assume single wall
-        return [data]
+            data = [data]
+        elif "walls" in data and isinstance(data["walls"], list):
+            data = data["walls"]
+        elif "results" in data and isinstance(data["results"], list):
+            data = data["results"]
+        else:
+            data = [data]
+    elif not isinstance(data, list):
+        return []
 
-    return []
+    # Check each entry for multi-layer format and flatten if needed
+    result = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+
+        # Multi-layer format: has "layer_results" instead of "sheathing_panels"
+        if "layer_results" in entry and "sheathing_panels" not in entry:
+            flattened = _flatten_multi_layer_entry(entry)
+            result.append(flattened)
+        else:
+            # Standard single-layer format or already has sheathing_panels
+            result.append(entry)
+
+    return result
+
+
+def _flatten_multi_layer_entry(entry):
+    """Flatten multi-layer result into standard sheathing format.
+
+    Merges panels from all layer_results into a single sheathing_panels list,
+    adding layer_name and w_offset metadata to each panel dict.
+
+    Args:
+        entry: Multi-layer result dict with "layer_results" list.
+
+    Returns:
+        Dict with "wall_id" and "sheathing_panels" in standard format.
+    """
+    wall_id = entry.get("wall_id", "unknown")
+    all_panels = []
+
+    for layer_result in entry.get("layer_results", []):
+        layer_name = layer_result.get("layer_name", "unknown")
+        w_offset = layer_result.get("w_offset")
+
+        for panel in layer_result.get("panels", []):
+            # Add layer metadata to each panel for downstream use
+            enriched_panel = dict(panel)
+            enriched_panel["layer_name"] = layer_name
+            if w_offset is not None:
+                enriched_panel["layer_w_offset"] = w_offset
+            all_panels.append(enriched_panel)
+
+    log_info(
+        f"Flattened multi-layer wall {wall_id}: "
+        f"{len(entry.get('layer_results', []))} layers -> "
+        f"{len(all_panels)} panels"
+    )
+
+    return {
+        "wall_id": wall_id,
+        "sheathing_panels": all_panels,
+    }
 
 
 def parse_walls_json(walls_json):
@@ -325,6 +405,10 @@ def parse_walls_json(walls_json):
     data = json.loads(walls_json)
 
     walls_by_id = {}
+
+    # z_axis in walls_json is already set by the Wall Analyzer using
+    # Revit's wall.Orientation (geometric exterior normal, flip-independent).
+    # No flip correction needed — +z_axis = building-layout exterior.
 
     # If it's a list of walls
     if isinstance(data, list):
@@ -368,6 +452,9 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
         "walls_processed": set(),
     }
 
+    # W offset diagnostics: track which path panels use
+    w_offset_diag = {"layer_w": 0, "fallback": 0, "sample": None}
+
     for sheathing_data in sheathing_list:
         wall_id = str(sheathing_data.get("wall_id", "unknown"))
 
@@ -382,6 +469,29 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
         if "base_plane" not in wall_data:
             log_warning(f"Wall {wall_id}: No base_plane found, skipping")
             continue
+
+        # W offset diagnostics: check first few panels for layer_w_offset
+        panels = sheathing_data.get("sheathing_panels", [])
+        for p in panels[:3]:
+            lw = p.get("layer_w_offset")
+            if lw is not None:
+                w_offset_diag["layer_w"] += 1
+            else:
+                w_offset_diag["fallback"] += 1
+            if w_offset_diag["sample"] is None:
+                wall_t = wall_data.get("thickness", wall_data.get("wall_thickness", 0.5))
+                has_asm = "wall_assembly" in wall_data
+                w_offset_diag["sample"] = (
+                    f"wall={wall_id}, panel={p.get('id','?')}, "
+                    f"layer_w_offset={lw}, face={p.get('face','?')}, "
+                    f"wall_thickness={wall_t}, has_assembly={has_asm}"
+                )
+        # Count remaining panels (beyond first 3)
+        for p in panels[3:]:
+            if p.get("layer_w_offset") is not None:
+                w_offset_diag["layer_w"] += 1
+            else:
+                w_offset_diag["fallback"] += 1
 
         # Create geometry for this wall's panels
         geometries = create_sheathing_breps(sheathing_data, wall_data, factory)
@@ -403,6 +513,9 @@ def process_sheathing_geometry(sheathing_list, walls_by_id, wall_filter, factory
                 stats["total_area_gross"] += geom.area_gross
                 stats["total_area_net"] += geom.area_net
                 stats["walls_processed"].add(wall_id)
+
+    # Append W offset diagnostics to stats
+    stats["w_offset_diag"] = w_offset_diag
 
     return breps, wall_groups, panel_ids, stats
 
@@ -479,9 +592,44 @@ def main():
         sheathing_list = parse_sheathing_json(sheathing_json_input)
         walls_by_id = parse_walls_json(walls_json_input)
 
-        log_lines.append(f"Sheathing Geometry Converter v1.0")
+        log_lines.append(f"Sheathing Geometry Converter v1.2")
         log_lines.append(f"Sheathing entries: {len(sheathing_list)}")
         log_lines.append(f"Walls available: {len(walls_by_id)}")
+
+        # Panel U-position diagnostic: show first panel's u_start per wall/layer
+        log_lines.append("")
+        log_lines.append("=== Panel U-Position Diagnostic ===")
+        for sh_entry in sheathing_list:
+            sh_wid = sh_entry.get("wall_id", "?")
+            sh_panels = sh_entry.get("sheathing_panels", [])
+            # Group first panel per layer_name
+            seen_layers = set()
+            for p in sh_panels:
+                lname = p.get("layer_name", p.get("face", "unknown"))
+                if lname in seen_layers:
+                    continue
+                seen_layers.add(lname)
+                log_lines.append(
+                    f"  Wall {sh_wid} | {lname}: "
+                    f"first_panel u_start={p.get('u_start', '?'):.4f}, "
+                    f"u_end={p.get('u_end', '?'):.4f}"
+                )
+        log_lines.append("")
+
+        # Wall orientation diagnostic: print base_plane for each wall
+        for wid, wdata in walls_by_id.items():
+            bp = wdata.get("base_plane", {})
+            orig = bp.get("origin", {})
+            zax = bp.get("z_axis", {})
+            xax = bp.get("x_axis", {})
+            log_lines.append(
+                f"  Wall {wid}: origin=({orig.get('x',0):.4f}, "
+                f"{orig.get('y',0):.4f}, {orig.get('z',0):.4f}), "
+                f"x_axis=({xax.get('x',0):.3f}, {xax.get('y',0):.3f}, "
+                f"{xax.get('z',0):.3f}), "
+                f"z_axis=({zax.get('x',0):.3f}, {zax.get('y',0):.3f}, "
+                f"{zax.get('z',0):.3f})"
+            )
         log_lines.append("")
 
         # Parse filter_wall
@@ -511,6 +659,38 @@ def main():
         log_lines.append("")
         log_lines.append(f"Total Breps: {len(breps)}")
         log_lines.append(f"Panels with Cutouts: {stats['panels_with_cutouts']}")
+
+        # W offset diagnostics
+        w_diag = stats.get("w_offset_diag", {})
+        log_lines.append("")
+        log_lines.append("=== W Offset Diagnostics ===")
+        log_lines.append(
+            f"Panels with layer_w_offset: {w_diag.get('layer_w', 0)}"
+        )
+        log_lines.append(
+            f"Panels using fallback: {w_diag.get('fallback', 0)}"
+        )
+        if w_diag.get("sample"):
+            log_lines.append(f"Sample: {w_diag['sample']}")
+
+        # === BBOX DIAGNOSTICS ===
+        # Show actual world-space bounding boxes to verify sheathing positions
+        log_lines.append("")
+        log_lines.append("=== Sheathing BBOX Diagnostic ===")
+        for pi, pbrep in enumerate(breps[:4]):
+            try:
+                bb = pbrep.GetBoundingBox(True)
+                pid = panel_ids[pi] if pi < len(panel_ids) else "?"
+                log_lines.append(
+                    f"  Panel[{pi}] ({pid}): "
+                    f"min=({bb.Min.X:.4f}, {bb.Min.Y:.4f}, {bb.Min.Z:.4f})  "
+                    f"max=({bb.Max.X:.4f}, {bb.Max.Y:.4f}, {bb.Max.Z:.4f})  "
+                    f"size=({bb.Max.X-bb.Min.X:.4f}, "
+                    f"{bb.Max.Y-bb.Min.Y:.4f}, "
+                    f"{bb.Max.Z-bb.Min.Z:.4f})"
+                )
+            except Exception as ex:
+                log_lines.append(f"  Panel[{pi}]: bbox error: {ex}")
 
     except Exception as e:
         log_error(f"Unexpected error: {str(e)}")

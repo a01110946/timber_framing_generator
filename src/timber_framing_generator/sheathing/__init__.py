@@ -63,6 +63,11 @@ from .sheathing_geometry import (
     create_panel_brep,
 )
 
+from .multi_layer_generator import (
+    LayerPanelResult,
+    generate_assembly_layers,
+)
+
 __all__ = [
     # Classes
     "SheathingGenerator",
@@ -72,6 +77,7 @@ __all__ = [
     "SheathingType",
     "PanelSize",
     "Cutout",
+    "LayerPanelResult",
     # Dictionaries
     "SHEATHING_MATERIALS",
     "PANEL_SIZES",
@@ -82,6 +88,7 @@ __all__ = [
     "get_panel_size",
     "list_materials_by_type",
     "generate_wall_sheathing",
+    "generate_assembly_layers",
     # Geometry functions
     "create_sheathing_breps",
     "create_sheathing_breps_batch",

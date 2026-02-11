@@ -191,6 +191,91 @@ SHEATHING_MATERIALS: Dict[str, SheathingMaterial] = {
         }
     ),
 
+    # Continuous Insulation (Rigid Foam)
+    "rigid_foam_1": SheathingMaterial(
+        name="rigid_foam_1",
+        display_name="Rigid Foam Insulation 1\"",
+        material_type="rigid_insulation",
+        thickness_inches=1.0,
+        sheathing_type=SheathingType.EXTERIOR,
+        properties={
+            "r_value_per_inch": 5.0,  # XPS
+            "r_value": 5.0,
+        }
+    ),
+    "rigid_foam_1_5": SheathingMaterial(
+        name="rigid_foam_1_5",
+        display_name="Rigid Foam Insulation 1-1/2\"",
+        material_type="rigid_insulation",
+        thickness_inches=1.5,
+        sheathing_type=SheathingType.EXTERIOR,
+        properties={
+            "r_value_per_inch": 5.0,
+            "r_value": 7.5,
+        }
+    ),
+    "rigid_foam_2": SheathingMaterial(
+        name="rigid_foam_2",
+        display_name="Rigid Foam Insulation 2\"",
+        material_type="rigid_insulation",
+        thickness_inches=2.0,
+        sheathing_type=SheathingType.EXTERIOR,
+        properties={
+            "r_value_per_inch": 5.0,
+            "r_value": 10.0,
+        }
+    ),
+    "mineral_wool_ci_1_5": SheathingMaterial(
+        name="mineral_wool_ci_1_5",
+        display_name="Mineral Wool CI 1-1/2\"",
+        material_type="mineral_wool",
+        thickness_inches=1.5,
+        sheathing_type=SheathingType.EXTERIOR,
+        properties={
+            "r_value_per_inch": 4.2,
+            "r_value": 6.3,
+            "fire_resistant": True,
+        }
+    ),
+
+    # Exterior Cladding
+    "fiber_cement_5_16": SheathingMaterial(
+        name="fiber_cement_5_16",
+        display_name="Fiber Cement Siding 5/16\"",
+        material_type="fiber_cement",
+        thickness_inches=5/16,
+        sheathing_type=SheathingType.EXTERIOR,
+        properties={
+            "lap_overlap_inches": 1.25,
+            "exposure_inches": 7.0,
+        }
+    ),
+    "lp_smartside_7_16": SheathingMaterial(
+        name="lp_smartside_7_16",
+        display_name="LP SmartSide 7/16\"",
+        material_type="engineered_wood",
+        thickness_inches=7/16,
+        sheathing_type=SheathingType.EXTERIOR,
+        properties={
+            "lap_overlap_inches": 1.25,
+            "exposure_inches": 7.0,
+        }
+    ),
+
+    # WRB (Weather-Resistive Barrier)
+    "housewrap": SheathingMaterial(
+        name="housewrap",
+        display_name="House Wrap (Tyvek)",
+        material_type="wrb",
+        thickness_inches=0.01,  # Negligible
+        sheathing_type=SheathingType.EXTERIOR,
+        properties={
+            "horizontal_overlap_inches": 6.0,
+            "vertical_overlap_inches": 12.0,
+            "roll_width_feet": 9.0,
+        }
+    ),
+
     # Exterior Sheathing
     "densglass_1_2": SheathingMaterial(
         name="densglass_1_2",

@@ -126,7 +126,10 @@ from Grasshopper.Kernel.Data import GH_Path
 # Force Module Reload (CPython 3 in Rhino 8)
 # =============================================================================
 
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+# Clear timber_framing_generator modules AND the 'src' package itself.
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k
+                     or k == 'src']
 for mod in _modules_to_clear:
     del sys.modules[mod]
 
@@ -134,9 +137,16 @@ for mod in _modules_to_clear:
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path
+# Fallback: main repo path (for modules not yet in the worktree)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.utils.geometry_factory import get_factory
 from src.timber_framing_generator.core.json_schemas import (
@@ -540,6 +550,45 @@ def main():
         log_lines.append("")
         log_lines.append(f"Total Breps: {len(breps)}")
         log_lines.append(f"Total Centerlines: {len(centerlines)}")
+
+        # === BBOX DIAGNOSTICS ===
+        # Show actual world-space bounding boxes to verify framing positions
+        log_lines.append("")
+        log_lines.append("=== Framing BBOX Diagnostic ===")
+        stud_idx = TYPE_ORDER.index("stud")
+        if stud_idx in type_groups:
+            stud_breps = type_groups[stud_idx]
+            for si, sbrep in enumerate(stud_breps[:3]):
+                try:
+                    bb = sbrep.GetBoundingBox(True)
+                    log_lines.append(
+                        f"  Stud[{si}]: "
+                        f"min=({bb.Min.X:.4f}, {bb.Min.Y:.4f}, {bb.Min.Z:.4f})  "
+                        f"max=({bb.Max.X:.4f}, {bb.Max.Y:.4f}, {bb.Max.Z:.4f})  "
+                        f"size=({bb.Max.X-bb.Min.X:.4f}, "
+                        f"{bb.Max.Y-bb.Min.Y:.4f}, "
+                        f"{bb.Max.Z-bb.Min.Z:.4f})"
+                    )
+                except Exception as ex:
+                    log_lines.append(f"  Stud[{si}]: bbox error: {ex}")
+        else:
+            log_lines.append("  No studs found in type_groups")
+
+        plate_idx = TYPE_ORDER.index("bottom_plate")
+        if plate_idx in type_groups:
+            for pi, pbrep in enumerate(type_groups[plate_idx][:1]):
+                try:
+                    bb = pbrep.GetBoundingBox(True)
+                    log_lines.append(
+                        f"  Plate[{pi}]: "
+                        f"min=({bb.Min.X:.4f}, {bb.Min.Y:.4f}, {bb.Min.Z:.4f})  "
+                        f"max=({bb.Max.X:.4f}, {bb.Max.Y:.4f}, {bb.Max.Z:.4f})  "
+                        f"size=({bb.Max.X-bb.Min.X:.4f}, "
+                        f"{bb.Max.Y-bb.Min.Y:.4f}, "
+                        f"{bb.Max.Z-bb.Min.Z:.4f})"
+                    )
+                except Exception as ex:
+                    log_lines.append(f"  Plate[{pi}]: bbox error: {ex}")
 
     except Exception as e:
         log_error(f"Unexpected error: {str(e)}")

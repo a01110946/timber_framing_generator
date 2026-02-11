@@ -145,7 +145,9 @@ class WallData:
     base_curve_end: Point3D
     openings: List[OpeningData] = field(default_factory=list)
     is_exterior: bool = False
+    is_flipped: bool = False
     wall_type: Optional[str] = None
+    wall_assembly: Optional[Dict[str, Any]] = None
     # Revit level IDs for RiR baking (Add Structural Column/Beam)
     base_level_id: Optional[int] = None
     top_level_id: Optional[int] = None
@@ -238,6 +240,7 @@ class FramingElementData:
     v_start: float
     v_end: float
     cell_id: Optional[str] = None
+    panel_id: Optional[str] = None  # Panel that owns this element (for Revit Assembly grouping)
     metadata: Dict[str, Any] = field(default_factory=dict)
     revit_family: Optional[str] = None  # Resolved Revit family name (from Family Resolver)
     revit_type: Optional[str] = None    # Resolved Revit type name (from Family Resolver)
@@ -321,7 +324,9 @@ def deserialize_wall_data(json_str: str) -> WallData:
         base_curve_end=Point3D(**data['base_curve_end']),
         openings=openings,
         is_exterior=data.get('is_exterior', False),
+        is_flipped=data.get('is_flipped', False),
         wall_type=data.get('wall_type'),
+        wall_assembly=data.get('wall_assembly'),
         base_level_id=data.get('base_level_id'),
         top_level_id=data.get('top_level_id'),
         metadata=data.get('metadata', {}),
@@ -390,6 +395,7 @@ def deserialize_framing_results(json_str: str) -> FramingResults:
             v_start=e['v_start'],
             v_end=e['v_end'],
             cell_id=e.get('cell_id'),
+            panel_id=e.get('panel_id'),
             metadata=e.get('metadata', {}),
             revit_family=e.get('revit_family'),
             revit_type=e.get('revit_type'),
@@ -397,8 +403,8 @@ def deserialize_framing_results(json_str: str) -> FramingResults:
         elements.append(element)
 
     return FramingResults(
-        wall_id=data['wall_id'],
-        material_system=data['material_system'],
+        wall_id=data.get('wall_id', 'unknown'),
+        material_system=data.get('material_system', 'timber'),
         elements=elements,
         element_counts=data.get('element_counts', {}),
         metadata=data.get('metadata', {}),

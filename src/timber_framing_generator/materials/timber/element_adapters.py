@@ -100,6 +100,17 @@ def reconstruct_wall_data(wall_data: Dict[str, Any]) -> Dict[str, Any]:
         # Already a Plane object
         result["base_plane"] = plane_data
 
+    # SAFETY: Ensure base_plane Y-axis always points upward.
+    # If wall.Orientation disagrees with cross(x_dir, world_Z), the
+    # base_plane from wall_helpers may have YAxis = (0,0,-1), which
+    # inverts all vertical positions computed via base_plane.PointAt().
+    if "base_plane" in result and isinstance(result["base_plane"], rg.Plane):
+        plane = result["base_plane"]
+        if plane.YAxis.Z < 0:
+            result["base_plane"] = rg.Plane(
+                plane.Origin, plane.XAxis, rg.Vector3d(0, 0, 1)
+            )
+
     # Reconstruct base curve from start/end points
     curve_start = wall_data.get("base_curve_start", {})
     curve_end = wall_data.get("base_curve_end", {})
@@ -137,22 +148,33 @@ def reconstruct_wall_data(wall_data: Dict[str, Any]) -> Dict[str, Any]:
     result["wall_height"] = wall_data.get("wall_height", 8)
 
     # Create WBC (Wall Boundary Cell) with corner_points - required by plate generator
-    # The WBC defines the full wall boundary as 4 corner points
+    # The WBC defines the framing boundary as 4 corner points.
+    # When _segment_bounds is present (injected by Framing Generator from
+    # Cell Decomposer segment metadata), the WBC uses those U bounds instead
+    # of [0, wall_length].  This propagates junction adjustments (extend /
+    # trim / split) into plates, studs, and all downstream framing elements.
     base_plane = result.get("base_plane", rg.Plane.WorldXY)
     wall_length = result["wall_length"]
     wall_height = result["wall_height"]
     base_elevation = result["wall_base_elevation"]
 
+    seg_bounds = wall_data.get("_segment_bounds")
+    wbc_u_start = seg_bounds[0] if seg_bounds else 0.0
+    wbc_u_end = seg_bounds[1] if seg_bounds else wall_length
+
     # Calculate corner points in world coordinates
     # The wall lies along the base_plane's X axis
     origin = base_plane.Origin
 
-    # Bottom-left: origin
-    bl = rg.Point3d(origin.X, origin.Y, base_elevation)
-    # Bottom-right: origin + wall_length along X axis
+    # Bottom-left: origin + wbc_u_start along X axis
+    bl = rg.Point3d.Add(
+        rg.Point3d(origin.X, origin.Y, base_elevation),
+        rg.Vector3d.Multiply(base_plane.XAxis, wbc_u_start)
+    )
+    # Bottom-right: origin + wbc_u_end along X axis
     br = rg.Point3d.Add(
         rg.Point3d(origin.X, origin.Y, base_elevation),
-        rg.Vector3d.Multiply(base_plane.XAxis, wall_length)
+        rg.Vector3d.Multiply(base_plane.XAxis, wbc_u_end)
     )
     # Top-right: bottom-right + wall_height in Z
     tr = rg.Point3d(br.X, br.Y, base_elevation + wall_height)
@@ -162,8 +184,8 @@ def reconstruct_wall_data(wall_data: Dict[str, Any]) -> Dict[str, Any]:
     wbc_cell = {
         "cell_type": "WBC",
         "corner_points": [bl, br, tr, tl],
-        "u_start": 0,
-        "u_end": wall_length,
+        "u_start": wbc_u_start,
+        "u_end": wbc_u_end,
         "v_start": 0,
         "v_end": wall_height,
     }

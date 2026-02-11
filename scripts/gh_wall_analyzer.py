@@ -103,7 +103,13 @@ from RhinoInside.Revit import Revit
 # Force Module Reload (CPython 3 in Rhino 8)
 # =============================================================================
 
-_modules_to_clear = [k for k in sys.modules.keys() if 'timber_framing_generator' in k]
+# Clear timber_framing_generator modules AND the 'src' package itself.
+# Other GH components may have already imported 'src', caching its
+# __path__ to the main repo.  Clearing it forces Python to re-resolve
+# 'src' from the updated sys.path (worktree at index 0).
+_modules_to_clear = [k for k in sys.modules.keys()
+                     if 'timber_framing_generator' in k
+                     or k == 'src']
 for mod in _modules_to_clear:
     del sys.modules[mod]
 
@@ -111,9 +117,17 @@ for mod in _modules_to_clear:
 # Project Setup
 # =============================================================================
 
-PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
-if PROJECT_PATH not in sys.path:
-    sys.path.insert(0, PROJECT_PATH)
+# Primary: worktree / feature-branch path (contains wall_helpers fixes, etc.)
+# Fallback: main repo path (for modules not yet in the worktree)
+_WORKTREE_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\tfg-sheathing-junctions"
+_MAIN_REPO_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+
+# Ensure worktree path has highest priority (index 0) in sys.path.
+for _p in (_WORKTREE_PATH, _MAIN_REPO_PATH):
+    while _p in sys.path:
+        sys.path.remove(_p)
+sys.path.insert(0, _MAIN_REPO_PATH)
+sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.wall_data.revit_data_extractor import (
     extract_wall_data_from_revit
@@ -246,6 +260,18 @@ def validate_inputs(walls, run):
     return True, None
 
 
+def _parse_exterior_normal(wall_data):
+    """Extract exterior_normal from wall_data as a Vector3D, or None."""
+    en = wall_data.get("exterior_normal")
+    if isinstance(en, dict):
+        return Vector3D(
+            x=float(en.get("x", 0)),
+            y=float(en.get("y", 0)),
+            z=float(en.get("z", 0)),
+        )
+    return None
+
+
 def convert_wall_data_to_schema(wall_data, wall_id):
     """Convert extracted wall data dict to WallData schema.
 
@@ -336,7 +362,10 @@ def convert_wall_data_to_schema(wall_data, wall_id):
         base_curve_end=curve_end,
         openings=openings,
         is_exterior=wall_data.get('is_exterior_wall', False),
+        is_flipped=wall_data.get('is_flipped', False),
+        exterior_normal=_parse_exterior_normal(wall_data),
         wall_type=wall_data.get('wall_type'),
+        wall_assembly=wall_data.get('wall_assembly'),
         base_level_id=base_level_id,
         top_level_id=top_level_id,
         metadata={

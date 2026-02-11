@@ -5,9 +5,12 @@ import pytest
 from src.timber_framing_generator.sheathing.sheathing_geometry import (
     uvw_to_world,
     calculate_w_offset,
+    calculate_layer_w_offsets,
     get_extrusion_vector,
     SheathingPanelGeometry,
+    SHEATHING_GAP,
 )
+from src.timber_framing_generator.utils.units import convert_to_feet
 
 
 class TestUVWToWorld:
@@ -114,14 +117,15 @@ class TestWOffsetCalculation:
         assert abs(w_offset - 0.25) < 0.001
 
     def test_interior_face_offset(self):
-        """Interior face should be at negative W offset."""
+        """Interior face should be at negative W offset (wall surface)."""
         wall_thickness = 0.5
         panel_thickness = 0.0365
 
         w_offset = calculate_w_offset("interior", wall_thickness, panel_thickness)
 
-        # Interior: at -half_wall - panel_thickness
-        expected = -0.25 - panel_thickness
+        # Interior: at -half_wall (panel core-facing surface at wall surface,
+        # extrusion in -Z places panel against wall)
+        expected = -0.25
         assert abs(w_offset - expected) < 0.001
 
     def test_thicker_wall_larger_offset(self):
@@ -387,3 +391,265 @@ class TestIntegration:
         for panel in sample_sheathing_data["sheathing_panels"]:
             for field in required_fields:
                 assert field in panel, f"Missing field: {field}"
+
+
+# =============================================================================
+# Layer-Aware W-Offset Tests (Phase 3)
+# =============================================================================
+
+
+class TestWOffsetFromAssembly:
+    """Tests for layer-aware W offset calculation using assembly data."""
+
+    @pytest.fixture
+    def symmetric_assembly(self):
+        """Symmetric assembly: equal exterior and interior thickness."""
+        return {
+            "name": "symmetric",
+            "layers": [
+                {"name": "ext_finish", "thickness": convert_to_feet(0.5, "inches"),
+                 "function": "finish", "side": "exterior", "priority": 10},
+                {"name": "framing_core", "thickness": convert_to_feet(3.5, "inches"),
+                 "function": "structure", "side": "core", "priority": 100},
+                {"name": "int_finish", "thickness": convert_to_feet(0.5, "inches"),
+                 "function": "finish", "side": "interior", "priority": 10},
+            ],
+            "source": "test",
+        }
+
+    @pytest.fixture
+    def asymmetric_assembly(self):
+        """Asymmetric assembly: thick exterior, thin interior."""
+        return {
+            "name": "asymmetric",
+            "layers": [
+                {"name": "ext_siding", "thickness": convert_to_feet(1.0, "inches"),
+                 "function": "finish", "side": "exterior", "priority": 10},
+                {"name": "ext_sheathing", "thickness": convert_to_feet(0.5, "inches"),
+                 "function": "substrate", "side": "exterior", "priority": 80},
+                {"name": "framing_core", "thickness": convert_to_feet(3.5, "inches"),
+                 "function": "structure", "side": "core", "priority": 100},
+                {"name": "int_finish", "thickness": convert_to_feet(0.5, "inches"),
+                 "function": "finish", "side": "interior", "priority": 10},
+            ],
+            "source": "test",
+        }
+
+    def test_symmetric_matches_simple_calculation(self, symmetric_assembly):
+        """For symmetric assemblies, assembly-aware and simple calcs should agree."""
+        total = sum(l["thickness"] for l in symmetric_assembly["layers"])
+        panel_t = 0.04
+
+        w_simple = calculate_w_offset("exterior", total, panel_t)
+        w_assembly = calculate_w_offset("exterior", total, panel_t, symmetric_assembly)
+
+        assert abs(w_simple - w_assembly) < 0.001
+
+    def test_asymmetric_exterior_differs_from_simple(self, asymmetric_assembly):
+        """For asymmetric assemblies, exterior offset should differ from simple."""
+        total = sum(l["thickness"] for l in asymmetric_assembly["layers"])
+        panel_t = 0.04
+
+        w_simple = calculate_w_offset("exterior", total, panel_t)
+        w_assembly = calculate_w_offset("exterior", total, panel_t, asymmetric_assembly)
+
+        # Asymmetric: exterior layers are thicker, so assembly puts panel further out
+        assert w_assembly > w_simple
+
+    def test_asymmetric_interior_differs_from_simple(self, asymmetric_assembly):
+        """For asymmetric assemblies, interior offset should differ from simple."""
+        total = sum(l["thickness"] for l in asymmetric_assembly["layers"])
+        panel_t = 0.04
+
+        w_simple = calculate_w_offset("interior", total, panel_t)
+        w_assembly = calculate_w_offset("interior", total, panel_t, asymmetric_assembly)
+
+        # Interior is thinner, so assembly puts panel closer to center
+        assert w_assembly > w_simple  # Less negative
+
+    def test_exterior_offset_equals_core_half_plus_exterior_layers(self, asymmetric_assembly):
+        """Exterior offset should be core/2 + sum of exterior layers."""
+        core_t = convert_to_feet(3.5, "inches")
+        ext_t = convert_to_feet(1.0 + 0.5, "inches")  # siding + sheathing
+        expected = core_t / 2 + ext_t
+
+        w = calculate_w_offset("exterior", 0, 0.04, asymmetric_assembly)
+        assert abs(w - expected) < 0.001
+
+    def test_interior_offset_equals_negative_core_half_minus_interior(self, asymmetric_assembly):
+        """Interior offset should be -(core/2 + interior_layers)."""
+        core_t = convert_to_feet(3.5, "inches")
+        int_t = convert_to_feet(0.5, "inches")
+        panel_t = 0.04
+        # Panel core-facing surface at interior wall face; extrusion in -Z
+        expected = -(core_t / 2 + int_t)
+
+        w = calculate_w_offset("interior", 0, panel_t, asymmetric_assembly)
+        assert abs(w - expected) < 0.001
+
+    def test_none_assembly_uses_simple(self):
+        """None assembly should fall back to simple calculation."""
+        w = calculate_w_offset("exterior", 0.5, 0.04, None)
+        assert abs(w - 0.25) < 0.001
+
+    def test_existing_tests_still_pass_without_assembly(self):
+        """Backward compatibility: existing calls without assembly param work."""
+        w = calculate_w_offset("exterior", 0.5, 0.04)
+        assert abs(w - 0.25) < 0.001
+
+        w = calculate_w_offset("interior", 0.5, 0.04)
+        expected = -0.25  # Panel core-facing surface at wall surface
+        assert abs(w - expected) < 0.001
+
+
+class TestLayerWOffsets:
+    """Tests for per-layer W offset calculation."""
+
+    @pytest.fixture
+    def four_layer_assembly(self):
+        """4-layer assembly: siding, OSB, core, gypsum."""
+        return {
+            "name": "test_4layer",
+            "layers": [
+                {"name": "siding", "thickness": 0.05,
+                 "function": "finish", "side": "exterior", "priority": 10},
+                {"name": "osb", "thickness": 0.04,
+                 "function": "substrate", "side": "exterior", "priority": 80},
+                {"name": "core", "thickness": 0.30,
+                 "function": "structure", "side": "core", "priority": 100},
+                {"name": "gypsum", "thickness": 0.04,
+                 "function": "finish", "side": "interior", "priority": 10},
+            ],
+            "source": "test",
+        }
+
+    def test_returns_offsets_for_all_layers(self, four_layer_assembly):
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        # Keys are composite "name|side" to disambiguate same-named layers
+        assert "siding|exterior" in offsets
+        assert "osb|exterior" in offsets
+        assert "core|core" in offsets
+        assert "gypsum|interior" in offsets
+
+    def test_osb_starts_at_core_exterior_face(self, four_layer_assembly):
+        """OSB (closest exterior layer) starts at core's outer face + gap."""
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        core_half = 0.30 / 2.0
+        assert abs(offsets["osb|exterior"] - (core_half + SHEATHING_GAP)) < 0.001
+
+    def test_siding_starts_after_osb(self, four_layer_assembly):
+        """Siding starts where OSB ends."""
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        core_half = 0.30 / 2.0
+        expected = core_half + SHEATHING_GAP + 0.04  # after OSB (gap included)
+        assert abs(offsets["siding|exterior"] - expected) < 0.001
+
+    def test_gypsum_starts_at_core_interior_face(self, four_layer_assembly):
+        """Gypsum core-facing surface is at core interior face - gap."""
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        core_half = 0.30 / 2.0
+        expected = -(core_half + SHEATHING_GAP)  # Core-facing surface (mirrors exterior convention)
+        assert abs(offsets["gypsum|interior"] - expected) < 0.001
+
+    def test_core_starts_at_negative_half(self, four_layer_assembly):
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        core_half = 0.30 / 2.0
+        assert abs(offsets["core|core"] - (-(core_half + SHEATHING_GAP))) < 0.001
+
+    def test_exterior_layers_are_positive(self, four_layer_assembly):
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        assert offsets["osb|exterior"] > 0
+        assert offsets["siding|exterior"] > 0
+
+    def test_interior_layers_are_negative(self, four_layer_assembly):
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        assert offsets["gypsum|interior"] < 0
+
+    def test_layers_dont_overlap(self, four_layer_assembly):
+        """Layer offsets should stack without gaps or overlaps."""
+        offsets = calculate_layer_w_offsets(four_layer_assembly)
+        # OSB: [core_half + gap, core_half + gap + 0.04]
+        # Siding: [core_half + gap + 0.04, core_half + gap + 0.04 + 0.05]
+        core_half = 0.15
+        assert abs(offsets["osb|exterior"] - (core_half + SHEATHING_GAP)) < 0.001
+        assert abs(offsets["siding|exterior"] - (core_half + SHEATHING_GAP + 0.04)) < 0.001
+
+
+class TestLayerWOffsetsWithFramingDepth:
+    """Tests for per-layer W offset calculation with framing_depth override."""
+
+    @pytest.fixture
+    def four_layer_assembly(self):
+        """4-layer assembly with 2x4 core (3.5" = 0.30 ft approx)."""
+        return {
+            "name": "test_4layer",
+            "layers": [
+                {"name": "siding", "thickness": 0.05,
+                 "function": "finish", "side": "exterior", "priority": 10},
+                {"name": "osb", "thickness": 0.04,
+                 "function": "substrate", "side": "exterior", "priority": 80},
+                {"name": "core", "thickness": 0.30,
+                 "function": "structure", "side": "core", "priority": 100},
+                {"name": "gypsum", "thickness": 0.04,
+                 "function": "finish", "side": "interior", "priority": 10},
+            ],
+            "source": "test",
+        }
+
+    def test_framing_depth_none_unchanged(self, four_layer_assembly):
+        """framing_depth=None should produce identical offsets to no arg."""
+        offsets_default = calculate_layer_w_offsets(four_layer_assembly)
+        offsets_none = calculate_layer_w_offsets(four_layer_assembly, framing_depth=None)
+        for name in offsets_default:
+            assert abs(offsets_default[name] - offsets_none[name]) < 1e-9
+
+    def test_framing_depth_smaller_than_core_no_change(self, four_layer_assembly):
+        """framing_depth smaller than core should not change offsets (beyond gap)."""
+        core_half = 0.30 / 2.0
+        small_depth = 0.20  # < core_thickness (0.30)
+        offsets = calculate_layer_w_offsets(four_layer_assembly, framing_depth=small_depth)
+        assert abs(offsets["osb|exterior"] - (core_half + SHEATHING_GAP)) < 0.001
+
+    def test_framing_depth_larger_pushes_layers_out(self, four_layer_assembly):
+        """framing_depth larger than core should push layers outward."""
+        large_depth = 0.50  # > core_thickness (0.30)
+        framing_half = large_depth / 2.0  # 0.25
+        core_half = 0.30 / 2.0  # 0.15
+        assert framing_half > core_half
+
+        offsets = calculate_layer_w_offsets(four_layer_assembly, framing_depth=large_depth)
+
+        # OSB should start at framing_half + gap, not core_half
+        assert abs(offsets["osb|exterior"] - (framing_half + SHEATHING_GAP)) < 0.001
+        # Siding should stack after OSB
+        assert abs(offsets["siding|exterior"] - (framing_half + SHEATHING_GAP + 0.04)) < 0.001
+        # Interior gypsum should start at -(framing_half + gap)
+        assert abs(offsets["gypsum|interior"] - (-(framing_half + SHEATHING_GAP))) < 0.001
+        # Core should be at -(framing_half + gap)
+        assert abs(offsets["core|core"] - (-(framing_half + SHEATHING_GAP))) < 0.001
+
+    def test_2x6_framing_on_2x4_assembly(self):
+        """2x6 framing depth on 2x4 assembly: sheathing starts at 2x6 bounds."""
+        core_2x4 = 3.5 / 12  # 0.2917 ft
+        depth_2x6 = 5.5 / 12  # 0.4583 ft
+        framing_half = depth_2x6 / 2.0  # 0.2292 ft
+        core_half = core_2x4 / 2.0  # 0.1458 ft
+
+        assembly = {
+            "name": "mismatch_test",
+            "layers": [
+                {"name": "osb", "thickness": 7 / 16 / 12,
+                 "function": "substrate", "side": "exterior", "priority": 80},
+                {"name": "core", "thickness": core_2x4,
+                 "function": "structure", "side": "core", "priority": 100},
+                {"name": "gyp", "thickness": 0.5 / 12,
+                 "function": "finish", "side": "interior", "priority": 10},
+            ],
+            "source": "test",
+        }
+        offsets = calculate_layer_w_offsets(assembly, framing_depth=depth_2x6)
+
+        # OSB should be at framing_half + gap (0.2302), not core_half (0.1458)
+        assert offsets["osb|exterior"] == pytest.approx(framing_half + SHEATHING_GAP, abs=1e-6)
+        # Interior gyp at -(framing_half + gap)
+        assert offsets["gyp|interior"] == pytest.approx(-(framing_half + SHEATHING_GAP), abs=1e-6)

@@ -32,7 +32,12 @@ class PlateGeometry:
     4. Facilitates future extensions to new platforms
     """
 
-    def __init__(self, location_data: Dict, parameters: PlateParameters):
+    def __init__(
+        self,
+        location_data: Dict,
+        parameters: PlateParameters,
+        panel_id: Optional[str] = None,
+    ):
         """
         Initialize the plate geometry with location data and parameters.
 
@@ -43,18 +48,21 @@ class PlateGeometry:
         Args:
             location_data: Dictionary containing spatial information
             parameters: PlateParameters instance with dimensional data
+            panel_id: Optional panel ID linking this plate to a wall panel
+                      for Revit Assembly grouping
         """
         logger.debug(f"Initializing PlateGeometry for {parameters.plate_type}")
         logger.trace(f"Location data: {location_data}")
         logger.trace(f"Parameters: {parameters}")
-        
+
         self.location_data = location_data
         self.parameters = parameters
+        self.panel_id = panel_id
         # Create basic geometric elements used by all platforms
         self.centerline = self._create_centerline()
         self.profile = self._create_profile()
-        
-        logger.debug(f"PlateGeometry initialized successfully")
+
+        logger.debug(f"PlateGeometry initialized successfully (panel_id={panel_id})")
 
     def _create_centerline(self) -> rg.Curve:
         """

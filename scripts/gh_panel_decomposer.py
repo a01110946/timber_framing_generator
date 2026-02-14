@@ -663,6 +663,10 @@ def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
 
     Returns:
         tuple: (panels_json, panel_curves, joint_points, debug_info)
+            - panels_json: JSON string with panel data for all walls.
+            - panel_curves: DataTree of panel boundary curves.
+            - joint_points: DataTree of joint location points.
+            - debug_info: Debug information string.
     """
     setup_component()
 

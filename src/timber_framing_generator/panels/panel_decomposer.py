@@ -442,3 +442,61 @@ def deserialize_panel_results(json_str: str) -> Dict:
         PanelResults dictionary
     """
     return json.loads(json_str)
+
+
+def assign_panel_ids_to_elements(
+    elements: List[Dict],
+    panels: List[Dict],
+) -> List[Dict]:
+    """Assign panel_id to each framing element based on U-coordinate.
+
+    For each element, finds which panel's [u_start, u_end] range contains
+    the element's u_coord. Elements exactly at a boundary are assigned to
+    the left panel (u_start <= u < u_end), except for the last panel which
+    uses an inclusive upper bound (u_start <= u <= u_end).
+
+    Args:
+        elements: List of framing element dicts, each with a 'u_coord' field.
+                  For horizontal elements (plates, headers, sills), the midpoint
+                  U-coordinate should be used.
+        panels: List of panel dicts, each with 'id', 'u_start', 'u_end'.
+                Must be sorted by u_start (ascending).
+
+    Returns:
+        The same elements list with 'panel_id' field populated on each element.
+        Elements whose u_coord doesn't fall in any panel range get panel_id=None.
+    """
+    if not panels:
+        return elements
+
+    sorted_panels = sorted(panels, key=lambda p: p["u_start"])
+    last_idx = len(sorted_panels) - 1
+
+    for element in elements:
+        u = element.get("u_coord", None)
+        if u is None:
+            element["panel_id"] = None
+            continue
+
+        assigned = False
+        for i, panel in enumerate(sorted_panels):
+            u_start = panel["u_start"]
+            u_end = panel["u_end"]
+
+            if i == last_idx:
+                # Last panel: inclusive upper bound
+                if u_start <= u <= u_end:
+                    element["panel_id"] = panel["id"]
+                    assigned = True
+                    break
+            else:
+                # Non-last panels: exclusive upper bound
+                if u_start <= u < u_end:
+                    element["panel_id"] = panel["id"]
+                    assigned = True
+                    break
+
+        if not assigned:
+            element["panel_id"] = None
+
+    return elements

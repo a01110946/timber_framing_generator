@@ -293,8 +293,6 @@ def setup_component():
         ("Panel Curves", "panel_curves", "Panel boundary curves for visualization"),
         ("Joint Points", "joint_points", "Joint location points"),
         ("Debug Info", "debug_info", "Debug information and status"),
-        ("Enriched Walls JSON", "enriched_walls_json",
-         "walls_json enriched with panel data embedded in each wall"),
     ]
 
     for i, (name, nick, desc) in enumerate(output_config):
@@ -665,12 +663,15 @@ def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
 
     Returns:
         tuple: (panels_json, panel_curves, joint_points, debug_info)
+            - panels_json: JSON string with panel data for all walls.
+            - panel_curves: DataTree of panel boundary curves.
+            - joint_points: DataTree of joint location points.
+            - debug_info: Debug information string.
     """
     setup_component()
 
     # Initialize outputs
     panels_json = ""
-    enriched_walls_json = ""
     panel_curves = DataTree[object]()
     joint_points = DataTree[object]()
     debug_lines = []
@@ -682,7 +683,7 @@ def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
             if error_msg and "not running" not in error_msg.lower():
                 log_warning(error_msg)
             debug_lines.append(error_msg)
-            return panels_json, panel_curves, joint_points, "\n".join(debug_lines), enriched_walls_json
+            return panels_json, panel_curves, joint_points, "\n".join(debug_lines)
 
         # Parse inputs
         walls_data = parse_walls_json(walls_json_in)
@@ -707,24 +708,12 @@ def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
         # Serialize results
         panels_json = json.dumps(all_results, indent=2)
 
-        # Build enriched walls_json with panels embedded in each wall
-        enriched_walls = []
-        for wall_idx, wall in enumerate(walls_data):
-            enriched = dict(wall)
-            if wall_idx < len(all_results) and all_results[wall_idx]:
-                enriched["panels"] = all_results[wall_idx].get("panels", [])
-            enriched_walls.append(enriched)
-        enriched_walls_json = json.dumps(enriched_walls, indent=2)
-        debug_lines.append(
-            "Enriched walls_json: %d walls with embedded panels" % len(enriched_walls)
-        )
-
     except Exception as e:
         log_error(f"Unexpected error: {str(e)}")
         debug_lines.append(f"ERROR: {str(e)}")
         debug_lines.append(traceback.format_exc())
 
-    return panels_json, panel_curves, joint_points, "\n".join(debug_lines), enriched_walls_json
+    return panels_json, panel_curves, joint_points, "\n".join(debug_lines)
 
 # =============================================================================
 # Execution
@@ -768,7 +757,7 @@ except NameError:
 
 # Execute main — pass inputs explicitly to avoid CPython 3 exec() scope issues
 if __name__ == "__main__":
-    panels_json, panel_curves, joint_points, debug_info, enriched_walls_json = main(
+    panels_json, panel_curves, joint_points, debug_info = main(
         walls_json, framing_json, max_length, joint_opening,
         joint_corner, stud_space, run
     )

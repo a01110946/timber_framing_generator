@@ -43,29 +43,33 @@ Performance Considerations:
     - Walls without wall_assembly are skipped with a warning
 
 Usage:
-    1. Connect 'walls_json' from Wall Analyzer component
-    2. Optionally connect 'junctions_json' from Junction Analyzer
-    3. Connect 'config_json' from Config Builder (or manual JSON)
-    4. Optionally connect 'framing_json' from Framing Generator
-    5. Set 'run' (last input) to True to execute
-    6. Collect 'multi_layer_json' for downstream geometry conversion
-    7. View 'layer_summary' for per-layer panel counts
+    1. Connect 'walls_json' from Wall Analyzer component (input 0)
+    2. Optionally connect 'junctions_json' from Junction Analyzer (input 1)
+    3. Connect 'config_json' from Config Builder (or manual JSON) (input 2)
+    4. Optionally connect 'framing_json' from Framing Generator (input 3)
+    5. Optionally connect 'panels_json' from Panel Decomposer (input 4)
+    6. Set 'run' (input 5) to True to execute
+    7. Collect 'multi_layer_json' for downstream geometry conversion
+    8. View 'layer_summary' for per-layer panel counts
+
+    Note: Component requires 6 inputs. If fewer are present, add inputs
+    via ZUI (right-click component -> + icon) until you have 6.
 
 Input Requirements:
-    Walls JSON (walls_json) - str:
+    Index 0 - Walls JSON (walls_json) - str:
         JSON string from Wall Analyzer with wall geometry data.
         Must contain wall_assembly with layers list.
         Required: Yes
         Access: Item
 
-    Junctions JSON (junctions_json) - str:
+    Index 1 - Junctions JSON (junctions_json) - str:
         Optional JSON from Junction Analyzer for per-layer adjustments.
         When connected, panels are extended or trimmed at wall ends
         to account for wall intersections (L-corners, T-junctions).
         Required: No
         Access: Item
 
-    Config JSON (config_json) - str:
+    Index 2 - Config JSON (config_json) - str:
         Configuration JSON from Config Builder component. Contains:
         - assembly_mode: "auto" or "revit" (default: "auto")
         - framing_system: "timber" or "cfs" (default: "timber")
@@ -77,15 +81,21 @@ Input Requirements:
         Required: No
         Access: Item
 
-    Framing JSON (framing_json) - str:
+    Index 3 - Framing JSON (framing_json) - str:
         Optional JSON from Framing Generator. When connected, extracts
         per-wall stud profile depth to prevent sheathing overlap with
         CFS or oversized framing.
         Required: No
         Access: Item
 
-    Run (run) - bool:
-        Boolean to trigger execution. Always the last input.
+    Index 4 - Panels JSON (panels_json) - str:
+        Optional JSON from Panel Decomposer. When connected, sheathing
+        is generated per framing panel so sheets don't cross panel joints.
+        Required: No
+        Access: Item
+
+    Index 5 - Run (run) - bool:
+        Boolean to trigger execution.
         Required: Yes
         Access: Item
 
@@ -116,7 +126,7 @@ Error Handling:
     - Empty results return valid JSON structure with zero counts
 
 Author: Timber Framing Generator
-Version: 0.2.3
+Version: 0.2.9
 """
 
 # =============================================================================
@@ -196,10 +206,10 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v2.8-embedded-panels"
+COMPONENT_MESSAGE = "v2.9-panels-input"
 
 # Version marker — confirms the updated script is running in GH
-print("[MLSheath] Script version v2.8 loaded (embedded panels fallback + diagnostics)")
+print("[MLSheath] Script version v2.9 loaded (panels_json as standard input)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -260,12 +270,9 @@ def setup_component():
     ghenv.Component.Category = COMPONENT_CATEGORY
     ghenv.Component.SubCategory = COMPONENT_SUBCATEGORY
 
-    # Configure inputs
+    # Configure inputs — fixed 6-input layout (matches FrameGen pattern)
     inputs = ghenv.Component.Params.Input
 
-    # Input layout depends on component input count:
-    # 5 inputs (legacy): walls, junctions, config, framing, run
-    # 6 inputs (new):    walls, junctions, config, framing, panels_json, run
     input_config = [
         ("Walls JSON", "walls_json",
          "JSON string from Wall Analyzer (must contain wall_assembly)",
@@ -281,22 +288,12 @@ def setup_component():
          "Optional JSON from Framing Generator — auto-detects framing profile depth "
          "to prevent sheathing overlap with CFS or oversized framing",
          Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Panels JSON", "panels_json",
+         "Optional JSON from Panel Decomposer for panel-bounded sheathing",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Run", "run", "Boolean to trigger execution",
+         Grasshopper.Kernel.GH_ParamAccess.item),
     ]
-
-    if inputs.Count >= 6:
-        # 6-input layout: panels_json at 4, run at 5
-        input_config.append(
-            ("Panels JSON", "panels_json",
-             "Optional JSON from Panel Decomposer for panel-bounded sheathing",
-             Grasshopper.Kernel.GH_ParamAccess.item))
-        input_config.append(
-            ("Run", "run", "Boolean to trigger execution",
-             Grasshopper.Kernel.GH_ParamAccess.item))
-    else:
-        # 5-input layout (legacy): run at 4
-        input_config.append(
-            ("Run", "run", "Boolean to trigger execution",
-             Grasshopper.Kernel.GH_ParamAccess.item))
 
     # Guard: only set properties that actually differ from current values.
     # Setting Access unconditionally can trigger GH parameter reconstruction
@@ -1009,13 +1006,6 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
             # Check if this wall has framing panels for panel-bounded sheathing
             wall_panels = panels_by_wall.get(str(wall_id)) if panels_by_wall else None
 
-            # Fallback: embedded panels in wall_data (from enriched walls_json)
-            if not wall_panels:
-                embedded = wall_data.get("panels")
-                if embedded and isinstance(embedded, list) and len(embedded) > 0:
-                    wall_panels = sorted(embedded, key=lambda p: p.get("u_start", 0))
-                    log_info("  Wall %s: using EMBEDDED panels (%d panels)" % (wall_id, len(wall_panels)))
-
             if wall_panels:
                 # Panel-aware path: generate sheathing bounded to each
                 # framing panel so sheets don't cross panel joints.
@@ -1421,12 +1411,12 @@ def _read_input(index, default=None):
     return default
 
 _input_count = ghenv.Component.Params.Input.Count
-if _input_count < 4:
+if _input_count < 6:
     _msg = (
-        "ERROR: Component has %d inputs but needs at least 4. "
-        "Right-click component zoomable UI (ZUI) -> add inputs, "
-        "then reconnect: walls_json, junctions_json, config_json, "
-        "[framing_json], [panels_json], run"
+        "ERROR: Component has %d inputs but needs 6. "
+        "Right-click component zoomable UI (ZUI) -> add inputs until "
+        "you have 6, then reconnect: walls_json (0), junctions_json (1), "
+        "config_json (2), framing_json (3), panels_json (4), run (5)"
         % _input_count
     )
     print(_msg)
@@ -1435,32 +1425,17 @@ if _input_count < 4:
     stats = ""
     log = _msg
 else:
-    # Input order: data inputs first, run toggle last.
-    # v2.2: assembly_mode and custom_map removed as standalone inputs;
-    # now read from config_json (via Config Builder component).
+    # Fixed 6-input layout (matches FrameGen pattern)
     _walls_json = _read_input(0)       # walls_json
     _junctions_json = _read_input(1)   # junctions_json
     _config_json = _read_input(2)      # config_json
     _framing_json = _read_input(3)     # framing_json (optional)
-    # panels_json is at index 4 only when component has 6+ inputs.
-    # If component has 5 inputs, panels_json slot doesn't exist.
-    # To enable panel-bounded sheathing, user must add a 6th input via
-    # ZUI (right-click component -> + icon) and reconnect panels_json.
-    _panels_json = _read_input(4) if _input_count >= 6 else None
-    if _input_count < 6:
-        print(
-            "[MLSheath] NOTE: Component has %d inputs (no panels_json slot). "
-            "Panel-bounded sheathing is DISABLED. To enable: "
-            "right-click component ZUI -> add input for panels_json "
-            "at index 4 (before run), then reconnect from Panel Decomposer."
-            % _input_count
-        )
-    _run_index = _input_count - 1      # run is always last
-    _run = bool(_read_input(_run_index, False))
+    _panels_json = _read_input(4)      # panels_json (optional)
+    _run = bool(_read_input(5, False)) # run
 
     # Panelization diagnostics
     print("[MLSheath] PANELIZATION DIAGNOSTICS:")
-    print("  Input count: %d (need 6+ for panels_json input)" % _input_count)
+    print("  Input count: %d" % _input_count)
     print("  panels_json received: %s" % ("YES (%d chars)" % len(str(_panels_json)) if _panels_json else "NO"))
 
     multi_layer_json, layer_summary, stats, log = main(

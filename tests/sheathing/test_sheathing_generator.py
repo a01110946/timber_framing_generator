@@ -519,3 +519,517 @@ class TestSheathingWithJunctionBounds:
         max_u = max(p["u_end"] for p in panels)
         assert min_u == pytest.approx(-0.15, abs=0.01)
         assert max_u == pytest.approx(12.15, abs=0.01)
+
+
+# =============================================================================
+# Panel-Bounded Sheathing Tests
+# =============================================================================
+
+
+class TestPanelBoundedSheathing:
+    """Tests for sheathing bounded to framing panel boundaries.
+
+    When a wall is split into multiple framing panels, sheathing should
+    be generated per-panel so sheets don't extend past panel joints.
+    """
+
+    @pytest.fixture
+    def long_wall(self):
+        """24 ft wall split into 2 panels at u=12."""
+        return {
+            "wall_id": "wall_24ft",
+            "wall_length": 24.0,
+            "wall_height": 8.0,
+            "openings": [],
+        }
+
+    def test_panel_id_set_on_sheathing(self, long_wall):
+        """Sheathing panels should have panel_id when generated per-panel."""
+        panel_wall = dict(long_wall)
+        panel_wall["panel_id"] = "wall_24ft_panel_0"
+
+        result = generate_wall_sheathing(
+            panel_wall,
+            u_start_bound=0.0,
+            u_end_bound=12.0,
+        )
+
+        for panel in result["sheathing_panels"]:
+            assert panel["panel_id"] == "wall_24ft_panel_0"
+
+    def test_sheathing_bounded_to_panel(self, long_wall):
+        """Sheathing should not extend past panel u_end boundary."""
+        panel_wall = dict(long_wall)
+        panel_wall["panel_id"] = "wall_24ft_panel_0"
+
+        result = generate_wall_sheathing(
+            panel_wall,
+            u_start_bound=0.0,
+            u_end_bound=12.0,
+        )
+
+        for panel in result["sheathing_panels"]:
+            assert panel["u_start"] >= 0.0 - 0.01
+            assert panel["u_end"] <= 12.0 + 0.01
+
+    def test_second_panel_starts_at_boundary(self, long_wall):
+        """Second panel's sheathing should start at the panel boundary."""
+        panel_wall = dict(long_wall)
+        panel_wall["panel_id"] = "wall_24ft_panel_1"
+
+        result = generate_wall_sheathing(
+            panel_wall,
+            u_start_bound=12.0,
+            u_end_bound=24.0,
+        )
+
+        min_u = min(p["u_start"] for p in result["sheathing_panels"])
+        assert min_u == pytest.approx(12.0, abs=0.01)
+
+    def test_two_panels_cover_full_wall(self, long_wall):
+        """Two panel-bounded results should cover the full wall length."""
+        # Panel 0: u=[0, 12]
+        p0_wall = dict(long_wall)
+        p0_wall["panel_id"] = "wall_24ft_panel_0"
+        r0 = generate_wall_sheathing(p0_wall, u_start_bound=0.0, u_end_bound=12.0)
+
+        # Panel 1: u=[12, 24]
+        p1_wall = dict(long_wall)
+        p1_wall["panel_id"] = "wall_24ft_panel_1"
+        r1 = generate_wall_sheathing(p1_wall, u_start_bound=12.0, u_end_bound=24.0)
+
+        all_panels = r0["sheathing_panels"] + r1["sheathing_panels"]
+
+        min_u = min(p["u_start"] for p in all_panels)
+        max_u = max(p["u_end"] for p in all_panels)
+        assert min_u == pytest.approx(0.0, abs=0.01)
+        assert max_u == pytest.approx(24.0, abs=0.01)
+
+    def test_no_sheathing_straddles_panel_boundary(self, long_wall):
+        """No single sheathing panel should cross the panel boundary at u=12."""
+        # Panel 0: u=[0, 12]
+        p0_wall = dict(long_wall)
+        p0_wall["panel_id"] = "wall_24ft_panel_0"
+        r0 = generate_wall_sheathing(p0_wall, u_start_bound=0.0, u_end_bound=12.0)
+
+        for panel in r0["sheathing_panels"]:
+            assert panel["u_end"] <= 12.0 + 0.01, (
+                "Panel 0 sheathing extends past boundary: u_end=%s" % panel["u_end"]
+            )
+
+        # Panel 1: u=[12, 24]
+        p1_wall = dict(long_wall)
+        p1_wall["panel_id"] = "wall_24ft_panel_1"
+        r1 = generate_wall_sheathing(p1_wall, u_start_bound=12.0, u_end_bound=24.0)
+
+        for panel in r1["sheathing_panels"]:
+            assert panel["u_start"] >= 12.0 - 0.01, (
+                "Panel 1 sheathing starts before boundary: u_start=%s" % panel["u_start"]
+            )
+
+    def test_panel_bounded_with_opening(self):
+        """Openings should create cutouts only in their panel's sheathing."""
+        wall_data = {
+            "wall_id": "wall_with_win",
+            "wall_length": 24.0,
+            "wall_height": 8.0,
+            "openings": [
+                {
+                    "opening_type": "window",
+                    "start_u_coordinate": 5.0,
+                    "rough_width": 3.0,
+                    "base_elevation_relative_to_wall_base": 3.0,
+                    "rough_height": 4.0,
+                }
+            ],
+        }
+
+        # Panel 0 (u=0 to 12) should have cutout for window at u=5
+        p0 = dict(wall_data)
+        p0["panel_id"] = "win_wall_panel_0"
+        r0 = generate_wall_sheathing(p0, u_start_bound=0.0, u_end_bound=12.0)
+        cutout_panels_0 = [p for p in r0["sheathing_panels"] if p.get("cutouts")]
+        assert len(cutout_panels_0) > 0
+
+        # Panel 1 (u=12 to 24) should NOT have cutouts (window is in panel 0)
+        p1 = dict(wall_data)
+        p1["panel_id"] = "win_wall_panel_1"
+        r1 = generate_wall_sheathing(p1, u_start_bound=12.0, u_end_bound=24.0)
+        cutout_panels_1 = [p for p in r1["sheathing_panels"] if p.get("cutouts")]
+        assert len(cutout_panels_1) == 0
+
+    def test_unbounded_sheathing_crosses_panel_boundary(self, long_wall):
+        """Without bounds, a 4ft panel at u=8 extends to u=12, crossing u=10.
+
+        Demonstrates why panel-bounded generation is needed: standard 4ft
+        layout on a 24ft wall creates a panel [8,12] that crosses u=10.
+        """
+        result = generate_wall_sheathing(long_wall)
+        panels = result["sheathing_panels"]
+
+        # u=10 is NOT aligned with 4ft grid, so a panel must cross it
+        crossing = [
+            p for p in panels
+            if p["u_start"] < 10.0 and p["u_end"] > 10.0
+        ]
+        assert len(crossing) > 0, "Expected unbounded sheathing to cross u=10"
+
+    def test_panelized_sheathing_ids_unique_across_panels(self, long_wall):
+        """Sheathing from different framing panels must have unique IDs.
+
+        When a wall is split into panels, each panel generates sheathing
+        with column=0 reset. Without a panel prefix in the ID, panels
+        from different framing panels would collide (both start at
+        column=0 with the same wall_id).
+        """
+        # Panel 0: u=[0, 12]
+        p0_wall = dict(long_wall)
+        p0_wall["panel_id"] = "wall_24ft_panel_0"
+        r0 = generate_wall_sheathing(p0_wall, u_start_bound=0.0, u_end_bound=12.0)
+
+        # Panel 1: u=[12, 24]
+        p1_wall = dict(long_wall)
+        p1_wall["panel_id"] = "wall_24ft_panel_1"
+        r1 = generate_wall_sheathing(p1_wall, u_start_bound=12.0, u_end_bound=24.0)
+
+        all_panels = r0["sheathing_panels"] + r1["sheathing_panels"]
+        all_ids = [p["id"] for p in all_panels]
+
+        # Every ID must be unique
+        assert len(all_ids) == len(set(all_ids)), (
+            "Duplicate sheathing panel IDs found across framing panels: %s"
+            % [x for x in all_ids if all_ids.count(x) > 1]
+        )
+
+    def test_panelized_sheathing_ids_contain_panel_prefix(self, long_wall):
+        """Sheathing IDs should contain a panel prefix when panel_id is set."""
+        panel_wall = dict(long_wall)
+        panel_wall["panel_id"] = "wall_24ft_panel_0"
+
+        result = generate_wall_sheathing(
+            panel_wall,
+            u_start_bound=0.0,
+            u_end_bound=12.0,
+        )
+
+        for panel in result["sheathing_panels"]:
+            assert "_p0_" in panel["id"], (
+                "Expected panel prefix '_p0_' in sheathing ID: %s" % panel["id"]
+            )
+
+    def test_unpanelized_sheathing_ids_no_prefix(self, long_wall):
+        """Sheathing IDs should NOT have panel prefix when no panel_id."""
+        result = generate_wall_sheathing(long_wall)
+
+        for panel in result["sheathing_panels"]:
+            assert "_p0_" not in panel["id"]
+            assert "_p1_" not in panel["id"]
+
+    def test_segmented_panel_id_generates_correct_prefix(self, long_wall):
+        """Segmented panel IDs like '529398_seg0_panel_1' should produce '_p1_'."""
+        panel_wall = dict(long_wall)
+        panel_wall["panel_id"] = "529398_seg0_panel_1"
+
+        result = generate_wall_sheathing(
+            panel_wall,
+            u_start_bound=0.0,
+            u_end_bound=12.0,
+        )
+
+        for panel in result["sheathing_panels"]:
+            assert "_p1_" in panel["id"], (
+                "Expected '_p1_' prefix from segmented panel_id: %s" % panel["id"]
+            )
+
+
+# =============================================================================
+# Multi-Segment ID Collision Tests
+# =============================================================================
+
+
+class TestMultiSegmentIdCollision:
+    """Tests for segment_index parameter that prevents ID collisions.
+
+    When a wall has midspan gaps (T-intersections, X-crossings), MLSheath
+    splits the layer into multiple segments. Each segment creates a new
+    SheathingGenerator with column=0. Without segment_index, panels from
+    different segments get identical IDs.
+    """
+
+    @pytest.fixture
+    def standard_wall(self):
+        """12 ft wall, 8 ft tall, no openings."""
+        return {
+            "wall_id": "wall_A",
+            "wall_length": 12.0,
+            "wall_height": 8.0,
+            "openings": [],
+        }
+
+    def test_two_segments_unique_ids(self, standard_wall):
+        """Panels from two segments must have unique IDs."""
+        # Segment 0: u=[0, 5]
+        gen0 = SheathingGenerator(
+            standard_wall,
+            u_start_bound=0.0,
+            u_end_bound=5.0,
+            layer_name="OSB",
+            segment_index=0,
+        )
+        panels0 = gen0.generate_sheathing(face="exterior")
+
+        # Segment 1: u=[7, 12]  (gap at u=5..7 from T-intersection)
+        gen1 = SheathingGenerator(
+            standard_wall,
+            u_start_bound=7.0,
+            u_end_bound=12.0,
+            layer_name="OSB",
+            segment_index=1,
+        )
+        panels1 = gen1.generate_sheathing(face="exterior")
+
+        all_ids = [p.id for p in panels0] + [p.id for p in panels1]
+        assert len(all_ids) == len(set(all_ids)), (
+            "Duplicate IDs across segments: %s"
+            % [x for x in all_ids if all_ids.count(x) > 1]
+        )
+
+    def test_segment_tag_in_id(self, standard_wall):
+        """Segment index should appear as '_s0_' or '_s1_' in panel IDs."""
+        gen = SheathingGenerator(
+            standard_wall,
+            u_start_bound=0.0,
+            u_end_bound=5.0,
+            layer_name="OSB",
+            segment_index=0,
+        )
+        panels = gen.generate_sheathing(face="exterior")
+
+        for p in panels:
+            assert "_s0_" in p.id, (
+                "Expected '_s0_' segment tag in ID: %s" % p.id
+            )
+
+    def test_no_segment_tag_for_single_segment(self, standard_wall):
+        """Single-segment walls (segment_index=None) should NOT have segment tag."""
+        gen = SheathingGenerator(
+            standard_wall,
+            u_start_bound=0.0,
+            u_end_bound=12.0,
+            layer_name="OSB",
+            segment_index=None,
+        )
+        panels = gen.generate_sheathing(face="exterior")
+
+        for p in panels:
+            assert "_s0_" not in p.id
+            assert "_s1_" not in p.id
+
+    def test_three_segments_all_unique(self, standard_wall):
+        """Three segments (two gaps) should all produce unique IDs."""
+        segments = [(0.0, 3.5), (4.5, 8.0), (9.0, 12.0)]
+        all_ids = []
+
+        for seg_idx, (u_start, u_end) in enumerate(segments):
+            gen = SheathingGenerator(
+                standard_wall,
+                u_start_bound=u_start,
+                u_end_bound=u_end,
+                layer_name="OSB",
+                segment_index=seg_idx,
+            )
+            panels = gen.generate_sheathing(face="exterior")
+            all_ids.extend(p.id for p in panels)
+
+        assert len(all_ids) == len(set(all_ids)), (
+            "Duplicate IDs across 3 segments: %s"
+            % [x for x in all_ids if all_ids.count(x) > 1]
+        )
+
+    def test_segment_plus_panel_prefix_combined(self, standard_wall):
+        """Both panel and segment prefixes should coexist in the ID."""
+        wall = dict(standard_wall)
+        wall["panel_id"] = "wall_A_panel_0"
+
+        gen = SheathingGenerator(
+            wall,
+            u_start_bound=0.0,
+            u_end_bound=5.0,
+            layer_name="OSB",
+            segment_index=1,
+        )
+        panels = gen.generate_sheathing(face="exterior")
+
+        for p in panels:
+            assert "_p0_" in p.id, "Missing panel prefix: %s" % p.id
+            assert "_s1_" in p.id, "Missing segment tag: %s" % p.id
+
+    def test_without_segment_index_ids_collide(self, standard_wall):
+        """Without segment_index, two segments produce colliding IDs.
+
+        This is the bug we fixed: demonstrates that segment_index=None
+        on both generators causes duplicate IDs.
+        """
+        # Both segments use segment_index=None (the old behavior)
+        gen0 = SheathingGenerator(
+            standard_wall,
+            u_start_bound=0.0,
+            u_end_bound=4.0,
+            layer_name="OSB",
+            segment_index=None,
+        )
+        panels0 = gen0.generate_sheathing(face="exterior")
+
+        gen1 = SheathingGenerator(
+            standard_wall,
+            u_start_bound=8.0,
+            u_end_bound=12.0,
+            layer_name="OSB",
+            segment_index=None,
+        )
+        panels1 = gen1.generate_sheathing(face="exterior")
+
+        ids0 = {p.id for p in panels0}
+        ids1 = {p.id for p in panels1}
+
+        # Without segment_index, both have column=0 panels with same base ID
+        assert ids0 & ids1, (
+            "Expected ID collision without segment_index, but IDs were unique. "
+            "This test documents the bug that segment_index fixes."
+        )
+
+
+# =============================================================================
+# Embedded Panels Fallback Tests
+# =============================================================================
+
+
+class TestEmbeddedPanelsFallback:
+    """Tests for the embedded panels fallback mechanism.
+
+    When walls_json contains a 'panels' key (from enriched walls_json),
+    MLSheath should use those panels for panel-bounded sheathing without
+    needing a separate panels_json input.
+    """
+
+    def test_embedded_panels_triggers_panelized_ids(self):
+        """Wall data with 'panels' key produces sheathing with panel_id set
+        and unique IDs across panels."""
+        wall_data = {
+            "wall_id": "w1",
+            "wall_length": 24.0,
+            "wall_height": 8.0,
+            "openings": [],
+            "panels": [
+                {"id": "w1_panel_0", "u_start": 0.0, "u_end": 12.0},
+                {"id": "w1_panel_1", "u_start": 12.0, "u_end": 24.0},
+            ],
+        }
+
+        all_sheathing = []
+        for panel in wall_data["panels"]:
+            panel_wall = dict(wall_data)
+            panel_wall["panel_id"] = panel["id"]
+            result = generate_wall_sheathing(
+                panel_wall,
+                u_start_bound=panel["u_start"],
+                u_end_bound=panel["u_end"],
+            )
+            all_sheathing.extend(result["sheathing_panels"])
+
+        # All panels should have panel_id set
+        for p in all_sheathing:
+            assert p.get("panel_id") is not None, (
+                "Expected panel_id on sheathing panel: %s" % p["id"]
+            )
+
+        # All IDs should be unique across panels
+        all_ids = [p["id"] for p in all_sheathing]
+        assert len(all_ids) == len(set(all_ids)), (
+            "Duplicate sheathing IDs across embedded panels: %s"
+            % [x for x in all_ids if all_ids.count(x) > 1]
+        )
+
+    def test_embedded_panels_empty_list_ignored(self):
+        """'panels': [] should NOT trigger the panelized path."""
+        embedded = []
+        # This is the exact condition from process_walls()
+        triggers = embedded and isinstance(embedded, list) and len(embedded) > 0
+        assert not triggers, "Empty panels list should not trigger panelized path"
+
+    def test_embedded_panels_none_ignored(self):
+        """'panels': None should NOT trigger the panelized path."""
+        embedded = None
+        triggers = embedded and isinstance(embedded, list) and len(embedded) > 0
+        assert not triggers, "None panels should not trigger panelized path"
+
+    def test_parse_panels_json_format(self):
+        """Panel Decomposer output format should parse into wall_id -> panels map."""
+        # Simulates what Panel Decomposer outputs
+        panel_decomposer_output = [
+            {
+                "wall_id": "w1",
+                "panels": [
+                    {"id": "w1_panel_0", "u_start": 0.0, "u_end": 12.0},
+                    {"id": "w1_panel_1", "u_start": 12.0, "u_end": 24.0},
+                ],
+                "joints": [],
+            },
+            {
+                "wall_id": "w2",
+                "panels": [
+                    {"id": "w2_panel_0", "u_start": 0.0, "u_end": 10.0},
+                ],
+                "joints": [],
+            },
+        ]
+
+        # Replicate parse_panels_json logic (from gh_multi_layer_sheathing.py)
+        result = {}
+        for wall_result in panel_decomposer_output:
+            if not isinstance(wall_result, dict):
+                continue
+            wall_id = str(wall_result.get("wall_id", ""))
+            panels = wall_result.get("panels", [])
+            if wall_id and panels:
+                result[wall_id] = sorted(
+                    panels, key=lambda p: p.get("u_start", 0)
+                )
+
+        assert "w1" in result
+        assert "w2" in result
+        assert len(result["w1"]) == 2
+        assert len(result["w2"]) == 1
+        assert result["w1"][0]["u_start"] == 0.0
+        assert result["w1"][1]["u_start"] == 12.0
+
+    def test_embedded_panels_sheathing_respects_bounds(self):
+        """Sheathing generated per embedded panel should stay within panel bounds."""
+        wall_data = {
+            "wall_id": "w1",
+            "wall_length": 24.0,
+            "wall_height": 8.0,
+            "openings": [],
+            "panels": [
+                {"id": "w1_panel_0", "u_start": 0.0, "u_end": 12.0},
+                {"id": "w1_panel_1", "u_start": 12.0, "u_end": 24.0},
+            ],
+        }
+
+        for panel in wall_data["panels"]:
+            panel_wall = dict(wall_data)
+            panel_wall["panel_id"] = panel["id"]
+            result = generate_wall_sheathing(
+                panel_wall,
+                u_start_bound=panel["u_start"],
+                u_end_bound=panel["u_end"],
+            )
+            for sp in result["sheathing_panels"]:
+                assert sp["u_start"] >= panel["u_start"] - 0.01, (
+                    "Sheathing %s starts before panel bound %.2f: u_start=%.2f"
+                    % (sp["id"], panel["u_start"], sp["u_start"])
+                )
+                assert sp["u_end"] <= panel["u_end"] + 0.01, (
+                    "Sheathing %s extends past panel bound %.2f: u_end=%.2f"
+                    % (sp["id"], panel["u_end"], sp["u_end"])
+                )

@@ -196,10 +196,10 @@ from src.timber_framing_generator.wall_junctions.junction_resolver import (
 
 COMPONENT_NAME = "Multi-Layer Sheathing Generator"
 COMPONENT_NICKNAME = "MLSheath"
-COMPONENT_MESSAGE = "v2.6"
+COMPONENT_MESSAGE = "v2.8-embedded-panels"
 
 # Version marker — confirms the updated script is running in GH
-print("[MLSheath] Script version v2.6 loaded (crossed-pattern: pri_int TRIM, sec_int EXTEND at all L-corners)")
+print("[MLSheath] Script version v2.8 loaded (embedded panels fallback + diagnostics)")
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "4-Sheathing"
 
@@ -263,6 +263,9 @@ def setup_component():
     # Configure inputs
     inputs = ghenv.Component.Params.Input
 
+    # Input layout depends on component input count:
+    # 5 inputs (legacy): walls, junctions, config, framing, run
+    # 6 inputs (new):    walls, junctions, config, framing, panels_json, run
     input_config = [
         ("Walls JSON", "walls_json",
          "JSON string from Wall Analyzer (must contain wall_assembly)",
@@ -278,16 +281,37 @@ def setup_component():
          "Optional JSON from Framing Generator — auto-detects framing profile depth "
          "to prevent sheathing overlap with CFS or oversized framing",
          Grasshopper.Kernel.GH_ParamAccess.item),
-        ("Run", "run", "Boolean to trigger execution",
-         Grasshopper.Kernel.GH_ParamAccess.item),
     ]
 
+    if inputs.Count >= 6:
+        # 6-input layout: panels_json at 4, run at 5
+        input_config.append(
+            ("Panels JSON", "panels_json",
+             "Optional JSON from Panel Decomposer for panel-bounded sheathing",
+             Grasshopper.Kernel.GH_ParamAccess.item))
+        input_config.append(
+            ("Run", "run", "Boolean to trigger execution",
+             Grasshopper.Kernel.GH_ParamAccess.item))
+    else:
+        # 5-input layout (legacy): run at 4
+        input_config.append(
+            ("Run", "run", "Boolean to trigger execution",
+             Grasshopper.Kernel.GH_ParamAccess.item))
+
+    # Guard: only set properties that actually differ from current values.
+    # Setting Access unconditionally can trigger GH parameter reconstruction
+    # which silently disconnects wires (even if the value doesn't change).
     for i, (name, nick, desc, access) in enumerate(input_config):
         if i < inputs.Count:
-            inputs[i].Name = name
-            inputs[i].NickName = nick
-            inputs[i].Description = desc
-            inputs[i].Access = access
+            p = inputs[i]
+            if p.Name != name:
+                p.Name = name
+            if p.NickName != nick:
+                p.NickName = nick
+            if p.Description != desc:
+                p.Description = desc
+            if p.Access != access:
+                p.Access = access
 
     # Configure outputs (start from index 1)
     outputs = ghenv.Component.Params.Output
@@ -546,11 +570,206 @@ def compute_sheathing_bounds(wall_id, wall_length, face, junctions_data, layer_s
     return segments if segments else [(u_start_bound, u_end_bound)]
 
 
+def parse_panels_json(panels_json_str):
+    """Parse panels JSON into wall_id -> panel list mapping.
+
+    Args:
+        panels_json_str: JSON string from Panel Decomposer.
+
+    Returns:
+        dict: {wall_id: [panel_dict, ...]} sorted by u_start, or empty dict.
+    """
+    if not panels_json_str or not str(panels_json_str).strip():
+        return {}
+
+    try:
+        data = json.loads(str(panels_json_str))
+    except (json.JSONDecodeError, TypeError):
+        log_warning("Invalid panels_json, ignoring")
+        return {}
+
+    if not isinstance(data, list):
+        return {}
+
+    result = {}
+    for wall_result in data:
+        if not isinstance(wall_result, dict):
+            continue
+        wall_id = str(wall_result.get("wall_id", ""))
+        panels = wall_result.get("panels", [])
+        if wall_id and panels:
+            result[wall_id] = sorted(
+                panels, key=lambda p: p.get("u_start", 0)
+            )
+
+    return result
+
+
+def _clip_face_bounds(face_bounds, panel_u_start, panel_u_end):
+    """Clip face_bounds segments to panel boundaries.
+
+    Args:
+        face_bounds: Dict mapping face/layer key -> list of (u_start, u_end) segments.
+        panel_u_start: Panel start U coordinate.
+        panel_u_end: Panel end U coordinate.
+
+    Returns:
+        Clipped face_bounds dict, or None if empty after clipping.
+    """
+    if not face_bounds:
+        return None
+
+    clipped = {}
+    for key, segments in face_bounds.items():
+        clipped_segs = []
+        for seg_start, seg_end in segments:
+            clip_start = max(seg_start, panel_u_start)
+            clip_end = min(seg_end, panel_u_end)
+            if clip_end > clip_start + 0.001:
+                clipped_segs.append((clip_start, clip_end))
+        if clipped_segs:
+            clipped[key] = clipped_segs
+
+    return clipped if clipped else None
+
+
+def generate_panelized_assembly_layers(
+    wall_data, wall_panels, base_config, layer_configs, include_functions,
+    face_bounds, framing_depth,
+):
+    """Generate multi-layer sheathing bounded to framing panel boundaries.
+
+    For each framing panel, calls generate_assembly_layers() with the
+    panel's u_start/u_end as bounds and the panel_id set on wall_data.
+    Results are merged per-layer so the output structure matches the
+    non-panelized path (one layer_result per layer, not per panel).
+
+    Args:
+        wall_data: Wall data dict (with wall_assembly).
+        wall_panels: List of panel dicts sorted by u_start.
+        base_config: Base config for all layers.
+        layer_configs: Per-layer config overrides.
+        include_functions: Layer function filter, or None.
+        face_bounds: Dict of face/layer key -> segments from junction analysis.
+        framing_depth: Framing profile depth in feet, or None.
+
+    Returns:
+        dict: Same format as generate_assembly_layers() output.
+    """
+    wall_id = wall_data.get("wall_id", "unknown")
+    wall_length = wall_data.get("wall_length", 0)
+    num_panels = len(wall_panels)
+
+    # Merged layer_results keyed by "layer_name|layer_side"
+    merged = {}
+    total_panels = 0
+
+    for panel_idx, panel in enumerate(wall_panels):
+        panel_id = panel.get("id", "%s_panel_%d" % (wall_id, panel_idx))
+        panel_u_start = panel.get("u_start", 0)
+        panel_u_end = panel.get("u_end", wall_length)
+        log_info(
+            "    Panel %d/%d: id=%s, u=[%.3f, %.3f], length=%.3f ft"
+            % (panel_idx + 1, num_panels, panel_id,
+               panel_u_start, panel_u_end, panel_u_end - panel_u_start)
+        )
+
+        is_first = (panel_idx == 0)
+        is_last = (panel_idx == num_panels - 1)
+
+        # Start with panel boundaries
+        effective_u_start = panel_u_start
+        effective_u_end = panel_u_end
+
+        # Apply junction extensions only at wall edges
+        if is_first and face_bounds:
+            for segs in face_bounds.values():
+                for seg_start, _ in segs:
+                    if seg_start < effective_u_start:
+                        effective_u_start = seg_start
+
+        if is_last and face_bounds:
+            for segs in face_bounds.values():
+                for _, seg_end in segs:
+                    if seg_end > effective_u_end:
+                        effective_u_end = seg_end
+
+        # Clip face_bounds to this panel's range
+        panel_face_bounds = _clip_face_bounds(
+            face_bounds, effective_u_start, effective_u_end
+        )
+
+        # Set panel_id on wall_data copy
+        panel_wall_data = dict(wall_data)
+        panel_wall_data["panel_id"] = panel_id
+
+        try:
+            result = generate_assembly_layers(
+                panel_wall_data,
+                config=base_config,
+                layer_configs=layer_configs if layer_configs else None,
+                u_start_bound=effective_u_start,
+                u_end_bound=effective_u_end,
+                face_bounds=panel_face_bounds,
+                include_functions=include_functions,
+                framing_depth=framing_depth,
+            )
+        except TypeError as _te:
+            if "framing_depth" in str(_te):
+                result = generate_assembly_layers(
+                    panel_wall_data,
+                    config=base_config,
+                    layer_configs=layer_configs if layer_configs else None,
+                    u_start_bound=effective_u_start,
+                    u_end_bound=effective_u_end,
+                    face_bounds=panel_face_bounds,
+                    include_functions=include_functions,
+                )
+            else:
+                raise
+
+        # Merge layer_results: concatenate panels per layer
+        for lr in result.get("layer_results", []):
+            layer_key = "%s|%s" % (
+                lr.get("layer_name", "unknown"),
+                lr.get("layer_side", "unknown"),
+            )
+            if layer_key not in merged:
+                merged[layer_key] = dict(lr)
+                merged[layer_key]["panels"] = list(lr.get("panels", []))
+                merged[layer_key]["panel_count"] = lr.get("panel_count", 0)
+            else:
+                merged[layer_key]["panels"].extend(lr.get("panels", []))
+                merged[layer_key]["panel_count"] += lr.get("panel_count", 0)
+
+        total_panels += result.get("total_panel_count", 0)
+
+    log_info(
+        "  Wall %s: panelized -> %d framing panels -> %d sheathing panels"
+        % (wall_id, num_panels, total_panels)
+    )
+
+    out = {
+        "wall_id": wall_id,
+        "layer_results": list(merged.values()),
+        "total_panel_count": total_panels,
+        "layers_processed": len(merged),
+    }
+
+    # Copy assembly metadata from wall_data
+    for key in ("assembly_source", "assembly_confidence", "assembly_notes",
+                "assembly_name", "wall_type"):
+        if key in wall_data:
+            out[key] = wall_data[key]
+
+    return out
+
+
 def process_walls(walls_json, base_config, layer_configs, include_functions,
                   junctions_data=None, assembly_mode="auto",
                   assembly_overrides=None, framing_system="timber",
                   framing_depth=None, framing_data=None,
-                  custom_map=None):
+                  custom_map=None, panels_by_wall=None):
     """Process walls and generate multi-layer sheathing panels.
 
     For each wall, resolves the assembly (using the assembly resolver),
@@ -635,6 +854,8 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
     total_panels = 0
     total_layers_processed = 0
     walls_processed = 0
+    panelized_count = 0
+    standard_count = 0
 
     summary_lines.append("=== Multi-Layer Sheathing ===")
     summary_lines.append(
@@ -785,35 +1006,65 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
                         f"({wall_framing_depth * 12:.2f} in) for wall {wall_id}"
                     )
 
-            # Call multi-layer generator with per-face junction bounds.
-            # Each layer uses the bounds matching its face (exterior or
-            # interior), which may differ at wall corners.
-            try:
-                result = generate_assembly_layers(
-                    wall_data,
-                    config=base_config,
-                    layer_configs=layer_configs if layer_configs else None,
-                    face_bounds=face_bounds if face_bounds else None,
-                    include_functions=include_functions,
-                    framing_depth=wall_framing_depth,
+            # Check if this wall has framing panels for panel-bounded sheathing
+            wall_panels = panels_by_wall.get(str(wall_id)) if panels_by_wall else None
+
+            # Fallback: embedded panels in wall_data (from enriched walls_json)
+            if not wall_panels:
+                embedded = wall_data.get("panels")
+                if embedded and isinstance(embedded, list) and len(embedded) > 0:
+                    wall_panels = sorted(embedded, key=lambda p: p.get("u_start", 0))
+                    log_info("  Wall %s: using EMBEDDED panels (%d panels)" % (wall_id, len(wall_panels)))
+
+            if wall_panels:
+                # Panel-aware path: generate sheathing bounded to each
+                # framing panel so sheets don't cross panel joints.
+                panelized_count += 1
+                log_info(
+                    f"  Wall {wall_id}: PANELIZED path "
+                    f"({len(wall_panels)} framing panels)"
                 )
-            except TypeError as _te:
-                # Fallback: if an older version of multi_layer_generator is
-                # loaded (missing framing_depth param), retry without it.
-                if "framing_depth" in str(_te):
-                    log_warning(
-                        f"Wall {wall_id}: stale module lacks framing_depth "
-                        f"param -- falling back (restart Rhino to fix)"
+                result = generate_panelized_assembly_layers(
+                    wall_data, wall_panels, base_config, layer_configs,
+                    include_functions, face_bounds, wall_framing_depth,
+                )
+            else:
+                standard_count += 1
+                if panels_by_wall:
+                    log_info(
+                        "  Wall %s: STANDARD path (no panel match; "
+                        "available panel wall_ids: %s)"
+                        % (wall_id, sorted(panels_by_wall.keys()))
                     )
+                else:
+                    log_info("  Wall %s: STANDARD path (no panels data)" % wall_id)
+                # Standard path: generate sheathing for the full wall
+                try:
                     result = generate_assembly_layers(
                         wall_data,
                         config=base_config,
                         layer_configs=layer_configs if layer_configs else None,
                         face_bounds=face_bounds if face_bounds else None,
                         include_functions=include_functions,
+                        framing_depth=wall_framing_depth,
                     )
-                else:
-                    raise
+                except TypeError as _te:
+                    # Fallback: if an older version of multi_layer_generator is
+                    # loaded (missing framing_depth param), retry without it.
+                    if "framing_depth" in str(_te):
+                        log_warning(
+                            f"Wall {wall_id}: stale module lacks framing_depth "
+                            f"param -- falling back (restart Rhino to fix)"
+                        )
+                        result = generate_assembly_layers(
+                            wall_data,
+                            config=base_config,
+                            layer_configs=layer_configs if layer_configs else None,
+                            face_bounds=face_bounds if face_bounds else None,
+                            include_functions=include_functions,
+                        )
+                    else:
+                        raise
 
             all_results.append(result)
             walls_processed += 1
@@ -890,7 +1141,9 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
         f"Total Panels: {total_panels}\n"
         f"Layers Processed: {total_layers_processed} "
         f"({len(unique_layers)} unique)\n"
-        f"Walls Processed: {walls_processed}/{len(walls_list)}"
+        f"Walls Processed: {walls_processed}/{len(walls_list)}\n"
+        f"Panelization: {panelized_count}/{walls_processed} walls panel-bounded, "
+        f"{standard_count} standard"
     )
 
     # Append total to summary
@@ -912,7 +1165,7 @@ def process_walls(walls_json, base_config, layer_configs, include_functions,
 # =============================================================================
 
 def main(walls_json_in, junctions_json_in, config_json_in, run_in,
-         framing_json_in=None):
+         framing_json_in=None, panels_json_in=None):
     """Main entry point for the component.
 
     Orchestrates the multi-layer sheathing generation workflow:
@@ -922,9 +1175,10 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
        base config, layer overrides, function filter)
     4. Parses optional junction data
     5. Auto-detects framing depth from framing_json (if connected)
-    6. Resolves assemblies for all walls
-    7. Processes all walls
-    8. Returns JSON results, summary, stats, and log
+    6. Parses optional panels_json for panel-bounded sheathing
+    7. Resolves assemblies for all walls
+    8. Processes all walls
+    9. Returns JSON results, summary, stats, and log
 
     Args:
         walls_json_in: JSON string from Wall Analyzer.
@@ -937,6 +1191,9 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             connected, the maximum profile depth is extracted and used
             as framing_depth to prevent sheathing from overlapping
             oversized framing (e.g., CFS profiles on a timber wall type).
+        panels_json_in: Optional JSON from Panel Decomposer. When
+            connected, sheathing is generated per framing panel so
+            sheets don't cross panel joints.
 
     Returns:
         tuple: (multi_layer_json, layer_summary, stats, log)
@@ -1075,6 +1332,39 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             )
             log_info(phase2_log[-1])
 
+        # Parse panels_json for panel-bounded sheathing (optional)
+        panels_by_wall = parse_panels_json(panels_json_in)
+        if panels_by_wall:
+            total_fpanels = sum(len(v) for v in panels_by_wall.values())
+            log_info(
+                f"Panel-bounded mode: {total_fpanels} framing panels "
+                f"across {len(panels_by_wall)} walls"
+            )
+            # Check wall_id match between panels_json and walls_json
+            try:
+                _walls_tmp = json.loads(walls_json_input)
+                if isinstance(_walls_tmp, dict):
+                    _walls_tmp = [_walls_tmp]
+                _wall_ids = set(str(w.get("wall_id", "")) for w in _walls_tmp)
+                _panel_ids = set(panels_by_wall.keys())
+                _matched = _wall_ids & _panel_ids
+                log_info("  Panel wall_ids: %s" % sorted(_panel_ids))
+                log_info("  Walls wall_ids: %s" % sorted(_wall_ids))
+                log_info("  Matched: %d/%d walls" % (len(_matched), len(_wall_ids)))
+                _unmatched = _panel_ids - _wall_ids
+                if _unmatched:
+                    log_warning(
+                        "  panels_json has %d wall_ids not in walls_json: %s"
+                        % (len(_unmatched), sorted(_unmatched)))
+            except Exception:
+                pass
+        elif panels_json_in and str(panels_json_in).strip():
+            log_info(
+                "panels_json was provided but parse_panels_json returned empty "
+                "- check JSON format (expected list of {wall_id, panels: [...]})")
+        else:
+            log_info("No panels_json provided - standard full-wall mode")
+
         # Process walls
         results, summary_lines, stats_text, log_lines = process_walls(
             walls_json_input, base_config, layer_configs, include_functions,
@@ -1082,6 +1372,7 @@ def main(walls_json_in, junctions_json_in, config_json_in, run_in,
             assembly_overrides=assembly_overrides,
             framing_system=framing_system,
             framing_depth=framing_depth, framing_data=framing_data,
+            panels_by_wall=panels_by_wall if panels_by_wall else None,
         )
 
         # Prepend Phase 2 recompute log to visible output
@@ -1135,7 +1426,7 @@ if _input_count < 4:
         "ERROR: Component has %d inputs but needs at least 4. "
         "Right-click component zoomable UI (ZUI) -> add inputs, "
         "then reconnect: walls_json, junctions_json, config_json, "
-        "[framing_json], run"
+        "[framing_json], [panels_json], run"
         % _input_count
     )
     print(_msg)
@@ -1151,10 +1442,28 @@ else:
     _junctions_json = _read_input(1)   # junctions_json
     _config_json = _read_input(2)      # config_json
     _framing_json = _read_input(3)     # framing_json (optional)
+    # panels_json is at index 4 only when component has 6+ inputs.
+    # If component has 5 inputs, panels_json slot doesn't exist.
+    # To enable panel-bounded sheathing, user must add a 6th input via
+    # ZUI (right-click component -> + icon) and reconnect panels_json.
+    _panels_json = _read_input(4) if _input_count >= 6 else None
+    if _input_count < 6:
+        print(
+            "[MLSheath] NOTE: Component has %d inputs (no panels_json slot). "
+            "Panel-bounded sheathing is DISABLED. To enable: "
+            "right-click component ZUI -> add input for panels_json "
+            "at index 4 (before run), then reconnect from Panel Decomposer."
+            % _input_count
+        )
     _run_index = _input_count - 1      # run is always last
     _run = bool(_read_input(_run_index, False))
 
+    # Panelization diagnostics
+    print("[MLSheath] PANELIZATION DIAGNOSTICS:")
+    print("  Input count: %d (need 6+ for panels_json input)" % _input_count)
+    print("  panels_json received: %s" % ("YES (%d chars)" % len(str(_panels_json)) if _panels_json else "NO"))
+
     multi_layer_json, layer_summary, stats, log = main(
         _walls_json, _junctions_json, _config_json, _run,
-        _framing_json,
+        _framing_json, _panels_json,
     )

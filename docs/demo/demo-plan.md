@@ -53,8 +53,39 @@ and produces construction documentation in Revit. Everything below the surface i
 **MCP integration is working end-to-end** (validated Feb 2026):
 - Claude Code calls MCP tools directly via Swiftlet MCP Server (port 3001)
 - SwiftletBridge.exe (stdio-to-HTTP) bridges Claude Code to the GH-hosted MCP Server
-- 3 tools registered: `analyze_walls`, `generate_framing`, `get_wall_summary`
+- 4 tools registered: `create_walls`, `analyze_walls`, `generate_framing`, `get_wall_summary`
 - Real framing pipeline wired to `generate_framing` tool (1172 elements across 35 walls)
+- `create_walls` validated via copilot-agent: 34 walls (29 interior + 5 exterior) from Kreo data
+
+**Copilot-Agent MCP Integration (VALIDATED Feb 2026)**:
+- Web UI chatbot -> copilot-agent (FastAPI) -> Claude Agent SDK -> Claude CLI subprocess -> MCP -> Swiftlet -> GH -> Revit
+- copilot-agent repo: `copilot-agent` branch `feature/mcp-revit-tools`
+- Claude Agent SDK spawns a Claude CLI subprocess that connects to MCP server
+- 21 tools discovered at init (4 MCP + 17 built-in Claude Code tools)
+- `allowed_tools` in SDK = bypass permission list, NOT tool availability filter
+- `include_partial_messages=True` enables streaming text deltas to SSE frontend
+
+**WSL2 Networking Requirements** (for copilot-agent running on WSL2):
+- WSL2 default NAT mode CANNOT reach Windows `localhost` ports
+- **MUST enable mirrored networking** in `C:\Users\<user>\.wslconfig`:
+  ```ini
+  [wsl2]
+  networkingMode=mirrored
+  ```
+- After changing, run `wsl --shutdown` from Windows PowerShell, then reopen WSL2
+- Also need Windows Firewall inbound rule for port 3001 (if using gateway IP fallback)
+- Swiftlet's Microsoft-HTTPAPI/2.0 validates Host header — rejects non-localhost hostnames with 400
+
+**MCP Args Fallback Pattern**:
+- Agent sends tool args (e.g., `{"walls_json": "{}"}`) even when data is pre-wired in GH
+- `_has_content()` in MCP args scripts must treat `"[]"` and `"{}"` as empty
+- When agent args are empty, script falls back to default Panel inputs (Kreo data)
+
+**Claude Agent SDK Streaming Behavior**:
+- `StreamEvent` with `content_block_delta` / `text_delta` = streaming text
+- `AssistantMessage` contains `ToolUseBlock` (tool calls) and `TextBlock` (final text)
+- `ToolResultBlock` is NOT emitted to the consumer — SDK handles tool execution internally
+- To diagnose: log `ToolUseBlock.name` and `ToolUseBlock.input` from `AssistantMessage`
 
 **RiR recompute limitation**: Auto-recompute is suppressed under Rhino.Inside.Revit.
 Workaround: use RiR Recompute shortcut "RR" in Revit after each tool call.
@@ -254,9 +285,36 @@ State 4: SHOW_REVIT
   → Walk through: 3D model → open an assembly → show views/sheets
 ```
 
-### 3.5 Agent Configuration
+### 3.5 Copilot-Agent MCP Configuration (DONE)
 
-**Type**: Conversational only (no tool use)
+The copilot-agent (FastAPI backend) connects to Swiftlet MCP Server via Claude Agent SDK.
+
+**Repo**: `copilot-agent` branch `feature/mcp-revit-tools`
+
+**Files changed**:
+| File | Change |
+|------|--------|
+| `app/core/config.py` | Added `mcp_bridge_url: str \| None` setting |
+| `app/services/chat_service.py` | MCP server config, tool-use logging, max_turns=5 |
+| `app/prompts/system_prompt.py` | MCP tool descriptions (conditional on bridge URL) |
+| `.env.example` | `MCP_BRIDGE_URL=` entry |
+
+**Environment setup** (WSL2 `.env`):
+```bash
+MCP_BRIDGE_URL=http://localhost:3001
+POSTGRES_PORT=5433  # WSL2 PostgreSQL (5432 forwards to Windows)
+```
+
+**Demo-day checklist**:
+1. Ensure Revit + GH + Swiftlet MCP Server running on Windows (port 3001)
+2. Ensure WSL2 mirrored networking enabled (`.wslconfig`)
+3. Start copilot-agent: `uv run uvicorn app.main:app --reload --port 8060`
+4. Start constructai-workspaces with `VITE_COPILOT_AGENT_URL=http://localhost:8060`
+5. Open new chat, send "Create the walls" — press RR in Revit when tool call fires
+
+### 3.6 Agent Configuration
+
+**Type**: Conversational with MCP tool use
 
 **Context documents** (markdown files the agent has access to):
 - Project summary extracted from WS1 chunks
@@ -366,13 +424,22 @@ If live triggering fails during the demo:
 - [ ] Wire geometry/baking chain for full demo (converter -> baker -> assemblies -> views)
 - [ ] Handle error cases and response formatting
 
-### Phase D: Frontend Integration (Day 2-3)
+### Phase D: Copilot-Agent MCP Integration (DONE)
 
-- [ ] Implement choreography state machine in web app
-- [ ] Connect agent conversation flow to HTTP triggers
+- [x] Add `mcp_bridge_url` setting to copilot-agent config
+- [x] Configure Claude Agent SDK with MCP server (HTTP transport)
+- [x] Add MCP tool descriptions to system prompt (conditional)
+- [x] Fix WSL2 networking: enable mirrored mode in `.wslconfig`
+- [x] Fix `_has_content()` to treat `"[]"` / `"{}"` as empty (fallback to default data)
+- [x] Add diagnostic logging: INIT (tool discovery), TOOL_USE, TOOL_RESULT
+- [x] Validate end-to-end: chatbot -> create_walls -> 34 walls in Revit
+- [ ] Clean up debug logging before demo
+
+### Phase E: Frontend Polish (Day 2-3)
+
 - [ ] Add loading states and progress indicators
 - [ ] Style agent responses for demo polish
-- [ ] Test full end-to-end flow
+- [ ] Test full end-to-end flow with all 4 MCP tools
 
 ### Phase E: Rehearsal (Day 3)
 
@@ -429,10 +496,21 @@ If live triggering fails during the demo:
 
 ## 8. Open Questions
 
-1. **Wall height**: Kreo returns 2D plan data. What wall height to use? (8'0" default? Extract from PDF?)
-2. **Wall type**: Which Revit wall type for the rough BIM? Generic? Or match detected thickness?
-3. **Door/window families**: Which Revit families to use for doors and windows?
+1. ~~**Wall height**: Kreo returns 2D plan data. What wall height to use?~~ **ANSWERED**: 8'0" default, configurable via `wall_height` MCP arg
+2. ~~**Wall type**: Which Revit wall type for the rough BIM?~~ **ANSWERED**: Auto-classified — interior=2x4, exterior=2x6
+3. **Door/window families**: Which Revit families to use for doors and windows? (0 placed currently)
 4. **Floor plan scope**: Use the full PDF or just one floor/section for demo speed?
-5. **Swiftlet port**: Port 8080 okay? Need to check for conflicts with other services.
-6. **Agent platform**: Which LLM backend for the conversational agent? Claude API via the web app?
+5. ~~**Swiftlet port**: Port 8080 okay?~~ **ANSWERED**: MCP on port 3001 (primary), HTTP fallback on port 9090
+6. ~~**Agent platform**: Which LLM backend?~~ **ANSWERED**: Claude Agent SDK (Claude CLI subprocess) via copilot-agent FastAPI
 7. **Demo recording**: Should we record a backup video in case of live demo failure?
+
+### Resolved Issues (Feb 2026)
+
+| Issue | Root Cause | Fix |
+|-------|-----------|-----|
+| WSL2 can't reach Windows localhost:3001 | WSL2 NAT networking mode | Enable mirrored networking in `.wslconfig` |
+| Swiftlet rejects requests with 400 | Host header `172.x.x.x` instead of `localhost` | Mirrored networking sends `localhost` as Host |
+| Agent hallucinates tool success | Tool returns empty data, agent assumes success | Fix `_has_content()` to treat `"[]"`/`"{}"` as empty |
+| No tool result logged | SDK handles tool execution internally | `ToolResultBlock` not emitted to consumer — by design |
+| PostgreSQL auth fails on WSL2 | Port 5432 forwards to Windows PostgreSQL | Use port 5433 for WSL2 PostgreSQL |
+| MCP tools SSE transport fails | Swiftlet speaks Streamable HTTP, not SSE | Change transport to `"type": "http"` |

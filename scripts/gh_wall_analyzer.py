@@ -241,6 +241,16 @@ def setup_component():
 # Helper Functions
 # =============================================================================
 
+def _element_id_int(element_id) -> int:
+    """Get integer value from an ElementId, compatible with Revit 2024 and 2025+.
+
+    Revit 2025 replaced ElementId.IntegerValue with ElementId.Value.
+    """
+    if hasattr(element_id, 'Value'):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 def validate_inputs(walls, run):
     """Validate component inputs.
 
@@ -302,8 +312,8 @@ def convert_wall_data_to_schema(wall_data, wall_id):
     # Extract Revit level IDs for RiR baking
     base_level = wall_data.get('base_level')
     top_level = wall_data.get('top_level')
-    base_level_id = base_level.Id.IntegerValue if base_level else None
-    top_level_id = top_level.Id.IntegerValue if top_level else None
+    base_level_id = _element_id_int(base_level.Id) if base_level else None
+    top_level_id = _element_id_int(top_level.Id) if top_level else None
 
     # Extract base curve endpoints
     base_curve = wall_data.get('wall_base_curve')
@@ -391,7 +401,7 @@ def process_walls(walls_input, doc):
 
     for i, wall in enumerate(walls_input):
         try:
-            wall_id = str(wall.Id.IntegerValue)
+            wall_id = str(_element_id_int(wall.Id))
             data = extract_wall_data_from_revit(wall, doc)
 
             if data:

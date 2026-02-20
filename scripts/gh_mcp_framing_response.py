@@ -1,22 +1,31 @@
 # File: scripts/gh_mcp_framing_response.py
 """MCP Framing Response Formatter for Grasshopper.
 
-Reads the output of the real framing pipeline (Framing Generator) and formats
-it into a JSON response body suitable for the Swiftlet MCP Tool Response
-component. Acts as the downstream adapter between the pipeline and the MCP
-response flow.
+Reads the outputs of the full baking pipeline (Framing Generator, Assembly
+Creator, Multi-Layer Sheathing) and formats them into a JSON response body
+suitable for the Swiftlet MCP Tool Response component. Acts as the downstream
+adapter between the pipeline and the MCP response flow.
 
 Key Features:
 1. Framing Statistics Extraction
    - Parses framing_json to count elements by type
    - Counts walls processed and total framing elements
-   - Reuses the same extraction logic as gh_format_response.py
+   - Handles both FramingResults and legacy format
 
-2. Wall-Level Summary
-   - Reports per-wall element counts
-   - Includes wall IDs for traceability
+2. Assembly Statistics Extraction
+   - Parses assembly_json to count assemblies and collect IDs
+   - Only included in response when assembly_json is non-empty
 
-3. MCP Response Formatting
+3. Sheathing Statistics Extraction
+   - Parses multi_layer_json for layer and panel counts
+   - Only included in response when sheathing_json is non-empty
+
+4. Stage-Aware Response
+   - Only includes sections for pipeline stages that actually ran
+   - Empty/missing inputs are omitted from the response (not zero-filled)
+   - Builds a context-appropriate human-readable message
+
+5. MCP Response Formatting
    - Outputs a JSON string ready for MCP Tool Response "body" input
    - Includes status, element counts, and a human-readable message
    - Error responses when framing_json is missing or invalid
@@ -36,10 +45,12 @@ Performance Considerations:
 
 Usage:
     1. Connect Framing Generator "framing_json" output to input 0
-    2. Connect Script A "walls_json_out" (or Wall Analyzer) to input 1
-    3. Wire output 1 (response_body) to MCP Tool Response "body" input
-    4. Monitor output 2 (info) for debug messages
-    5. Wire Deconstruct Tool Call "R" directly to MCP Tool Response "R"
+    2. Connect MCP Args "walls_json_out" (or Wall Analyzer) to input 1
+    3. Connect Assembly Creator "assembly_json" output to input 2
+    4. Connect ML Sheathing "multi_layer_json" output to input 3
+    5. Wire output 1 (response_body) to MCP Tool Response "body" input
+    6. Monitor output 2 (info) for debug messages
+    7. Wire Deconstruct Tool Call "R" directly to MCP Tool Response "R"
        (R does NOT pass through this component)
 
 Input Requirements:
@@ -52,9 +63,23 @@ Input Requirements:
         Type Hint: str (set via GH UI)
 
     Walls JSON (walls_json) - str:
-        JSON string from Wall Analyzer or Script A pass-through.
+        JSON string from Wall Analyzer or MCP Args pass-through.
         Used for wall count in the response summary.
         Required: No (wall count will be inferred from framing_json)
+        Access: Item
+        Type Hint: str (set via GH UI)
+
+    Assembly JSON (assembly_json) - str:
+        JSON output from Assembly Creator component.
+        Expected structure: {"assemblies": [...], "assembly_count": N}
+        Required: No (assembly section omitted if not connected)
+        Access: Item
+        Type Hint: str (set via GH UI)
+
+    Sheathing JSON (sheathing_json) - str:
+        JSON output from Multi-Layer Sheathing component.
+        Expected structure: {"layers": [...]}
+        Required: No (sheathing section omitted if not connected)
         Access: Item
         Type Hint: str (set via GH UI)
 
@@ -62,6 +87,7 @@ Outputs:
     Response Body (response_body) - str:
         JSON string for MCP Tool Response "body" input.
         Contains status, element counts by type, wall stats, and message.
+        Conditionally includes assembly and sheathing sections.
 
     Info (info) - str:
         Human-readable summary of the response contents.
@@ -73,15 +99,17 @@ Technical Details:
     - Handles both FramingResults format (top-level "elements") and
       legacy format (nested "walls[].elements")
     - Always returns valid JSON even on error
+    - Assembly and sheathing sections only appear when inputs are non-empty
 
 Error Handling:
     - Missing framing_json: status="error", message explains the issue
     - Invalid JSON in framing_json: status="error" with parse error
     - Empty elements: status="success" with zero counts (valid result)
+    - Missing assembly/sheathing: sections omitted (not an error)
     - Unexpected exception: status="error" with traceback
 
 Author: Timber Framing Generator
-Version: 1.0.0
+Version: 2.0.0
 """
 
 # =============================================================================
@@ -107,7 +135,7 @@ import Grasshopper
 
 COMPONENT_NAME = "MCP Framing Response"
 COMPONENT_NICKNAME = "MCPResp"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v2.0"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "0-Config"
 
@@ -169,6 +197,14 @@ def setup_component() -> None:
         # Index 1
         ("Walls JSON", "walls_json",
          "JSON string from Wall Analyzer or MCP Args pass-through",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        # Index 2
+        ("Assembly JSON", "assembly_json",
+         "JSON output from Assembly Creator (optional)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        # Index 3
+        ("Sheathing JSON", "sheathing_json",
+         "JSON output from Multi-Layer Sheathing (optional)",
          Grasshopper.Kernel.GH_ParamAccess.item),
     ]
 
@@ -267,6 +303,26 @@ def _safe_parse_json(json_str, input_name: str) -> dict:
         return {}
 
 
+def _has_data(json_str) -> bool:
+    """Check if a JSON string input has meaningful data.
+
+    Used to determine whether to include optional sections (assembly,
+    sheathing) in the response.
+
+    Args:
+        json_str: Raw JSON string, or None.
+
+    Returns:
+        bool: True if the input is non-empty and parseable.
+    """
+    if json_str is None:
+        return False
+    if not isinstance(json_str, str):
+        json_str = str(json_str)
+    json_str = json_str.strip()
+    return json_str not in ("", "{}", "[]", "null")
+
+
 def _extract_framing_stats(framing_data: dict) -> dict:
     """Extract element count statistics from framing_json.
 
@@ -324,6 +380,57 @@ def _extract_framing_stats(framing_data: dict) -> dict:
     return stats
 
 
+def _extract_assembly_stats(assembly_data: dict) -> dict:
+    """Extract assembly statistics from assembly_json.
+
+    Reuses the same extraction pattern as gh_format_response.py.
+
+    Args:
+        assembly_data: Parsed assembly_json dict.
+
+    Returns:
+        dict: Assembly statistics with count and IDs.
+    """
+    stats = {"count": 0, "ids": []}
+
+    # assembly_json may have "assemblies" list or "assembly_count"
+    assemblies = assembly_data.get("assemblies", [])
+    if isinstance(assemblies, list):
+        stats["count"] = len(assemblies)
+        for asm in assemblies:
+            asm_id = asm.get("assembly_id") or asm.get("id")
+            if asm_id is not None:
+                stats["ids"].append(str(asm_id))
+    elif "assembly_count" in assembly_data:
+        stats["count"] = int(assembly_data["assembly_count"])
+
+    return stats
+
+
+def _extract_sheathing_stats(sheathing_data: dict) -> dict:
+    """Extract sheathing statistics from multi_layer_json.
+
+    Reuses the same extraction pattern as gh_format_response.py.
+
+    Args:
+        sheathing_data: Parsed multi_layer_json dict.
+
+    Returns:
+        dict: Sheathing statistics with layer and panel counts.
+    """
+    stats = {"layers": 0, "total_panels": 0}
+
+    layers = sheathing_data.get("layers", [])
+    if isinstance(layers, list):
+        stats["layers"] = len(layers)
+        for layer in layers:
+            panels = layer.get("panels", [])
+            if isinstance(panels, list):
+                stats["total_panels"] += len(panels)
+
+    return stats
+
+
 def _get_wall_count_from_walls_json(walls_json_raw) -> int:
     """Get wall count from walls_json input.
 
@@ -344,12 +451,19 @@ def _get_wall_count_from_walls_json(walls_json_raw) -> int:
     return 0
 
 
-def _build_response(framing_stats: dict, wall_count: int) -> dict:
+def _build_response(framing_stats: dict, wall_count: int,
+                    assembly_stats: dict = None,
+                    sheathing_stats: dict = None) -> dict:
     """Build the MCP response dict.
+
+    Only includes assembly and sheathing sections when the corresponding
+    stats are provided (non-None), making the response stage-aware.
 
     Args:
         framing_stats: Extracted framing statistics.
         wall_count: Number of walls from walls_json (for cross-reference).
+        assembly_stats: Assembly statistics, or None if assemblies didn't run.
+        sheathing_stats: Sheathing statistics, or None if sheathing didn't run.
 
     Returns:
         dict: Complete response body for MCP Tool Response.
@@ -371,20 +485,31 @@ def _build_response(framing_stats: dict, wall_count: int) -> dict:
         },
     }
 
-    # Add per-wall summary if available
-    per_wall = framing_stats.get("per_wall", {})
-    if per_wall:
-        response["wall_details"] = [
-            {"wall_id": wid, "element_count": count}
-            for wid, count in sorted(per_wall.items())
-        ]
+    # Conditionally add sheathing section
+    if sheathing_stats is not None and sheathing_stats.get("layers", 0) > 0:
+        response["sheathing"] = {
+            "layers": sheathing_stats["layers"],
+            "total_panels": sheathing_stats["total_panels"],
+        }
 
-    # Build human-readable message
-    type_parts = [f"{count} {etype}" for etype, count in sorted(by_type.items())]
-    type_summary = ", ".join(type_parts) if type_parts else "no elements"
+    # Conditionally add assembly section
+    if assembly_stats is not None and assembly_stats.get("count", 0) > 0:
+        response["assemblies"] = {
+            "count": assembly_stats["count"],
+            "ids": assembly_stats["ids"],
+        }
+
+    # Build human-readable message parts
+    msg_parts = [f"{total} framing elements"]
+
+    if sheathing_stats is not None and sheathing_stats.get("total_panels", 0) > 0:
+        msg_parts.append(f"{sheathing_stats['total_panels']} sheathing panels")
+
+    if assembly_stats is not None and assembly_stats.get("count", 0) > 0:
+        msg_parts.append(f"{assembly_stats['count']} assemblies")
+
     response["message"] = (
-        f"Generated {total} framing elements across {walls_processed} walls: "
-        f"{type_summary}"
+        f"Generated {', '.join(msg_parts)} across {walls_processed} walls"
     )
 
     return response
@@ -419,10 +544,11 @@ def main():
 
     Workflow:
     1. Setup component metadata
-    2. Read framing_json and walls_json inputs
+    2. Read framing_json, walls_json, assembly_json, sheathing_json inputs
     3. Parse framing_json and extract statistics
-    4. Build response JSON
-    5. Output response body and info
+    4. Conditionally parse assembly_json and sheathing_json
+    5. Build response JSON with only the sections that ran
+    6. Output response body and info
 
     Returns:
         tuple: (response_body, info)
@@ -433,6 +559,8 @@ def main():
         # Read inputs by index
         framing_json_raw = _read_input(0)
         walls_json_raw = _read_input(1)
+        assembly_json_raw = _read_input(2)
+        sheathing_json_raw = _read_input(3)
 
         # Check if framing_json is available
         if framing_json_raw is None or str(framing_json_raw).strip() in ("", "{}"):
@@ -455,14 +583,29 @@ def main():
             log_warning(info)
             return response_body, info
 
-        # Extract statistics
+        # Extract framing statistics (always present)
         framing_stats = _extract_framing_stats(framing_data)
 
         # Get wall count from walls_json for cross-reference
         wall_count = _get_wall_count_from_walls_json(walls_json_raw)
 
+        # Conditionally extract assembly stats (only if input has data)
+        assembly_stats = None
+        if _has_data(assembly_json_raw):
+            assembly_data = _safe_parse_json(assembly_json_raw, "assembly_json")
+            if assembly_data:
+                assembly_stats = _extract_assembly_stats(assembly_data)
+
+        # Conditionally extract sheathing stats (only if input has data)
+        sheathing_stats = None
+        if _has_data(sheathing_json_raw):
+            sheathing_data = _safe_parse_json(sheathing_json_raw, "sheathing_json")
+            if sheathing_data:
+                sheathing_stats = _extract_sheathing_stats(sheathing_data)
+
         # Build response
-        response = _build_response(framing_stats, wall_count)
+        response = _build_response(
+            framing_stats, wall_count, assembly_stats, sheathing_stats)
         response_body = json.dumps(response, indent=2)
 
         # Build info summary
@@ -475,6 +618,16 @@ def main():
         ]
         for etype, count in sorted(framing_stats["by_type"].items()):
             info_lines.append(f"    {etype}: {count}")
+
+        if sheathing_stats is not None:
+            info_lines.append(
+                f"  sheathing: {sheathing_stats['layers']} layers, "
+                f"{sheathing_stats['total_panels']} panels")
+
+        if assembly_stats is not None:
+            info_lines.append(
+                f"  assemblies: {assembly_stats['count']}")
+
         info = "\n".join(info_lines)
         log_info(info)
 

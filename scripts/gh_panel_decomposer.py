@@ -96,6 +96,12 @@ Input Requirements:
         Required: No (defaults to 1.333 = 16" OC)
         Access: Item
 
+    strategy (strategy) - str:
+        Panelization strategy name. One of: "length_optimized" (default),
+        "opening_bounded", "no_split_through", "equal_length"
+        Required: No (defaults to "length_optimized")
+        Access: Item
+
     run (run) - bool:
         Boolean to trigger execution
         Required: Yes
@@ -178,6 +184,7 @@ sys.path.insert(0, _WORKTREE_PATH)
 
 from src.timber_framing_generator.panels import (
     PanelConfig,
+    PanelizationStrategy,
     decompose_all_walls,
     decompose_wall_to_panels,
 )
@@ -274,6 +281,8 @@ def setup_component():
         ("Joint to Corner", "joint_corner", "Min distance from joint to corner in feet (default 2.0)",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Stud Spacing", "stud_space", "Stud spacing in feet (default 1.333 = 16\" OC)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Strategy", "strategy", "Panelization strategy: length_optimized, opening_bounded, no_split_through, equal_length",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Run", "run", "Boolean to trigger execution",
          Grasshopper.Kernel.GH_ParamAccess.item),
@@ -649,7 +658,7 @@ def process_panelization(walls_data, framing_data, config):
 # =============================================================================
 
 def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
-         joint_corner_in, stud_space_in, run_in):
+         joint_corner_in, stud_space_in, strategy_in, run_in):
     """Main entry point for the component.
 
     Args:
@@ -659,6 +668,7 @@ def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
         joint_opening_in: Min joint-to-opening distance (optional).
         joint_corner_in: Min joint-to-corner distance (optional).
         stud_space_in: Stud spacing in feet (optional).
+        strategy_in: Panelization strategy name string (optional).
         run_in: Boolean trigger.
 
     Returns:
@@ -690,14 +700,27 @@ def main(walls_json_in, framing_json_in, max_length_in, joint_opening_in,
         framing_data = parse_framing_json(framing_json_in) if framing_json_in else None
         debug_lines.append(f"Parsed {len(walls_data)} walls")
 
+        # Parse strategy
+        strategy = PanelizationStrategy.LENGTH_OPTIMIZED
+        if strategy_in and isinstance(strategy_in, str):
+            try:
+                strategy = PanelizationStrategy(strategy_in.strip().lower())
+            except ValueError:
+                valid = [s.value for s in PanelizationStrategy]
+                log_warning(f"Unknown strategy '{strategy_in}', using length_optimized. Valid: {valid}")
+
         # Build configuration
         config = PanelConfig(
             max_panel_length=max_length_in if max_length_in else 24.0,
             min_joint_to_opening=joint_opening_in if joint_opening_in else 1.0,
             min_joint_to_corner=joint_corner_in if joint_corner_in else 2.0,
             stud_spacing=stud_space_in if stud_space_in else 1.333,
+            strategy=strategy,
         )
-        debug_lines.append(f"Config: max={config.max_panel_length}ft, stud={config.stud_spacing}ft")
+        debug_lines.append(
+            f"Config: max={config.max_panel_length}ft, stud={config.stud_spacing}ft, "
+            f"strategy={config.strategy.value}"
+        )
 
         # Process panelization
         all_results, panel_curves, joint_points, info_lines = process_panelization(
@@ -751,6 +774,11 @@ except NameError:
     stud_space = None
 
 try:
+    strategy
+except NameError:
+    strategy = None
+
+try:
     run
 except NameError:
     run = False
@@ -759,5 +787,5 @@ except NameError:
 if __name__ == "__main__":
     panels_json, panel_curves, joint_points, debug_info = main(
         walls_json, framing_json, max_length, joint_opening,
-        joint_corner, stud_space, run
+        joint_corner, stud_space, strategy, run
     )

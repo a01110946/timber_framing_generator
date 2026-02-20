@@ -2,24 +2,33 @@
 """MCP Framing Args Extractor for Grasshopper.
 
 Extracts arguments from the MCP ``generate_framing`` tool call and converts
-them into the inputs expected by the real framing pipeline (Panel Decomposer,
-Cell Decomposer, Framing Generator). Acts as the upstream adapter between
-the Swiftlet MCP Deconstruct Tool Call and the existing pipeline components.
+them into the inputs expected by the full baking pipeline (Panel Decomposer,
+Cell Decomposer, Framing Generator, Geometry Converter, Revit Baker,
+Multi-Layer Sheathing, Sheathing Baker, Assembly Creator). Acts as the
+upstream adapter between the Swiftlet MCP Deconstruct Tool Call and the
+existing pipeline components.
 
 Key Features:
 1. MCP Argument Parsing
    - Reads the Args JSON string from Deconstruct Tool Call
    - Extracts ``stud_spacing`` (inches) and converts to feet
+   - Extracts boolean stage flags: ``bake``, ``sheathing``, ``assemblies``,
+     ``sheathing_in_assemblies``
    - Validates that walls_json is available before enabling pipeline
 
 2. Pipeline Gating
-   - Outputs ``run_pipeline = True`` only when both args and walls_json are valid
-   - Prevents pipeline from running when analyze_walls hasn't been called yet
-   - Prevents pipeline from running when generate_framing args are missing
+   - Outputs independent boolean gates for each pipeline stage
+   - ``run_frame``: True when args + walls_json valid (always needed)
+   - ``run_bake``: run_frame AND bake (default True)
+   - ``run_sheathing``: run_frame AND sheathing (default False)
+   - ``run_assemble``: run_bake AND assemblies (must bake before assembling)
+   - ``sheathing_gate``: run_sheathing AND run_assemble AND
+     sheathing_in_assemblies (Stream Filter gate)
 
 3. Config Generation
-   - Builds a config_json compatible with Framing Generator's config input
-   - Includes framing_system, stud_spacing, and stage fields
+   - Builds a config_json compatible with Framing Generator + downstream
+   - Includes framing_system, stud_spacing, stage, assembly, and sheathing
+     settings (matching gh_http_trigger.py pattern)
 
 Environment:
     Rhino 8
@@ -37,18 +46,31 @@ Performance Considerations:
 Usage:
     1. Connect Deconstruct Tool Call "Args" output to input 0 (MCP Args)
     2. Connect Wall Analyzer "walls_json" output to input 1 (Walls JSON)
-    3. Wire output 1 (walls_json_out) to Panel Decomposer, Cell Decomposer,
-       and Framing Generator walls_json inputs
+    3. Wire output 1 (walls_json_out) to Junction Analyzer in 0,
+       ML Sheathing in 0
     4. Wire output 2 (stud_space_ft) to Panel Decomposer stud_space input
-    5. Wire output 3 (run_pipeline) to Panel Decomposer, Cell Decomposer,
-       and Framing Generator run inputs
-    6. Wire output 4 (config_json) to Framing Generator config_json input
-    7. Monitor output 5 (info) for debug messages
+    5. Wire output 3 (run_frame) to Panel Decomposer, Cell Decomposer,
+       Framing Generator, Geometry Converter run inputs
+    6. Wire output 4 (run_bake) to Revit Baker run input
+    7. Wire output 5 (run_sheathing) to ML Sheathing run, Sheathing Baker run
+    8. Wire output 6 (run_assemble) to Assembly Creator run input
+    9. Wire output 7 (sheathing_gate) to Stream Filter G inputs
+       (for sheathing_ids and sheathing_data_json into Assembly Creator)
+    10. Wire output 8 (config_json) to Junction Analyzer in 1,
+        Framing Generator in 3
+    11. Monitor output 9 (info) for debug messages
 
 Input Requirements:
     MCP Args (mcp_args) - str:
         JSON string from Deconstruct Tool Call "Args" output.
-        Expected fields: {"stud_spacing": <number in inches>}
+        Expected fields:
+        {
+            "stud_spacing": <number in inches, default 16>,
+            "bake": <bool, default true>,
+            "sheathing": <bool, default false>,
+            "assemblies": <bool, default false>,
+            "sheathing_in_assemblies": <bool, default true>
+        }
         Required: Yes
         Access: Item
         Type Hint: str (set via GH UI)
@@ -68,13 +90,31 @@ Outputs:
         Stud spacing in feet, converted from inches in MCP args.
         Defaults to 1.333 ft (16" OC) if not specified.
 
-    Run Pipeline (run_pipeline) - bool:
+    Run Frame (run_frame) - bool:
         True when both MCP args and walls_json are valid.
-        Wire to Panel Decomposer, Cell Decomposer, Framing Generator run inputs.
+        Wire to Panel Decomposer, Cell Decomposer, Framing Generator,
+        Geometry Converter run inputs.
+
+    Run Bake (run_bake) - bool:
+        True when run_frame AND bake=true.
+        Wire to Revit Baker run input.
+
+    Run Sheathing (run_sheathing) - bool:
+        True when run_frame AND sheathing=true.
+        Wire to ML Sheathing and Sheathing Baker run inputs.
+
+    Run Assemble (run_assemble) - bool:
+        True when run_bake AND assemblies=true.
+        Wire to Assembly Creator run input.
+
+    Sheathing Gate (sheathing_gate) - bool:
+        True when run_sheathing AND run_assemble AND sheathing_in_assemblies.
+        Wire to Stream Filter G input (gates sheathing into assemblies).
 
     Config JSON (config_json) - str:
-        Pipeline configuration JSON for Framing Generator config input.
-        Contains framing_system, stud_spacing, stage fields.
+        Pipeline configuration JSON for Framing Generator and downstream.
+        Contains framing_system, stud_spacing, stage, assembly, and
+        sheathing settings.
 
     Info (info) - str:
         Human-readable summary of parsed arguments and pipeline readiness.
@@ -85,15 +125,17 @@ Technical Details:
     - No RhinoCommonFactory needed (no geometry output)
     - stud_spacing conversion: inches / 12.0 = feet
     - Default stud_spacing: 16" OC = 1.333 ft
+    - bake defaults True (demo purpose: see results in Revit)
+    - sheathing and assemblies default False (opt-in for heavier ops)
 
 Error Handling:
-    - Missing MCP args: run_pipeline=False, info shows error
-    - Missing walls_json: run_pipeline=False, info shows "call analyze_walls first"
-    - Invalid JSON in args: run_pipeline=False, warning logged
+    - Missing MCP args: all run flags=False, info shows error
+    - Missing walls_json: all run flags=False, info shows "call analyze_walls first"
+    - Invalid JSON in args: all run flags=False, warning logged
     - Invalid stud_spacing value: defaults to 16" OC with warning
 
 Author: Timber Framing Generator
-Version: 1.0.0
+Version: 2.0.0
 """
 
 # =============================================================================
@@ -119,12 +161,18 @@ import Grasshopper
 
 COMPONENT_NAME = "MCP Framing Args"
 COMPONENT_NICKNAME = "MCPArgs"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v2.0"
 COMPONENT_CATEGORY = "Timber Framing"
 COMPONENT_SUBCATEGORY = "0-Config"
 
 DEFAULT_STUD_SPACING_IN = 16.0
 DEFAULT_MATERIAL = "timber"
+DEFAULT_BAKE = True
+DEFAULT_SHEATHING = False
+DEFAULT_ASSEMBLIES = False
+DEFAULT_SHEATHING_IN_ASSEMBLIES = True
+DEFAULT_PANEL_MAX_LENGTH_FT = 24.0
+DEFAULT_ASSEMBLY_NAMING_PREFIX = "W"
 
 # =============================================================================
 # Logging Utilities
@@ -203,14 +251,31 @@ def setup_component() -> None:
     outputs = ghenv.Component.Params.Output
 
     output_config = [
+        # Index 1
         ("Walls JSON Out", "walls_json_out",
          "Pass-through walls_json for downstream pipeline components"),
+        # Index 2
         ("Stud Spacing", "stud_space_ft",
          "Stud spacing in feet (converted from inches)"),
-        ("Run Pipeline", "run_pipeline",
-         "True when args and walls_json are valid"),
+        # Index 3
+        ("Run Frame", "run_frame",
+         "True when args and walls_json are valid. Wire to Decomposers + Framing Gen + Geom Converter."),
+        # Index 4
+        ("Run Bake", "run_bake",
+         "True when run_frame AND bake=true. Wire to Revit Baker."),
+        # Index 5
+        ("Run Sheathing", "run_sheathing",
+         "True when run_frame AND sheathing=true. Wire to ML Sheathing + Sheathing Baker."),
+        # Index 6
+        ("Run Assemble", "run_assemble",
+         "True when run_bake AND assemblies=true. Wire to Assembly Creator."),
+        # Index 7
+        ("Sheathing Gate", "sheathing_gate",
+         "True when sheathing should be included in assemblies. Wire to Stream Filter G."),
+        # Index 8
         ("Config JSON", "config_json",
-         "Pipeline configuration JSON for Framing Generator"),
+         "Pipeline configuration JSON for Framing Generator and downstream"),
+        # Index 9
         ("Info", "info",
          "Debug information about parsed arguments"),
     ]
@@ -311,6 +376,27 @@ def _extract_stud_spacing(args: dict) -> float:
     return stud_spacing
 
 
+def _extract_bool(args: dict, key: str, default: bool) -> bool:
+    """Extract a boolean value from MCP args with a default.
+
+    Handles string "true"/"false" from JSON as well as actual booleans.
+
+    Args:
+        args: Parsed MCP args dict.
+        key: Key to look up.
+        default: Default value if key is missing.
+
+    Returns:
+        bool: Extracted boolean value.
+    """
+    val = args.get(key, default)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes")
+    return bool(val)
+
+
 def _validate_walls_json(walls_json_raw) -> tuple:
     """Validate the walls_json input.
 
@@ -342,6 +428,35 @@ def _validate_walls_json(walls_json_raw) -> tuple:
     return True, None
 
 
+def _build_config(args: dict, stud_space_ft: float, stage: str) -> dict:
+    """Build a config dict from MCP args for downstream pipeline components.
+
+    Matches the config schema used by gh_http_trigger.py so that downstream
+    components (Junction Analyzer, Framing Generator, Assembly Creator) see
+    the same fields regardless of whether the pipeline was triggered via
+    HTTP or MCP.
+
+    Args:
+        args: Parsed MCP args dict.
+        stud_space_ft: Stud spacing already converted to feet.
+        stage: Resolved pipeline stage string.
+
+    Returns:
+        dict: Config dict for serialization to config_json.
+    """
+    config = {
+        "stage": stage,
+        "framing_system": DEFAULT_MATERIAL,
+        "stud_spacing": stud_space_ft,
+        "panel_max_length": DEFAULT_PANEL_MAX_LENGTH_FT,
+        "generate_assemblies": _extract_bool(args, "assemblies", DEFAULT_ASSEMBLIES),
+        "generate_sheets": _extract_bool(args, "assemblies", DEFAULT_ASSEMBLIES),
+        "assembly_naming_prefix": DEFAULT_ASSEMBLY_NAMING_PREFIX,
+        "assembly_mode": "auto",
+    }
+    return config
+
+
 # =============================================================================
 # Main Function
 # =============================================================================
@@ -354,18 +469,25 @@ def main():
     2. Read MCP args and walls_json inputs
     3. Parse and validate MCP args
     4. Validate walls_json availability
-    5. Extract stud_spacing and build config
-    6. Output pipeline inputs
+    5. Extract stud_spacing and boolean stage flags
+    6. Compute run gates for each pipeline stage
+    7. Build config_json with full pipeline settings
+    8. Output all pipeline inputs and gate signals
 
     Returns:
-        tuple: (walls_json_out, stud_space_ft, run_pipeline, config_json, info)
+        tuple: (walls_json_out, stud_space_ft, run_frame, run_bake,
+                run_sheathing, run_assemble, sheathing_gate, config_json, info)
     """
     setup_component()
 
-    # Defaults (pipeline off)
+    # Defaults (all stages off)
     walls_json_out = ""
     stud_space_ft = 1.333  # 16" OC default
-    run_pipeline = False
+    run_frame = False
+    run_bake = False
+    run_sheathing = False
+    run_assemble = False
+    sheathing_gate = False
     config_json = ""
     info_lines = []
 
@@ -380,7 +502,9 @@ def main():
             info_lines.append(f"MCP Args: {args_error}")
             info = "\n".join(info_lines)
             log_info(info)
-            return walls_json_out, stud_space_ft, run_pipeline, config_json, info
+            return (walls_json_out, stud_space_ft, run_frame, run_bake,
+                    run_sheathing, run_assemble, sheathing_gate,
+                    config_json, info)
 
         # Validate walls_json
         walls_valid, walls_error = _validate_walls_json(walls_json_raw)
@@ -388,25 +512,44 @@ def main():
             info_lines.append(f"Walls JSON: {walls_error}")
             info = "\n".join(info_lines)
             log_warning(walls_error)
-            return walls_json_out, stud_space_ft, run_pipeline, config_json, info
+            return (walls_json_out, stud_space_ft, run_frame, run_bake,
+                    run_sheathing, run_assemble, sheathing_gate,
+                    config_json, info)
 
         # Extract stud_spacing (inches -> feet)
         stud_spacing_in = _extract_stud_spacing(args_dict)
         stud_space_ft = stud_spacing_in / 12.0
 
+        # Extract boolean stage flags from MCP args
+        do_bake = _extract_bool(args_dict, "bake", DEFAULT_BAKE)
+        do_sheathing = _extract_bool(args_dict, "sheathing", DEFAULT_SHEATHING)
+        do_assemblies = _extract_bool(args_dict, "assemblies", DEFAULT_ASSEMBLIES)
+        do_sheathing_in_assemblies = _extract_bool(
+            args_dict, "sheathing_in_assemblies", DEFAULT_SHEATHING_IN_ASSEMBLIES)
+
         # Pass through walls_json
         walls_json_out = walls_json_raw.strip()
 
-        # Build config_json for Framing Generator
-        config = {
-            "framing_system": DEFAULT_MATERIAL,
-            "stud_spacing": stud_space_ft,
-            "stage": "frame",
-        }
-        config_json = json.dumps(config, indent=2)
+        # Compute run gates
+        run_frame = True  # Args valid + walls valid = always run framing
+        run_bake = run_frame and do_bake
+        run_sheathing = run_frame and do_sheathing
+        run_assemble = run_bake and do_assemblies  # Must bake before assembling
+        sheathing_gate = run_sheathing and run_assemble and do_sheathing_in_assemblies
 
-        # Pipeline is ready
-        run_pipeline = True
+        # Determine effective stage for config_json
+        if run_assemble:
+            stage = "assemble"
+        elif run_sheathing:
+            stage = "sheathing"
+        elif run_bake:
+            stage = "bake"
+        else:
+            stage = "frame"
+
+        # Build config_json for downstream components
+        config = _build_config(args_dict, stud_space_ft, stage)
+        config_json = json.dumps(config, indent=2)
 
         # Build info summary
         walls_data = json.loads(walls_json_out)
@@ -415,19 +558,28 @@ def main():
         info_lines.append("MCP Framing Args: Pipeline READY")
         info_lines.append(f"  stud_spacing: {stud_spacing_in:.1f} in -> {stud_space_ft:.4f} ft")
         info_lines.append(f"  walls: {wall_count}")
-        info_lines.append(f"  run_pipeline: True")
+        info_lines.append(f"  stage: {stage}")
+        info_lines.append(f"  run_frame:    {run_frame}")
+        info_lines.append(f"  run_bake:     {run_bake}")
+        info_lines.append(f"  run_sheathing:{run_sheathing}")
+        info_lines.append(f"  run_assemble: {run_assemble}")
+        info_lines.append(f"  sheathing_gate:{sheathing_gate}")
 
         info = "\n".join(info_lines)
         log_info(info)
 
-        return walls_json_out, stud_space_ft, run_pipeline, config_json, info
+        return (walls_json_out, stud_space_ft, run_frame, run_bake,
+                run_sheathing, run_assemble, sheathing_gate,
+                config_json, info)
 
     except Exception as e:
         error_msg = f"Unexpected error in MCP Args Extractor: {str(e)}"
         log_error(error_msg)
         print(traceback.format_exc())
         info_lines.append(f"ERROR: {error_msg}")
-        return walls_json_out, stud_space_ft, False, config_json, "\n".join(info_lines)
+        return (walls_json_out, stud_space_ft, False, False,
+                False, False, False,
+                config_json, "\n".join(info_lines))
 
 
 # =============================================================================
@@ -435,4 +587,6 @@ def main():
 # =============================================================================
 
 if __name__ == "__main__":
-    walls_json_out, stud_space_ft, run_pipeline, config_json, info = main()
+    (walls_json_out, stud_space_ft, run_frame, run_bake,
+     run_sheathing, run_assemble, sheathing_gate,
+     config_json, info) = main()

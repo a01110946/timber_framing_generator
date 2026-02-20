@@ -463,6 +463,7 @@ def main():
         # Step 4: Get Revit doc and level, place windows
         # ---------------------------------------------------------------
         doc = _get_revit_doc()
+
         level = find_level(doc, level_name)
         if level is None:
             error = "No levels found in Revit document"

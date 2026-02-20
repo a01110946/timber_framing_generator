@@ -338,6 +338,16 @@ def main():
             level_name = args_dict.get("level_name")
             if level_name:
                 config["level_name"] = str(level_name)
+
+            # Pass door_schedule through to config for door creator
+            door_schedule = args_dict.get("door_schedule")
+            if isinstance(door_schedule, list) and door_schedule:
+                config["door_schedule"] = door_schedule
+
+            # Pass window_schedule through to config for window creator
+            window_schedule = args_dict.get("window_schedule")
+            if isinstance(window_schedule, list) and window_schedule:
+                config["window_schedule"] = window_schedule
         else:
             config["wall_height_ft"] = DEFAULT_WALL_HEIGHT_FT
 

@@ -196,18 +196,23 @@ def load_family(doc, rfa_path: str) -> Optional[Any]:
             success = doc.LoadFamily(rfa_path, load_options, family_ref)
             if success:
                 t.Commit()
-                logger.info("Loaded family from %s", rfa_path)
+                print("[LOADER] Loaded family from %s (fresh)" % rfa_path)
                 return family_ref.Value
             else:
-                t.RollBack()
-                logger.warning("LoadFamily returned False for %s", rfa_path)
+                # LoadFamily returns False when family already exists
+                # BUT with IFamilyLoadOptions returning True, it should
+                # have overwritten. Either way, commit (not rollback)
+                # to persist any parameter updates.
+                t.Commit()
+                print("[LOADER] LoadFamily returned False for %s "
+                      "(family already in doc, overwrite attempted)" % rfa_path)
 
-                # Family may already be loaded — try to find it
+                # Return the already-loaded family
                 import os
                 family_name = os.path.splitext(os.path.basename(rfa_path))[0]
                 loaded = get_loaded_families(doc)
                 if family_name in loaded:
-                    logger.info("Family '%s' already loaded in document", family_name)
+                    print("[LOADER] Found existing '%s' in document" % family_name)
                     return loaded[family_name]["family"]
 
                 return None

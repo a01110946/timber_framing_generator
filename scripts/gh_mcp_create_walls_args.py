@@ -2,23 +2,35 @@
 """MCP Create Walls Args Extractor for Grasshopper.
 
 Extracts arguments from the MCP ``create_walls`` tool call and prepares
-inputs for the gh_kreo_to_revit.py component. Supports both MCP-provided
-JSON and pre-wired default JSON from GH Panels.
+inputs for the Kreo-to-Revit pipeline. Supports two execution modes:
+
+Modes:
+  All-in-one:
+    Agent calls create_walls with just wall_height (+ optional door/window
+    schedules). All requested elements are created in one pass.
+
+  Staged:
+    Step 1 - Walls only: agent calls create_walls(wall_height=8)
+             -> gh_kreo_create_walls creates walls, outputs walls_result_json
+    Step 2 - Doors: agent calls create_walls(walls_result_json=..., door_schedule=[...])
+             -> run_walls=False, walls_result_passthrough feeds door creator
+    Step 3 - Windows: agent calls create_walls(walls_result_json=..., window_schedule=[...])
+             -> run_walls=False, walls_result_passthrough feeds window creator
 
 Key Features:
 1. MCP Argument Parsing
    - Reads Args JSON from Deconstruct Tool Call
-   - Extracts walls_json, doors_json, windows_json from MCP args
-   - Extracts optional wall_height config
+   - Extracts walls_result_json (staged mode), door/window schedules, wall_height
 
-2. Default Fallback
-   - If MCP args don't contain JSON data, falls back to pre-wired
-     Panel inputs (default_walls_json, etc.)
-   - Allows the component to work both via MCP and manual GH triggers
+2. Staged vs All-in-one Gate
+   - walls_result_json in args -> staged mode: skip wall creation, pass through IDs
+   - No walls_result_json -> all-in-one mode: create walls + requested elements
 
-3. Pipeline Gating
-   - Outputs run=True only when valid walls data is available
-   - Builds config_json from MCP args or defaults
+3. Separate Run Gates
+   - run_walls: True only in all-in-one mode
+   - run_doors: True when agent sends door_schedule or doors_json
+   - run_windows: True when agent sends window_schedule or windows_json
+   - In manual mode (no MCP args): all three gates active if default Panels have data
 
 Environment:
     Rhino 8
@@ -29,27 +41,28 @@ Dependencies:
     - Grasshopper: Component framework and parameter access
     - json: Argument parsing
 
-Performance Considerations:
-    - Lightweight JSON parsing only
-
 Usage:
     1. Connect Deconstruct Tool Call "Args" output to input 0
     2. Connect pre-wired Panel with walls JSON to input 1
     3. Connect pre-wired Panel with doors JSON to input 2
     4. Connect pre-wired Panel with windows JSON to input 3
-    5. Wire outputs to gh_kreo_to_revit.py inputs
+    5. Wire walls_result_passthrough (output 7) + gh_kreo_create_walls output
+       to a merge, then to door/window creators
+    6. Wire run_walls to gh_kreo_create_walls trigger
+    7. Wire run_doors / run_windows to door/window creator triggers
 
 Input Requirements:
     MCP Args (mcp_args) - str:
         JSON string from Deconstruct Tool Call "Args" output.
-        May contain walls_json, doors_json, windows_json, wall_height.
+        May contain: walls_result_json, door_schedule, window_schedule,
+        wall_height, level_name.
         Required: Yes
         Access: Item
         Type Hint: str (set via GH UI)
 
     Default Walls JSON (default_walls_json) - str:
         Pre-wired Kreo walls JSON from a GH Panel (fallback).
-        Required: No (used when MCP args don't contain walls_json)
+        Required: No
         Access: Item
         Type Hint: str (set via GH UI)
 
@@ -67,25 +80,40 @@ Input Requirements:
 
 Outputs:
     Walls JSON (walls_json) - str:
-        Kreo walls JSON (from MCP or default).
+        Kreo walls JSON (from MCP or default). Used by gh_kreo_to_walls_json.
 
     Doors JSON (doors_json) - str:
-        Kreo doors JSON (from MCP or default).
+        Kreo doors JSON (from MCP or default). Empty if agent didn't request doors.
 
     Windows JSON (windows_json) - str:
-        Kreo windows JSON (from MCP or default).
+        Kreo windows JSON (from MCP or default). Empty if agent didn't request windows.
 
     Config JSON (config_json) - str:
-        Configuration for gh_kreo_to_revit: wall_height_ft, level_name.
+        Configuration: wall_height_ft, level_name, door_schedule, window_schedule.
 
-    Run (run) - bool:
-        True when valid walls data is available.
+    Run Walls (run_walls) - bool:
+        True in all-in-one mode (wall data available, no prior walls_result_json).
+        False in staged mode (walls already exist).
+
+    Run Doors (run_doors) - bool:
+        True when agent requests doors (door_schedule or doors_json present).
+        In manual mode: True if default doors Panel has data.
+
+    Run Windows (run_windows) - bool:
+        True when agent requests windows (window_schedule or windows_json present).
+        In manual mode: True if default windows Panel has data.
+
+    Walls Result Passthrough (walls_result_passthrough) - str:
+        In staged mode: the walls_result_json from the previous create_walls call.
+        In all-in-one mode: empty string (gh_kreo_create_walls provides it instead).
+        Wire this + gh_kreo_create_walls.walls_result_json into a merge; use
+        whichever is non-empty as the walls_result_json for door/window creators.
 
     Info (info) - str:
-        Debug information about input sources.
+        Debug information about mode, input sources, and run gates.
 
 Author: ConstructAI Demo
-Version: 1.0.0
+Version: 1.1.0
 """
 
 # =============================================================================
@@ -108,7 +136,7 @@ import Grasshopper
 
 COMPONENT_NAME = "MCP Create Walls Args"
 COMPONENT_NICKNAME = "MCPWallArgs"
-COMPONENT_MESSAGE = "v1.0"
+COMPONENT_MESSAGE = "v1.1"
 COMPONENT_CATEGORY = "ConstructAI"
 COMPONENT_SUBCATEGORY = "0-Demo"
 
@@ -185,17 +213,23 @@ def setup_component() -> None:
 
     output_config = [
         ("Walls JSON", "walls_json",
-         "Kreo walls JSON for gh_kreo_to_revit"),
+         "Kreo walls JSON for gh_kreo_to_walls_json"),
         ("Doors JSON", "doors_json",
-         "Kreo doors JSON for gh_kreo_to_revit"),
+         "Kreo doors JSON. Empty if agent didn't request doors"),
         ("Windows JSON", "windows_json",
-         "Kreo windows JSON for gh_kreo_to_revit"),
+         "Kreo windows JSON. Empty if agent didn't request windows"),
         ("Config JSON", "config_json",
-         "Configuration JSON for gh_kreo_to_revit"),
-        ("Run", "run",
-         "True when valid walls data is available"),
+         "Configuration: wall_height_ft, level_name, door/window schedules"),
+        ("Run Walls", "run_walls",
+         "True in all-in-one mode. False in staged mode (walls already exist)"),
+        ("Run Doors", "run_doors",
+         "True when agent requests doors"),
+        ("Run Windows", "run_windows",
+         "True when agent requests windows"),
+        ("Walls Result Passthrough", "walls_result_passthrough",
+         "Staged mode: prior walls_result_json. Merge with create_walls output"),
         ("Info", "info",
-         "Debug information about input sources"),
+         "Debug information about mode, sources, and run gates"),
     ]
 
     for i, (name, nick, desc) in enumerate(output_config):
@@ -278,7 +312,8 @@ def main():
     """Main entry point.
 
     Returns:
-        tuple: (walls_json, doors_json, windows_json, config_json, run, info)
+        tuple: (walls_json, doors_json, windows_json, config_json,
+                run_walls, run_doors, run_windows, walls_result_passthrough, info)
     """
     setup_component()
 
@@ -286,7 +321,10 @@ def main():
     doors_json = ""
     windows_json = ""
     config_json = ""
-    run = False
+    run_walls = False
+    run_doors = False
+    run_windows = False
+    walls_result_passthrough = ""
     info_lines = []
 
     try:
@@ -299,30 +337,63 @@ def main():
         # Parse MCP args
         args_valid, args_dict, args_error = _parse_mcp_args(mcp_args_raw)
 
-        # Resolve walls_json: MCP args take priority, then default Panel
-        walls_source = "none"
-        if args_valid and _has_content(args_dict.get("walls_json")):
-            walls_json = str(args_dict["walls_json"]).strip()
-            walls_source = "mcp"
-        elif _has_content(default_walls):
-            walls_json = str(default_walls).strip()
-            walls_source = "default"
+        # ---------------------------------------------------------------
+        # Detect execution mode
+        # Staged: agent passes walls_result_json from a prior call
+        # All-in-one: no prior walls_result_json, create everything fresh
+        # ---------------------------------------------------------------
+        prior_walls_result = None
+        if args_valid:
+            raw_wres = args_dict.get("walls_result_json")
+            if _has_content(raw_wres):
+                prior_walls_result = str(raw_wres).strip()
 
-        # Resolve doors_json
+        staged_mode = prior_walls_result is not None
+        if staged_mode:
+            walls_result_passthrough = prior_walls_result
+            info_lines.append("Mode: STAGED (walls_result_json provided, skipping wall creation)")
+        else:
+            info_lines.append("Mode: ALL-IN-ONE (creating walls fresh)")
+
+        # Detect what the agent explicitly requested
+        agent_wants_doors = False
+        agent_wants_windows = False
+        if args_valid:
+            agent_wants_doors = (
+                _has_content(args_dict.get("doors_json"))
+                or bool(args_dict.get("door_schedule"))
+            )
+            agent_wants_windows = (
+                _has_content(args_dict.get("windows_json"))
+                or bool(args_dict.get("window_schedule"))
+            )
+
+        # Resolve walls_json: only needed in all-in-one mode
+        walls_source = "none"
+        if not staged_mode:
+            if args_valid and _has_content(args_dict.get("walls_json")):
+                walls_json = str(args_dict["walls_json"]).strip()
+                walls_source = "mcp"
+            elif _has_content(default_walls):
+                walls_json = str(default_walls).strip()
+                walls_source = "default"
+
+        # Resolve doors_json (only use default if agent requested doors,
+        # or if in manual mode without MCP args)
         doors_source = "none"
         if args_valid and _has_content(args_dict.get("doors_json")):
             doors_json = str(args_dict["doors_json"]).strip()
             doors_source = "mcp"
-        elif _has_content(default_doors):
+        elif (agent_wants_doors or not args_valid) and _has_content(default_doors):
             doors_json = str(default_doors).strip()
             doors_source = "default"
 
-        # Resolve windows_json
+        # Resolve windows_json (same logic)
         windows_source = "none"
         if args_valid and _has_content(args_dict.get("windows_json")):
             windows_json = str(args_dict["windows_json"]).strip()
             windows_source = "mcp"
-        elif _has_content(default_windows):
+        elif (agent_wants_windows or not args_valid) and _has_content(default_windows):
             windows_json = str(default_windows).strip()
             windows_source = "default"
 
@@ -339,12 +410,10 @@ def main():
             if level_name:
                 config["level_name"] = str(level_name)
 
-            # Pass door_schedule through to config for door creator
             door_schedule = args_dict.get("door_schedule")
             if isinstance(door_schedule, list) and door_schedule:
                 config["door_schedule"] = door_schedule
 
-            # Pass window_schedule through to config for window creator
             window_schedule = args_dict.get("window_schedule")
             if isinstance(window_schedule, list) and window_schedule:
                 config["window_schedule"] = window_schedule
@@ -353,26 +422,45 @@ def main():
 
         config_json = json.dumps(config, indent=2)
 
-        # Determine run gate
-        run = bool(walls_json)
+        # ---------------------------------------------------------------
+        # Run gates
+        # ---------------------------------------------------------------
+        if staged_mode:
+            # Staged: walls already exist, only run what agent requested
+            run_walls = False
+            run_doors = agent_wants_doors and bool(doors_json)
+            run_windows = agent_wants_windows and bool(windows_json)
+        elif args_valid:
+            # All-in-one MCP: run walls + whatever agent requested
+            run_walls = bool(walls_json)
+            run_doors = agent_wants_doors and bool(doors_json)
+            run_windows = agent_wants_windows and bool(windows_json)
+        else:
+            # Manual mode (no MCP args): run everything with data
+            run_walls = bool(walls_json)
+            run_doors = bool(doors_json)
+            run_windows = bool(windows_json)
 
         # Build info
         info_lines.append(f"MCP Args: {'valid' if args_valid else args_error}")
         info_lines.append(f"  walls_json: {walls_source} ({len(walls_json)} chars)")
         info_lines.append(f"  doors_json: {doors_source} ({len(doors_json)} chars)")
         info_lines.append(f"  windows_json: {windows_source} ({len(windows_json)} chars)")
-        info_lines.append(f"  run: {run}")
+        info_lines.append(f"  walls_result_passthrough: {len(walls_result_passthrough)} chars")
+        info_lines.append(f"  run_walls={run_walls}, run_doors={run_doors} (wants={agent_wants_doors}), run_windows={run_windows} (wants={agent_wants_windows})")
 
         info = "\n".join(info_lines)
         log_info(info)
 
-        return walls_json, doors_json, windows_json, config_json, run, info
+        return (walls_json, doors_json, windows_json, config_json,
+                run_walls, run_doors, run_windows, walls_result_passthrough, info)
 
     except Exception as e:
         error_msg = f"Error in MCP Create Walls Args: {str(e)}"
         log_error(error_msg)
         print(traceback.format_exc())
-        return walls_json, doors_json, windows_json, config_json, False, error_msg
+        return (walls_json, doors_json, windows_json, config_json,
+                False, False, False, "", error_msg)
 
 
 # =============================================================================
@@ -380,4 +468,5 @@ def main():
 # =============================================================================
 
 if __name__ == "__main__":
-    walls_json, doors_json, windows_json, config_json, run, info = main()
+    (walls_json, doors_json, windows_json, config_json,
+     run_walls, run_doors, run_windows, walls_result_passthrough, info) = main()

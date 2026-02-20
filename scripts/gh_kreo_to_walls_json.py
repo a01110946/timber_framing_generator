@@ -635,6 +635,7 @@ def main():
         # ---------------------------------------------------------------
         log_info("Parsing Kreo walls JSON...")
         walls_json_str = str(walls_json_raw).strip()
+        log_info(f"  Input preview ({len(walls_json_str)} chars): {walls_json_str[:200]}")
         kreo_walls = parse_walls(walls_json_str)
         log_info(f"  Parsed {len(kreo_walls)} walls")
 

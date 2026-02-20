@@ -427,6 +427,10 @@ def main():
         elif run_raw is not None:
             run = bool(run_raw)
 
+        log_info(f"run_raw={run_raw!r} (type={type(run_raw).__name__}), run={run}")
+        log_info(f"walls_json present: {walls_json_raw is not None and bool(str(walls_json_raw).strip())}")
+        log_info(f"metadata_json present: {metadata_json_raw is not None and bool(str(metadata_json_raw).strip())}")
+
         if not run:
             log_info("Idle (run=False)")
             return walls_result_json, info

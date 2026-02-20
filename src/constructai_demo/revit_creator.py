@@ -24,6 +24,13 @@ from .wall_classifier import (
 logger = logging.getLogger(__name__)
 
 
+def _eid_int(element_id) -> int:
+    """Get integer from ElementId (Revit 2025+: .Value, older: .IntegerValue)."""
+    if hasattr(element_id, "Value"):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 def create_walls(
     doc,  # Autodesk.Revit.DB.Document
     walls: List[ConvertedWall],
@@ -505,10 +512,14 @@ def find_level(doc, name: Optional[str] = None) -> Optional[object]:
 def _build_wall_type_map(doc) -> Dict[WallClass, object]:
     """Build a map of WallClass -> best matching Revit WallType.
 
-    Strategy:
-    1. Search by name containing "Generic" + approximate width
-    2. Search by WallType.Width closest to target
-    3. Fallback to first available WallType
+    Strategy (per wall class, in order):
+    1. Exact name match against WALL_CLASS_NAMES target name
+    2. Keyword + width match (INT/EXT keyword to distinguish same-width types)
+    3. Width-only match, skipping types already assigned to another class
+    4. Fallback to first available WallType
+
+    The keyword strategy is critical because INTERIOR_2X4 and EXTERIOR_2X4
+    both target 3.5" width but need distinct Revit wall types.
     """
     import clr
     clr.AddReference("RevitAPI")
@@ -522,47 +533,83 @@ def _build_wall_type_map(doc) -> Dict[WallClass, object]:
     if not all_types:
         return {}
 
+    # Build a name cache: WallType -> type name string
+    type_names: Dict[int, str] = {}
+    basic_types = []
+    for wt in all_types:
+        try:
+            if wt.Kind == DB.WallKind.Basic:
+                basic_types.append(wt)
+                name_param = wt.get_Parameter(
+                    DB.BuiltInParameter.ALL_MODEL_TYPE_NAME
+                )
+                if name_param:
+                    type_names[_eid_int(wt.Id)] = str(name_param.AsString())
+        except Exception:
+            continue
+
+    # Keywords to distinguish same-width wall types
+    _WALL_CLASS_KEYWORDS: Dict[WallClass, list] = {
+        WallClass.INTERIOR_2X4: ["INT", "Interior", "interior"],
+        WallClass.EXTERIOR_2X4: ["EXT", "Exterior", "exterior"],
+        WallClass.EXTERIOR_2X6: ["EXT", "Exterior", "exterior"],
+    }
+
     result: Dict[WallClass, object] = {}
+    used_type_ids: set = set()
 
     for wall_class in WallClass:
         target_ft = WALL_CLASS_THICKNESS_FT[wall_class]
         target_name = WALL_CLASS_NAMES[wall_class]
+        keywords = _WALL_CLASS_KEYWORDS.get(wall_class, [])
 
-        # Strategy 1: Name match
-        name_match = None
-        for wt in all_types:
-            try:
-                if wt.Kind == DB.WallKind.Basic:
-                    wt_name = wt.get_Parameter(
-                        DB.BuiltInParameter.ALL_MODEL_TYPE_NAME
-                    )
-                    if wt_name and "Generic" in str(wt_name.AsString()):
-                        width = wt.Width  # feet
-                        if abs(width - target_ft) < 0.05:  # within ~0.6"
-                            name_match = wt
-                            break
-            except Exception:
-                continue
+        # Strategy 1: Exact name match
+        exact_match = None
+        for wt in basic_types:
+            wt_name = type_names.get(_eid_int(wt.Id), "")
+            if wt_name == target_name:
+                exact_match = wt
+                break
 
-        if name_match:
-            result[wall_class] = name_match
+        if exact_match:
+            result[wall_class] = exact_match
+            used_type_ids.add(_eid_int(exact_match.Id))
             continue
 
-        # Strategy 2: Closest width match among Basic wall types
+        # Strategy 2: Width match + keyword (to distinguish INT vs EXT at 3.5")
+        keyword_match = None
+        for wt in basic_types:
+            if _eid_int(wt.Id) in used_type_ids:
+                continue
+            wt_name = type_names.get(_eid_int(wt.Id), "")
+            width = wt.Width
+            if abs(width - target_ft) < 0.05:  # within ~0.6"
+                for kw in keywords:
+                    if kw in wt_name:
+                        keyword_match = wt
+                        break
+                if keyword_match:
+                    break
+
+        if keyword_match:
+            result[wall_class] = keyword_match
+            used_type_ids.add(_eid_int(keyword_match.Id))
+            continue
+
+        # Strategy 3: Width-only match, skip already-assigned types
         best_type = None
         best_diff = float("inf")
-        for wt in all_types:
-            try:
-                if wt.Kind == DB.WallKind.Basic:
-                    diff = abs(wt.Width - target_ft)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_type = wt
-            except Exception:
+        for wt in basic_types:
+            if _eid_int(wt.Id) in used_type_ids:
                 continue
+            diff = abs(wt.Width - target_ft)
+            if diff < best_diff:
+                best_diff = diff
+                best_type = wt
 
         if best_type:
             result[wall_class] = best_type
+            used_type_ids.add(_eid_int(best_type.Id))
 
     return result
 
@@ -949,13 +996,7 @@ def place_openings_by_id(
                     DB.Structure.StructuralType.NonStructural,
                 )
 
-                # Extract ElementId as integer
-                if hasattr(instance.Id, "IntegerValue"):
-                    eid_int = instance.Id.IntegerValue
-                elif hasattr(instance.Id, "Value"):
-                    eid_int = instance.Id.Value
-                else:
-                    eid_int = int(str(instance.Id))
+                eid_int = _eid_int(instance.Id)
 
                 created.append((opening_type, eid_int, actual_sill_ft))
 

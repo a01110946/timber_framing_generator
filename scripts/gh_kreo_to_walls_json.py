@@ -686,7 +686,7 @@ def main():
             if kw.is_exterior is not None:
                 is_exterior = kw.is_exterior
             else:
-                is_exterior = (wall_class == WallClass.EXTERIOR_2X6)
+                is_exterior = wall_class in (WallClass.EXTERIOR_2X4, WallClass.EXTERIOR_2X6)
 
             key = wall_class.value
             classification_counts[key] = classification_counts.get(key, 0) + 1

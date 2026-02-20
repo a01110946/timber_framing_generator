@@ -3,7 +3,8 @@
 
 Uses Kreo-detected wall thickness to determine:
 - Interior 2x4 (thickness < 0.115m / ~4.5")
-- Exterior 2x6 (thickness >= 0.115m / ~4.5")
+- Exterior 2x4 (0.115m <= thickness < 0.14m / ~5.5")
+- Exterior 2x6 (thickness >= 0.14m / garage front wall)
 """
 
 from __future__ import annotations
@@ -18,27 +19,39 @@ class WallClass(Enum):
     """Wall framing classification."""
 
     INTERIOR_2X4 = "interior_2x4"
+    EXTERIOR_2X4 = "exterior_2x4"
     EXTERIOR_2X6 = "exterior_2x6"
 
 
-# Threshold in meters: below = 2x4 interior, above = 2x6 exterior
-THICKNESS_THRESHOLD_M: float = 0.115
+# Two-threshold classification (meters):
+#   < INTERIOR_THRESHOLD  -> interior 2x4
+#   >= INTERIOR_THRESHOLD and < EXTERIOR_2X6_THRESHOLD -> exterior 2x4
+#   >= EXTERIOR_2X6_THRESHOLD -> exterior 2x6 (garage front wall)
+INTERIOR_THRESHOLD_M: float = 0.115
+EXTERIOR_2X6_THRESHOLD_M: float = 0.14
 
 # Target thicknesses for Revit wall type matching (in feet)
 WALL_CLASS_THICKNESS_FT = {
     WallClass.INTERIOR_2X4: 3.5 / 12.0,  # 3.5 inches = 0.2917 ft
+    WallClass.EXTERIOR_2X4: 3.5 / 12.0,  # 3.5 inches = 0.2917 ft (same stud, different assembly)
     WallClass.EXTERIOR_2X6: 5.5 / 12.0,  # 5.5 inches = 0.4583 ft
 }
 
 # Friendly display names
 WALL_CLASS_NAMES = {
-    WallClass.INTERIOR_2X4: "Generic - 3.5\" (2x4)",
-    WallClass.EXTERIOR_2X6: "Generic - 5.5\" (2x6)",
+    WallClass.INTERIOR_2X4: "Generic - 3.5\" (2x4 INT)",
+    WallClass.EXTERIOR_2X4: "Generic - 3.5\" (2x4 EXT)",
+    WallClass.EXTERIOR_2X6: "Generic - 5.5\" (2x6 EXT)",
 }
 
 
 def classify_wall(thickness_m: float) -> WallClass:
     """Classify a wall by its thickness.
+
+    Uses two thresholds to distinguish three wall types:
+    - Interior 2x4: thin walls (partitions)
+    - Exterior 2x4: medium walls (exterior with stucco/insulation assembly)
+    - Exterior 2x6: thick walls (garage front with wider assembly)
 
     Args:
         thickness_m: Wall thickness in meters from Kreo detection.
@@ -46,8 +59,10 @@ def classify_wall(thickness_m: float) -> WallClass:
     Returns:
         WallClass enum value.
     """
-    if thickness_m < THICKNESS_THRESHOLD_M:
+    if thickness_m < INTERIOR_THRESHOLD_M:
         return WallClass.INTERIOR_2X4
+    if thickness_m < EXTERIOR_2X6_THRESHOLD_M:
+        return WallClass.EXTERIOR_2X4
     return WallClass.EXTERIOR_2X6
 
 

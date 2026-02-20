@@ -49,6 +49,7 @@ class ConvertedOpening:
     opening_type: str  # 'door' or 'window'
     original_index: int
     revit_type: Optional[str] = None
+    sill_height_in: Optional[float] = None
 
 
 @dataclass

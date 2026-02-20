@@ -678,99 +678,117 @@ def place_openings_by_id(
                            m_type_data.get("height_in"))
                     )
 
-                loaded = _load_family_from_manifest(doc, family_name)
-                if loaded:
-                    loaded_name = getattr(loaded, "Name", "???")
+                # Step A: Check if family already exists in document
+                # (handles template-resident families with no .rfa)
+                source = _find_any_type_in_family(
+                    doc, family_name, category
+                )
+                if source:
                     print(
-                        "[PRE-SCAN]   '%s' -> loaded family from manifest "
-                        "(internal name='%s')" % (rt, loaded_name)
+                        "[PRE-SCAN]   '%s' -> family '%s' already in doc "
+                        "(source type='%s')"
+                        % (rt, family_name, source.Name)
                     )
-                    # Retry lookup after loading
-                    found = find_family_symbol_by_name(doc, rt, category)
-                    if found:
-                        print("[PRE-SCAN]   '%s' -> found after manifest load" % rt)
-                    if not found:
-                        # Try collector-based lookup by family name
-                        source = _find_any_type_in_family(
-                            doc, family_name, category
-                        )
-                        # If internal name differs, retry with that
-                        if not source and loaded_name != family_name:
-                            print(
-                                "[PRE-SCAN]   '%s' -> name mismatch! file='%s' "
-                                "revit='%s', retrying..." % (rt, family_name, loaded_name)
-                            )
-                            source = _find_any_type_in_family(
-                                doc, loaded_name, category
-                            )
-                        # Last resort: use Family.GetFamilySymbolIds() directly
-                        if not source:
-                            print(
-                                "[PRE-SCAN]   '%s' -> collector failed, "
-                                "trying GetFamilySymbolIds()..." % rt
-                            )
-                            sym_ids = loaded.GetFamilySymbolIds()
-                            for sid in sym_ids:
-                                source = doc.GetElement(sid)
-                                if source:
-                                    print(
-                                        "[PRE-SCAN]   '%s' -> found via "
-                                        "GetFamilySymbolIds: '%s'"
-                                        % (rt, source.Name)
-                                    )
-                                    break
-                        if source:
-                            print(
-                                "[PRE-SCAN]   '%s' -> duplicating from '%s : %s'"
-                                % (rt, source.Family.Name, source.Name)
-                            )
-                            # Prefer manifest type dims over parsing from name
-                            if m_type_data:
-                                dims = (
-                                    m_type_data.get("width_in"),
-                                    m_type_data.get("height_in"),
-                                )
-                                if dims[0] is None or dims[1] is None:
-                                    dims = _parse_type_dimensions(type_name)
-                            else:
-                                dims = _parse_type_dimensions(type_name)
-                            if dims:
-                                dup_t = DB.Transaction(
-                                    doc, "Create Type: %s" % type_name
-                                )
-                                dup_t.Start()
-                                try:
-                                    found = _duplicate_door_type(
-                                        doc, source, type_name,
-                                        dims[0], dims[1],
-                                        dimension_params=m_dim_params,
-                                    )
-                                    dup_t.Commit()
-                                    print(
-                                        "[PRE-SCAN]   '%s' -> duplicated: %s"
-                                        % (rt, found is not None)
-                                    )
-                                except Exception as dup_ex:
-                                    print(
-                                        "[PRE-SCAN]   '%s' -> duplication error: %s"
-                                        % (rt, dup_ex)
-                                    )
-                                    if dup_t.HasStarted() and not dup_t.HasEnded():
-                                        dup_t.RollBack()
-                            else:
-                                print(
-                                    "[PRE-SCAN]   '%s' -> could not parse dims "
-                                    "from '%s'" % (rt, type_name)
-                                )
-                        else:
-                            print(
-                                "[PRE-SCAN]   '%s' -> no source symbol for "
-                                "family '%s'" % (rt, family_name)
-                            )
                 else:
+                    # Step B: Try loading from manifest .rfa
+                    loaded = _load_family_from_manifest(doc, family_name)
+                    if loaded:
+                        loaded_name = getattr(loaded, "Name", "???")
+                        print(
+                            "[PRE-SCAN]   '%s' -> loaded family from manifest "
+                            "(internal name='%s')" % (rt, loaded_name)
+                        )
+                        # Retry exact lookup after loading
+                        found = find_family_symbol_by_name(
+                            doc, rt, category
+                        )
+                        if found:
+                            print(
+                                "[PRE-SCAN]   '%s' -> found after manifest "
+                                "load" % rt
+                            )
+                        if not found:
+                            source = _find_any_type_in_family(
+                                doc, family_name, category
+                            )
+                            if not source and loaded_name != family_name:
+                                print(
+                                    "[PRE-SCAN]   '%s' -> name mismatch! "
+                                    "file='%s' revit='%s', retrying..."
+                                    % (rt, family_name, loaded_name)
+                                )
+                                source = _find_any_type_in_family(
+                                    doc, loaded_name, category
+                                )
+                            if not source:
+                                print(
+                                    "[PRE-SCAN]   '%s' -> collector failed, "
+                                    "trying GetFamilySymbolIds()..." % rt
+                                )
+                                sym_ids = loaded.GetFamilySymbolIds()
+                                for sid in sym_ids:
+                                    source = doc.GetElement(sid)
+                                    if source:
+                                        print(
+                                            "[PRE-SCAN]   '%s' -> found via "
+                                            "GetFamilySymbolIds: '%s'"
+                                            % (rt, source.Name)
+                                        )
+                                        break
+                    else:
+                        print(
+                            "[PRE-SCAN]   '%s' -> not in doc and manifest "
+                            "load failed for '%s'" % (rt, family_name)
+                        )
+
+                # Step C: Duplicate type from source symbol
+                # (works for both template-resident and manifest-loaded)
+                if source and not found:
                     print(
-                        "[PRE-SCAN]   '%s' -> manifest load FAILED for '%s'"
-                        % (rt, family_name)
+                        "[PRE-SCAN]   '%s' -> duplicating from '%s : %s'"
+                        % (rt, source.Family.Name, source.Name)
+                    )
+                    if m_type_data:
+                        dims = (
+                            m_type_data.get("width_in"),
+                            m_type_data.get("height_in"),
+                        )
+                        if dims[0] is None or dims[1] is None:
+                            dims = _parse_type_dimensions(type_name)
+                    else:
+                        dims = _parse_type_dimensions(type_name)
+                    if dims:
+                        dup_t = DB.Transaction(
+                            doc, "Create Type: %s" % type_name
+                        )
+                        dup_t.Start()
+                        try:
+                            found = _duplicate_door_type(
+                                doc, source, type_name,
+                                dims[0], dims[1],
+                                dimension_params=m_dim_params,
+                            )
+                            dup_t.Commit()
+                            print(
+                                "[PRE-SCAN]   '%s' -> duplicated: %s"
+                                % (rt, found is not None)
+                            )
+                        except Exception as dup_ex:
+                            print(
+                                "[PRE-SCAN]   '%s' -> duplication error: %s"
+                                % (rt, dup_ex)
+                            )
+                            if dup_t.HasStarted() and not dup_t.HasEnded():
+                                dup_t.RollBack()
+                    else:
+                        print(
+                            "[PRE-SCAN]   '%s' -> could not parse dims "
+                            "from '%s'" % (rt, type_name)
+                        )
+                elif not source and not found:
+                    print(
+                        "[PRE-SCAN]   '%s' -> no source symbol for "
+                        "family '%s'" % (rt, family_name)
                     )
             else:
                 print("[PRE-SCAN]   '%s' -> invalid format (no ' : ')" % rt)
@@ -812,7 +830,6 @@ def place_openings_by_id(
 
             for match in matches:
                 ip = match.insertion_point
-                point = DB.XYZ(ip.x, ip.y, 0.0)
 
                 # Resolve family symbol: per-opening override or default
                 sym = family_symbol
@@ -828,8 +845,9 @@ def place_openings_by_id(
                     if cached is not None:
                         sym = cached
                     print(
-                        "[PLACE] Door %d: revit_type='%s' cached=%s -> '%s : %s'"
+                        "[PLACE] %s %d: revit_type='%s' cached=%s -> '%s : %s'"
                         % (
+                            opening_type,
                             match.opening.original_index,
                             revit_type,
                             cached is not None,
@@ -839,13 +857,53 @@ def place_openings_by_id(
                     )
                 else:
                     print(
-                        "[PLACE] Door %d: no revit_type -> default '%s : %s'"
+                        "[PLACE] %s %d: no revit_type -> default '%s : %s'"
                         % (
+                            opening_type,
                             match.opening.original_index,
                             sym.Family.Name,
                             sym.Name,
                         )
                     )
+
+                # Resolve sill height:
+                #   1. Instance data from JSON (sill_height_in on opening)
+                #   2. Manifest lookup by revit_type
+                #   3. Global default (sill_height_ft param)
+                actual_sill_ft = sill_height_ft
+                opening_sill_in = getattr(
+                    match.opening, "sill_height_in", None
+                )
+                if opening_sill_in is not None:
+                    actual_sill_ft = float(opening_sill_in) / 12.0
+                    print(
+                        "[PLACE] %s %d: sill from JSON = %.1f in (%.3f ft)"
+                        % (opening_type, match.opening.original_index,
+                           opening_sill_in, actual_sill_ft)
+                    )
+                elif revit_type:
+                    # Fallback: manifest lookup by family:type
+                    parts_s = revit_type.split(" : ", 1)
+                    if len(parts_s) == 2:
+                        s_entry = manifest_families.get(
+                            parts_s[0].strip(), {}
+                        )
+                        s_sill = s_entry.get("types", {}).get(
+                            parts_s[1].strip(), {}
+                        ).get("sill_height_in")
+                        if s_sill is not None:
+                            actual_sill_ft = float(s_sill) / 12.0
+                            print(
+                                "[PLACE] %s %d: sill from manifest = %.1f in "
+                                "(%.3f ft)"
+                                % (opening_type,
+                                   match.opening.original_index,
+                                   s_sill, actual_sill_ft)
+                            )
+
+                # Wall-hosted elements: point.Z is additive with Sill Height
+                # parameter, so always use Z=0 and set sill via parameter.
+                point = DB.XYZ(ip.x, ip.y, 0.0)
 
                 # Apply placement offset for families like pocket doors
                 # whose Revit origin is at the rough opening center,
@@ -875,28 +933,21 @@ def place_openings_by_id(
                             point.Z,
                         )
                         print(
-                            "[PLACE] Door %d: offset %.1f in (%.3f ft) "
+                            "[PLACE] %s %d: offset %.1f in (%.3f ft) "
                             "along wall dir (sign=%.0f)"
-                            % (match.opening.original_index,
+                            % (opening_type, match.opening.original_index,
                                offset_in, offset_ft, sign)
                         )
                     except Exception as oe:
                         print(
-                            "[PLACE] Door %d: offset failed: %s"
-                            % (match.opening.original_index, oe)
+                            "[PLACE] %s %d: offset failed: %s"
+                            % (opening_type, match.opening.original_index, oe)
                         )
 
                 instance = doc.Create.NewFamilyInstance(
                     point, sym, host_wall, level,
                     DB.Structure.StructuralType.NonStructural,
                 )
-
-                # Set sill height (0 for doors, configurable for windows)
-                sill_param = instance.get_Parameter(
-                    DB.BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM
-                )
-                if sill_param and not sill_param.IsReadOnly:
-                    sill_param.Set(sill_height_ft)
 
                 # Extract ElementId as integer
                 if hasattr(instance.Id, "IntegerValue"):
@@ -906,7 +957,7 @@ def place_openings_by_id(
                 else:
                     eid_int = int(str(instance.Id))
 
-                created.append((opening_type, eid_int))
+                created.append((opening_type, eid_int, actual_sill_ft))
 
         t.Commit()
         logger.info(
@@ -918,7 +969,56 @@ def place_openings_by_id(
             t.RollBack()
         raise
 
-    return created
+    # Set sill heights in a separate transaction AFTER placement commits.
+    # Revit may override instance parameter values during element creation,
+    # so we explicitly set sill height post-creation for ALL instances
+    # (including doors at 0.0 to override any family defaults).
+    sill_entries = [(eid_int, sill_ft) for _, eid_int, sill_ft in created]
+    if sill_entries:
+        t2 = DB.Transaction(doc, "Set Sill Heights")
+        t2.Start()
+        try:
+            for eid_int, sill_ft in sill_entries:
+                elem = doc.GetElement(
+                    DB.ElementId(System.Int64(int(eid_int)))
+                )
+                if elem is None:
+                    continue
+
+                sill_set = False
+
+                sill_param = elem.get_Parameter(
+                    DB.BuiltInParameter.INSTANCE_SILL_HEIGHT_PARAM
+                )
+                if sill_param and not sill_param.IsReadOnly:
+                    sill_param.Set(sill_ft)
+                    sill_set = True
+
+                if not sill_set:
+                    sill_param = elem.LookupParameter("Sill Height")
+                    if sill_param and not sill_param.IsReadOnly:
+                        sill_param.Set(sill_ft)
+                        sill_set = True
+
+                if sill_set:
+                    print(
+                        "[SILL] EID %d: sill = %.3f ft" % (eid_int, sill_ft)
+                    )
+                else:
+                    print(
+                        "[SILL] EID %d: WARNING - no writable sill param"
+                        % eid_int
+                    )
+
+            t2.Commit()
+            print("[SILL] Set sill heights on %d instances" % len(sill_entries))
+        except Exception:
+            if t2.HasStarted() and not t2.HasEnded():
+                t2.RollBack()
+            raise
+
+    # Strip sill_ft from tuples for return value
+    return [(typ, eid_int) for typ, eid_int, _ in created]
 
 
 def _find_any_type_in_family(

@@ -343,6 +343,7 @@ def _convert_openings(kreo_openings, scale, max_y_px, opening_type):
             opening_type=opening_type,
             original_index=op.index,
             revit_type=op.revit_type,
+            sill_height_in=op.sill_height_in,
         ))
     return converted
 

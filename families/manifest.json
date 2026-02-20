@@ -184,6 +184,25 @@
         "72\" x 80\"": { "width_in": 72, "height_in": 80 }
       },
       "sha256": "7a043e8f3d0191c2f323abafee07a4539e63466f20531c0d95ccfedf7f7acecd"
+    },
+
+    "Window-Casement-Double": {
+      "category": "OST_Windows",
+      "domain": "windows",
+      "dimension_params": { "width": "Width", "height": "Height" },
+      "types": {
+        "48\" x 54\"": { "width_in": 48, "height_in": 54, "sill_height_in": 26 },
+        "24\" x 12\"": { "width_in": 24, "height_in": 12, "sill_height_in": 68 }
+      }
+    },
+
+    "Window-Double-Hung": {
+      "category": "OST_Windows",
+      "domain": "windows",
+      "dimension_params": { "width": "Width", "height": "Height" },
+      "types": {
+        "42\" x 48\"": { "width_in": 42, "height_in": 48, "sill_height_in": 32 }
+      }
     }
   }
 }

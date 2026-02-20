@@ -67,6 +67,7 @@ class KreoOpening:
         opening_type: Either 'door' or 'window'.
         index: Original index in the JSON array.
         revit_type: Optional Revit "Family : Type" name override.
+        sill_height_in: Optional sill height in inches (instance-level).
     """
 
     p1: KreoPoint
@@ -76,6 +77,7 @@ class KreoOpening:
     opening_type: str  # 'door' or 'window'
     index: int = 0
     revit_type: Optional[str] = None
+    sill_height_in: Optional[float] = None
 
 
 @dataclass
@@ -296,5 +298,6 @@ def _parse_openings(json_str: str, opening_type: str) -> List[KreoOpening]:
             opening_type=opening_type,
             index=i,
             revit_type=raw.get("revit_type"),
+            sill_height_in=raw.get("sill_height_in"),
         ))
     return openings

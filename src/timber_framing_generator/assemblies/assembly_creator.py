@@ -65,6 +65,13 @@ except Exception as e:
     REVIT_ERROR = str(e)
 
 
+def _eid_int(element_id: Any) -> int:
+    """Version-safe ElementId integer conversion (Revit 2025+ removed IntegerValue)."""
+    if hasattr(element_id, "Value"):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 # =============================================================================
 # Data Models
 # =============================================================================
@@ -968,7 +975,11 @@ def _build_valid_element_list(
             skipped_invalid += 1
             continue
 
-        elem = doc.GetElement(eid_obj)
+        try:
+            elem = doc.GetElement(eid_obj)
+        except Exception:
+            skipped_invalid += 1
+            continue
         if elem is None:
             skipped_invalid += 1
             continue
@@ -1121,7 +1132,7 @@ def create_assemblies(
                     )
                     result.views_created = [vi.view_name for vi in view_infos]
                     result.view_ids = [
-                        vi.view_id.IntegerValue
+                        _eid_int(vi.view_id)
                         for vi in view_infos
                         if vi.view_id is not None
                     ]
@@ -1149,7 +1160,7 @@ def create_assemblies(
                     assembly_name, e,
                 )
 
-            result.assembly_id = assembly.Id.IntegerValue
+            result.assembly_id = _eid_int(assembly.Id)
             result.status = "created"
             batch.successful += 1
             logger.info(

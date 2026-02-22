@@ -51,6 +51,13 @@ except Exception as e:
     REVIT_ERROR = str(e)
 
 
+def _eid_int(element_id: Any) -> int:
+    """Version-safe ElementId integer conversion (Revit 2025+ removed IntegerValue)."""
+    if hasattr(element_id, "Value"):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 # =============================================================================
 # Layout Constants (in feet)
 # =============================================================================
@@ -234,7 +241,7 @@ def create_assembly_sheet(
         sheet_name = assembly_name or "Assembly Sheet"
         print(
             "[assembly_sheets] Created sheet '%s' (id=%s)"
-            % (sheet_name, sheet.Id.IntegerValue)
+            % (sheet_name, _eid_int(sheet.Id))
         )
 
         # Calculate viewport positions
@@ -250,12 +257,12 @@ def create_assembly_sheet(
                 else:
                     print(
                         "[assembly_sheets] Cannot add view %s to sheet"
-                        % view_id.IntegerValue
+                        % _eid_int(view_id)
                     )
             except Exception as e:
                 print(
                     "[assembly_sheets] Failed to place viewport for view %s: %s"
-                    % (view_id.IntegerValue, e)
+                    % (_eid_int(view_id), e)
                 )
 
         logger.info(
@@ -264,7 +271,7 @@ def create_assembly_sheet(
         )
 
         return SheetResult(
-            sheet_id=sheet.Id.IntegerValue,
+            sheet_id=_eid_int(sheet.Id),
             sheet_name=sheet_name,
             viewport_count=viewport_count,
         )

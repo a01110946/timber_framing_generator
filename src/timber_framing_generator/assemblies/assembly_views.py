@@ -62,6 +62,13 @@ except Exception as e:
     print("[assembly_views] Error: %s" % e)
 
 
+def _eid_int(element_id: Any) -> int:
+    """Version-safe ElementId integer conversion (Revit 2025+ removed IntegerValue)."""
+    if hasattr(element_id, "Value"):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -511,7 +518,7 @@ def create_assembly_views(
     logger.info(
         "Created %d views for assembly %s: %s",
         len(created),
-        assembly_id.IntegerValue,
+        _eid_int(assembly_id),
         ", ".join(vi.view_name for vi in created),
     )
     return created
@@ -533,7 +540,7 @@ def _create_3d_orthographic(doc: Any, assembly_id: Any) -> Any:
     """
     try:
         view = AssemblyViewUtils.Create3DOrthographic(doc, assembly_id)
-        print("[assembly_views] Created 3D view for %s" % assembly_id.IntegerValue)
+        print("[assembly_views] Created 3D view for %s" % _eid_int(assembly_id))
         return view
     except Exception as e:
         print("[assembly_views] Failed 3D view: %s" % e)
@@ -561,7 +568,7 @@ def _create_detail_section(
         view = AssemblyViewUtils.CreateDetailSection(
             doc, assembly_id, orientation,
         )
-        print("[assembly_views] Created %s for %s" % (label, assembly_id.IntegerValue))
+        print("[assembly_views] Created %s for %s" % (label, _eid_int(assembly_id)))
         return view
     except Exception as e:
         print("[assembly_views] Failed %s: %s" % (label, e))
@@ -587,7 +594,7 @@ def _create_material_takeoff(
     """
     try:
         view = AssemblyViewUtils.CreateMaterialTakeoff(doc, assembly_id)
-        print("[assembly_views] Created takeoff for %s" % assembly_id.IntegerValue)
+        print("[assembly_views] Created takeoff for %s" % _eid_int(assembly_id))
 
         if field_names:
             _configure_schedule_fields(doc, view, field_names)
@@ -626,7 +633,7 @@ def _create_single_category_schedule(
         view = AssemblyViewUtils.CreateSingleCategorySchedule(
             doc, assembly_id, category_id,
         )
-        print("[assembly_views] Created %s for %s" % (label, assembly_id.IntegerValue))
+        print("[assembly_views] Created %s for %s" % (label, _eid_int(assembly_id)))
 
         if field_names:
             _configure_schedule_fields(doc, view, field_names)

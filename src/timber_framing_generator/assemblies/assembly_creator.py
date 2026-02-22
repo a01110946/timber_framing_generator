@@ -793,6 +793,12 @@ def _to_element_id(value: Any) -> Any:
     GH untyped parameters often unwrap ElementIds as strings (via .Value).
     This converts str/int back to ElementId for the .NET List<ElementId>.
 
+    CRITICAL (Revit 2025+): ElementId(Int32) constructor was removed.
+    Only ElementId(Int64) exists. pythonnet may fail to resolve the Int64
+    overload for small Python ints (which fit in Int32), creating a null
+    .NET reference that makes doc.GetElement() throw "null id". Fix: always
+    pass an explicit System.Int64 to force the correct overload.
+
     Args:
         value: An ElementId, int, or str (integer representation)
 
@@ -804,20 +810,19 @@ def _to_element_id(value: Any) -> Any:
     """
     if isinstance(value, ElementId):
         return value
-    if isinstance(value, int):
-        return ElementId(value)
-    if isinstance(value, str):
-        try:
-            return ElementId(int(value))
-        except ValueError:
-            raise ValueError(
-                "Cannot convert string '%s' to ElementId (not an integer)" % value
-            )
-    # Fallback: try int() conversion for other numeric types
     try:
-        return ElementId(int(value))
+        int_val = int(value)
     except (ValueError, TypeError):
-        raise ValueError("Cannot convert %r (type %s) to ElementId" % (value, type(value).__name__))
+        raise ValueError(
+            "Cannot convert %r (type %s) to ElementId" % (value, type(value).__name__)
+        )
+    # Force Int64 to ensure correct overload resolution in pythonnet
+    # with Revit 2025+ (Int32 constructor removed).
+    try:
+        from System import Int64
+        return ElementId(Int64(int_val))
+    except Exception:
+        return ElementId(int_val)
 
 
 def _fix_assembly_orientation(

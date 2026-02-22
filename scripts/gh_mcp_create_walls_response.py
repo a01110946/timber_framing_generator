@@ -140,7 +140,10 @@ def setup_component() -> None:
 
     input_config = [
         ("Walls Result JSON", "walls_result_json",
-         "JSON output from gh_kreo_create_walls",
+         "JSON from gh_kreo_create_walls (all-in-one mode)",
+         Grasshopper.Kernel.GH_ParamAccess.item),
+        ("Walls Result Passthrough", "walls_result_passthrough",
+         "JSON from MCPWallArgs passthrough (staged mode)",
          Grasshopper.Kernel.GH_ParamAccess.item),
         ("Doors Result JSON", "doors_result_json",
          "JSON output from gh_kreo_create_doors (optional)",
@@ -242,12 +245,34 @@ def main():
     setup_component()
 
     try:
-        walls_raw = _read_input(0)
-        doors_raw = _read_input(1)
-        windows_raw = _read_input(2)
+        input_count = ghenv.Component.Params.Input.Count
+        if input_count >= 4:
+            # New layout: walls(0), passthrough(1), doors(2), windows(3)
+            walls_raw = _read_input(0)
+            passthrough_raw = _read_input(1)
+            doors_raw = _read_input(2)
+            windows_raw = _read_input(3)
+        else:
+            # Legacy 3-input layout: walls(0), doors(1), windows(2)
+            walls_raw = _read_input(0)
+            passthrough_raw = None
+            doors_raw = _read_input(1)
+            windows_raw = _read_input(2)
+        log_info(f"Input layout: {input_count} inputs ({'4-input' if input_count >= 4 else '3-input legacy'})")
+
+        # Merge: all-in-one (input 0) takes priority; staged fallback (input 1)
+        def _has_data(val) -> bool:
+            if val is None:
+                return False
+            s = str(val).strip()
+            return s not in ("", "null", "None", "[]", "{}")
+
+        effective_walls_raw = walls_raw if _has_data(walls_raw) else passthrough_raw
+        source = "all-in-one" if _has_data(walls_raw) else ("passthrough" if _has_data(passthrough_raw) else "none")
+        log_info(f"Walls source: {source}")
 
         # Parse walls result (required)
-        walls_result = _safe_parse_json(walls_raw, "walls_result_json")
+        walls_result = _safe_parse_json(effective_walls_raw, "walls_result_json")
         if not walls_result:
             error_response = {
                 "status": "error",

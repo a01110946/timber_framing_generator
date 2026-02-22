@@ -63,7 +63,7 @@ def create_walls(
     t.Start()
     try:
         for wall in walls:
-            wall_class = classify_wall(wall.thickness_m)
+            wall_class = classify_wall(wall.thickness_m, wall.is_exterior)
             wall_type = wall_type_map.get(wall_class)
 
             # Create line

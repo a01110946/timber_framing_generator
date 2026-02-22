@@ -175,7 +175,7 @@ if PROJECT_PATH not in sys.path:
     sys.path.insert(0, PROJECT_PATH)
 
 from src.timber_framing_generator.families.resolver import FamilyResolver, ResolutionResult
-from src.timber_framing_generator.families.providers import GitHubProvider
+from src.timber_framing_generator.families.providers import GitHubProvider, LocalFileProvider
 from src.timber_framing_generator.families.cache import FamilyCache
 
 # =============================================================================
@@ -191,6 +191,7 @@ COMPONENT_SUBCATEGORY = "4-Resolve"
 DEFAULT_MANIFEST_URL = (
     "https://raw.githubusercontent.com/a01110946/timber_framing_generator/main/families/manifest.json"
 )
+LOCAL_FAMILIES_DIR = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator\families"
 
 # =============================================================================
 # Logging Utilities
@@ -411,14 +412,22 @@ def main():
 
         # -----------------------------------------------------------------
         # Configure provider
+        # Prefer LocalFileProvider (reads local families/manifest.json directly)
+        # so changes take effect without pushing to GitHub.
+        # Fall back to GitHubProvider if the local directory isn't found.
         # -----------------------------------------------------------------
+        import os as _os
         manifest_url_str = _unwrap_gh_input(manifest_url) if 'manifest_url' in dir() else None
-        if not manifest_url_str or not isinstance(manifest_url_str, str) or not manifest_url_str.strip():
-            manifest_url_str = DEFAULT_MANIFEST_URL
-
-        info_lines.append(f"Manifest URL: {manifest_url_str}")
-
-        provider = GitHubProvider(manifest_url=manifest_url_str)
+        if manifest_url_str and isinstance(manifest_url_str, str) and manifest_url_str.strip():
+            # Explicit override provided by user
+            provider = GitHubProvider(manifest_url=manifest_url_str.strip())
+            info_lines.append(f"Provider: GitHub (explicit URL: {manifest_url_str.strip()})")
+        elif _os.path.isfile(_os.path.join(LOCAL_FAMILIES_DIR, "manifest.json")):
+            provider = LocalFileProvider(LOCAL_FAMILIES_DIR)
+            info_lines.append(f"Provider: LocalFile ({LOCAL_FAMILIES_DIR})")
+        else:
+            provider = GitHubProvider(manifest_url=DEFAULT_MANIFEST_URL)
+            info_lines.append(f"Provider: GitHub (local dir not found, using remote)")
 
         # -----------------------------------------------------------------
         # Configure cache

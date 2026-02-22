@@ -37,6 +37,7 @@ class ConvertedWall:
     thickness_ft: float
     thickness_m: float  # keep original for classification
     original_index: int
+    is_exterior: bool = False
 
 
 @dataclass

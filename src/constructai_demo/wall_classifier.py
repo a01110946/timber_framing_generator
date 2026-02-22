@@ -45,22 +45,27 @@ WALL_CLASS_NAMES = {
 }
 
 
-def classify_wall(thickness_m: float) -> WallClass:
-    """Classify a wall by its thickness.
+def classify_wall(thickness_m: float, is_exterior: bool = False) -> WallClass:
+    """Classify a wall by its thickness and optional exterior flag.
 
     Uses two thresholds to distinguish three wall types:
     - Interior 2x4: thin walls (partitions)
     - Exterior 2x4: medium walls (exterior with stucco/insulation assembly)
     - Exterior 2x6: thick walls (garage front with wider assembly)
 
+    If is_exterior=True and thickness alone would yield INTERIOR_2X4,
+    the result is promoted to EXTERIOR_2X4. This honours Kreo's explicit
+    exterior detection for thin exterior walls.
+
     Args:
         thickness_m: Wall thickness in meters from Kreo detection.
+        is_exterior: Kreo-detected exterior flag (default False).
 
     Returns:
         WallClass enum value.
     """
     if thickness_m < INTERIOR_THRESHOLD_M:
-        return WallClass.INTERIOR_2X4
+        return WallClass.EXTERIOR_2X4 if is_exterior else WallClass.INTERIOR_2X4
     if thickness_m < EXTERIOR_2X6_THRESHOLD_M:
         return WallClass.EXTERIOR_2X4
     return WallClass.EXTERIOR_2X6

@@ -355,16 +355,35 @@ def main():
         else:
             info_lines.append("Mode: ALL-IN-ONE (creating walls fresh)")
 
-        # Detect what the agent explicitly requested
+        # run_all: agent can pass run_all=true to request all element types
+        run_all = False
+        if args_valid:
+            raw_run_all = args_dict.get("run_all")
+            if raw_run_all is not None:
+                if isinstance(raw_run_all, bool):
+                    run_all = raw_run_all
+                else:
+                    run_all = str(raw_run_all).strip().lower() in ("true", "1", "yes")
+
+        # Detect what the agent explicitly requested.
+        # Intent signals (any of these = "I want this element type"):
+        #   - run_all=true
+        #   - Key present in args at all (even if value is empty string)
+        #   - Non-empty doors_json / windows_json value
+        #   - Non-empty door_schedule / window_schedule list
         agent_wants_doors = False
         agent_wants_windows = False
         if args_valid:
             agent_wants_doors = (
-                _has_content(args_dict.get("doors_json"))
+                run_all
+                or "doors_json" in args_dict
+                or _has_content(args_dict.get("doors_json"))
                 or bool(args_dict.get("door_schedule"))
             )
             agent_wants_windows = (
-                _has_content(args_dict.get("windows_json"))
+                run_all
+                or "windows_json" in args_dict
+                or _has_content(args_dict.get("windows_json"))
                 or bool(args_dict.get("window_schedule"))
             )
 
@@ -431,15 +450,23 @@ def main():
             run_doors = agent_wants_doors and bool(doors_json)
             run_windows = agent_wants_windows and bool(windows_json)
         elif args_valid:
-            # All-in-one MCP: run walls + whatever agent requested
-            run_walls = bool(walls_json)
+            # All-in-one MCP: run walls + whatever agent requested.
+            # BUT: if the agent only asked for openings (door/window schedule)
+            # without providing wall geometry in the MCP call itself, assume
+            # they want to add to existing walls and skip wall creation.
+            opening_only_call = (
+                (agent_wants_doors or agent_wants_windows)
+                and walls_source != "mcp"
+            )
+            run_walls = bool(walls_json) and not opening_only_call
             run_doors = agent_wants_doors and bool(doors_json)
             run_windows = agent_wants_windows and bool(windows_json)
         else:
-            # Manual mode (no MCP args): run everything with data
-            run_walls = bool(walls_json)
-            run_doors = bool(doors_json)
-            run_windows = bool(windows_json)
+            # Manual mode (no MCP args): all gates OFF.
+            # Use Boolean Toggles wired directly to each creator for manual runs.
+            run_walls = False
+            run_doors = False
+            run_windows = False
 
         # Build info
         info_lines.append(f"MCP Args: {'valid' if args_valid else args_error}")

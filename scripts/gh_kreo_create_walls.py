@@ -150,6 +150,7 @@ from src.constructai_demo.revit_creator import (
     create_walls as revit_create_walls,
     find_level,
 )
+from src.constructai_demo.wall_classifier import WallClass, classify_wall
 
 # =============================================================================
 # Constants
@@ -382,6 +383,7 @@ def _wall_dicts_to_converted(wall_dicts: list) -> list:
 
         thickness_ft = float(wd.get("wall_thickness", 0.2917))
         thickness_m = float(wd.get("thickness_m", thickness_ft / METERS_TO_FEET))
+        is_exterior = bool(wd.get("is_exterior", False))
 
         cw = ConvertedWall(
             p1=ConvertedPoint(x=p1[0], y=p1[1]),
@@ -390,6 +392,7 @@ def _wall_dicts_to_converted(wall_dicts: list) -> list:
             thickness_ft=thickness_ft,
             thickness_m=thickness_m,
             original_index=i,
+            is_exterior=is_exterior,
         )
         results.append((cw, p1, p2))
 
@@ -532,6 +535,15 @@ def main():
                     "p2_y": round(cw.p2.y, 4),
                 })
 
+        # Recompute classification from the actual ConvertedWall objects
+        # (honours is_exterior flag; do NOT use metadata classification which
+        # was computed upstream before the is_exterior fix)
+        actual_classification = {wc.value: 0 for wc in WallClass}
+        for cw in converted_walls:
+            wc = classify_wall(cw.thickness_m, cw.is_exterior)
+            actual_classification[wc.value] += 1
+        log_info(f"  Actual classification: {actual_classification}")
+
         result = {
             "status": "success",
             "walls_created": len(created_walls),
@@ -541,7 +553,7 @@ def main():
             "max_y_px": max_y_px,
             "wall_height_ft": wall_height_ft,
             "level_name": level.Name,
-            "classification": classification,
+            "classification": actual_classification,
             "ja_enriched": ja_count,
         }
         walls_result_json = json.dumps(result, indent=2)

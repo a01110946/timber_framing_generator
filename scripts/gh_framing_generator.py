@@ -190,6 +190,7 @@ from src.timber_framing_generator.core.json_schemas import (
 from src.timber_framing_generator.panels.panel_decomposer import (
     assign_panel_ids_to_elements,
 )
+from src.timber_framing_generator.config.framing import get_profile_for_wall_type
 
 # =============================================================================
 # Constants
@@ -486,6 +487,33 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config,
     if panels:
         log_lines.append(f"  Panels: {len(panels)}")
 
+    # Derive per-wall profile from wall_type name (e.g. "Generic - 5.5" (2x6 EXT)" -> "2x6").
+    # Build a shallow copy of config so global config is never mutated.
+    wall_type_name = wall_data_dict.get("wall_type", "") if wall_data_dict else ""
+    wall_config = dict(config)
+    # Only inject per-wall overrides if the config doesn't already have non-empty profile_overrides
+    existing_overrides = wall_config.get("profile_overrides") or {}
+    if wall_type_name and not existing_overrides:
+        try:
+            profile = get_profile_for_wall_type(wall_type_name)
+            profile_name = profile.name  # e.g. "2x4" or "2x6"
+            # Apply to all stud-like and plate element types so dimensions match the wall
+            wall_config["profile_overrides"] = {
+                "stud": profile_name,
+                "king_stud": profile_name,
+                "trimmer": profile_name,
+                "header_cripple": profile_name,
+                "sill_cripple": profile_name,
+                "bottom_plate": profile_name,
+                "top_plate": profile_name,
+                "row_blocking": profile_name,
+            }
+            log_lines.append(f"  Wall type '{wall_type_name}' -> profile '{profile_name}'")
+        except KeyError:
+            log_lines.append(f"  Wall type '{wall_type_name}' -> profile unknown, using defaults")
+    else:
+        log_lines.append(f"  Wall type '{wall_type_name or '(none)'}' | existing overrides={bool(existing_overrides)}")
+
     # Capture stdout to include debug output
     old_stdout = sys.stdout
     captured_output = StringIO()
@@ -495,7 +523,7 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config,
         framing_elements = strategy.generate_framing(
             wall_data=wall_data_dict,
             cell_data=cell_data_dict,
-            config=config
+            config=wall_config
         )
 
         # Extract wall direction from wall_data_dict for geometry reconstruction

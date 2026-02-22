@@ -28,6 +28,7 @@ from src.timber_framing_generator.families.manifest import (
     FamilyEntry,
     get_required_profiles,
     get_families_for_elements,
+    get_families_for_material,
     parse_manifest,
 )
 from src.timber_framing_generator.families.cache import FamilyCache
@@ -137,6 +138,23 @@ class FamilyResolver:
             result.log.append(f"Invalid manifest: {e}")
             return None
 
+    def _extract_material_system(self, framing_json: Optional[str]) -> str:
+        """Extract the material_system field from framing JSON top level.
+
+        Args:
+            framing_json: JSON string from framing generator
+
+        Returns:
+            Material system string (e.g. "timber", "cfs"), or "" if absent
+        """
+        if not framing_json:
+            return ""
+        try:
+            data = json.loads(framing_json)
+            return str(data.get("material_system", "")).strip().lower()
+        except (json.JSONDecodeError, AttributeError):
+            return ""
+
     def _extract_needed_profiles(
         self, framing_json: Optional[str]
     ) -> List[str]:
@@ -190,17 +208,47 @@ class FamilyResolver:
             return self._resolve_cache_only(result, framing_json)
 
         # Step 2: Determine needed families
+        material_system = self._extract_material_system(framing_json)
         needed_profiles = self._extract_needed_profiles(framing_json)
+
         if needed_profiles:
+            # Profile-matched families (may miss families whose types share names
+            # with another family — e.g. Timber_Framing "2x4" vs Timber_Stud "2x4")
             needed_families = get_families_for_elements(manifest, needed_profiles)
+            # Also add material-system families whose types overlap with the
+            # current job's profiles — ensures Timber_Framing is included even
+            # when "2x4" maps to Timber_Stud in the profile map (last-wins).
+            # Families with NO overlapping types (e.g. LVL_Beam when job has
+            # only studs/plates) are intentionally excluded to avoid failed
+            # downloads for placeholder .rfa files.
+            if material_system:
+                for key, entry in get_families_for_material(manifest, material_system).items():
+                    if key not in needed_families:
+                        if any(t in needed_profiles for t in entry.types):
+                            needed_families[key] = entry
             result.log.append(
-                f"Framing uses {len(needed_profiles)} profiles, "
+                f"Framing uses {len(needed_profiles)} profiles "
+                f"(material_system={material_system or 'unknown'}), "
                 f"requiring {len(needed_families)} families"
             )
-        else:
-            needed_families = manifest.families
+        elif material_system:
+            # framing_json present but has no elements yet — load only the
+            # correct material system instead of everything in the manifest
+            needed_families = get_families_for_material(manifest, material_system)
             result.log.append(
-                f"No framing_json provided — resolving all {len(needed_families)} families"
+                f"No profiles in framing_json — loading all {len(needed_families)} "
+                f"{material_system} families"
+            )
+        else:
+            # No framing_json and no material hint — load all framing families
+            # (doors/windows excluded by domain check in _resolve_single_family)
+            needed_families = {
+                k: v for k, v in manifest.families.items()
+                if v.domain == "framing"
+            }
+            result.log.append(
+                f"No framing_json or material hint — resolving all "
+                f"{len(needed_families)} framing families"
             )
 
         # Step 3: Check Revit for already-loaded families
@@ -223,12 +271,14 @@ class FamilyResolver:
                 family_key, family_entry, doc, loaded_in_revit, result
             )
 
-        # Step 7: Build profile -> type mapping from resolved families
-        profile_map = get_required_profiles(manifest)
-        for profile_name, family_key in profile_map.items():
-            if family_key in result.already_loaded or family_key in result.loaded or family_key in result.cached:
-                # Map profile name to itself (the Revit type name)
-                result.resolved[profile_name] = profile_name
+        # Step 7: Build profile -> type mapping from all available families.
+        # Iterate manifest families directly instead of using get_required_profiles()
+        # (which is a last-wins dict and would lose families with overlapping type names).
+        available = set(result.already_loaded) | set(result.loaded) | set(result.cached)
+        for family_key, family_entry in manifest.families.items():
+            if family_key in available:
+                for type_name in family_entry.types:
+                    result.resolved[type_name] = type_name
 
         # Determine final status
         if not result.missing:
@@ -380,18 +430,18 @@ class FamilyResolver:
             return False
 
         # Activate all types defined in manifest
-        all_activated = True
+        any_activated = False
         for type_name in family_entry.types:
             symbol = activate_family_type(doc, family, type_name)
             if symbol is None:
                 result.log.append(
                     f"  {family_key}: type '{type_name}' activation FAILED"
                 )
-                all_activated = False
             else:
                 result.log.append(f"  {family_key}: type '{type_name}' activated")
+                any_activated = True
 
-        return all_activated
+        return any_activated
 
     def _resolve_cache_only(
         self,

@@ -996,19 +996,31 @@ if run and elements_json:
                     skipped_count += 1
                     continue
 
-                # Match to Revit type
-                matched_type, match_quality = find_matching_revit_type(
-                    profile_name, type_list, user_type_mapping,
-                    debug_first_n=1 if debug_type_match else 0
-                )
+                # If type_mapping provides an authoritative override for this profile,
+                # use it directly — no need to search the connected type lists.
+                # This allows bypassing revit_column_types/revit_beam_types entirely.
+                direct_type_name = None
+                if user_type_mapping and profile_name in user_type_mapping:
+                    direct_type_name = user_type_mapping[profile_name]
 
-                if matched_type is None:
-                    unmapped.append(f"{classification.title()}: {element.id} ({profile_name})")
-                    skipped_count += 1
-                    continue
+                if direct_type_name:
+                    revit_type_name = direct_type_name
+                    match_quality = 'user_mapping'
+                    type_match_stats['user_mapping'] = type_match_stats.get('user_mapping', 0) + 1
+                else:
+                    # Match to Revit type via type list
+                    matched_type, match_quality = find_matching_revit_type(
+                        profile_name, type_list, user_type_mapping,
+                        debug_first_n=1 if debug_type_match else 0
+                    )
 
-                if match_quality:
-                    type_match_stats[match_quality] = type_match_stats.get(match_quality, 0) + 1
+                    if matched_type is None:
+                        unmapped.append(f"{classification.title()}: {element.id} ({profile_name})")
+                        skipped_count += 1
+                        continue
+
+                    if match_quality:
+                        type_match_stats[match_quality] = type_match_stats.get(match_quality, 0) + 1
 
                 # =========================================================
                 # Compute CSR angle for CFS elements
@@ -1165,8 +1177,9 @@ if run and elements_json:
                     csr_stats[elem_type] = {}
                 csr_stats[elem_type][csr_angle] = csr_stats[elem_type].get(csr_angle, 0) + 1
 
-                # Get Revit type name for JSON output
-                revit_type_name = get_type_name(matched_type)
+                # Get Revit type name for JSON output (direct_type_name already set above)
+                if not direct_type_name:
+                    revit_type_name = get_type_name(matched_type)
 
                 # Determine geometry index based on classification (compute BEFORE debug tracking)
                 if classification == "column":

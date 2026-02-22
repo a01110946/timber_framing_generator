@@ -207,6 +207,9 @@ class FamilyResolver:
             result.log.append("Falling back to offline/cache-only mode")
             return self._resolve_cache_only(result, framing_json)
 
+        # Persist manifest so enrich_framing_json() can build profile_map
+        self._manifest = manifest
+
         # Step 2: Determine needed families
         material_system = self._extract_material_system(framing_json)
         needed_profiles = self._extract_needed_profiles(framing_json)
@@ -311,10 +314,16 @@ class FamilyResolver:
             loaded_in_revit: Already-loaded families from Revit
             result: ResolutionResult to update
         """
-        # Check if already loaded in Revit
-        if family_key in loaded_in_revit:
+        # Check if already loaded in Revit.
+        # loaded_in_revit is keyed by Revit family name (e.g. "TFG_Timber_Framing"),
+        # which comes from the .rfa filename — NOT the manifest key ("Timber_Framing").
+        import os as _os
+        revit_family_name = _os.path.splitext(_os.path.basename(family_entry.file))[0]
+        if revit_family_name in loaded_in_revit or family_key in loaded_in_revit:
             result.already_loaded.append(family_key)
-            result.log.append(f"  {family_key}: already loaded in Revit")
+            result.log.append(
+                f"  {family_key}: already loaded in Revit (as '{revit_family_name}')"
+            )
             return
 
         # Check local cache
@@ -518,7 +527,15 @@ class FamilyResolver:
 
             if profile_name in result.resolved:
                 family_key = profile_map.get(profile_name, "")
-                element["revit_family"] = family_key
+                # Use the actual Revit family name (derived from .rfa filename),
+                # not the manifest key — the baker looks up families by Revit name.
+                if family_key and manifest and family_key in manifest.families:
+                    import os as _os
+                    entry = manifest.families[family_key]
+                    revit_name = _os.path.splitext(_os.path.basename(entry.file))[0]
+                    element["revit_family"] = revit_name
+                else:
+                    element["revit_family"] = family_key
                 element["revit_type"] = profile_name
 
         return json.dumps(data, indent=2)

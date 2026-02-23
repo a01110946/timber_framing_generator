@@ -190,10 +190,81 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
 
         # 5. Get openings.
         openings_data: List[Dict[str, Union[str, float]]] = []
-        print(f"Wall {revit_wall.Id} has {len(revit_wall.FindInserts(True, False, True, True))} openings")
-        insert_ids = revit_wall.FindInserts(True, False, True, True)
-        print(f"Wall {revit_wall.Id} has {len(insert_ids)} inserts")
-        for insert_id in insert_ids:
+
+        # Helper: version-safe ElementId -> int
+        def _eid_int_local(eid):
+            if hasattr(eid, "Value"):
+                return int(eid.Value)
+            return int(eid.IntegerValue)
+
+        _wall_id_int = _eid_int_local(revit_wall.Id)
+
+        # --- DIAGNOSTIC BLOCK ---
+        # Both old and new FindInserts signatures side-by-side so we can see
+        # what each variant returns in the Rhino console.
+        _fi_old = revit_wall.FindInserts(True, False, True, True)
+        _fi_new = revit_wall.FindInserts(False, False, False, False)
+        print(f"[DBG] Wall {_wall_id_int}:")
+        print(f"  FindInserts(T,F,T,T) = {len(_fi_old)}  ids={[_eid_int_local(x) for x in _fi_old]}")
+        print(f"  FindInserts(F,F,F,F) = {len(_fi_new)}  ids={[_eid_int_local(x) for x in _fi_new]}")
+
+        # Total doors and windows in the document — collect once, reuse below
+        _all_doors = []
+        _all_wins = []
+        try:
+            _all_doors = list(
+                DB.FilteredElementCollector(doc)
+                .OfCategory(DB.BuiltInCategory.OST_Doors)
+                .OfClass(DB.FamilyInstance)
+                .ToElements()
+            )
+            _all_wins = list(
+                DB.FilteredElementCollector(doc)
+                .OfCategory(DB.BuiltInCategory.OST_Windows)
+                .OfClass(DB.FamilyInstance)
+                .ToElements()
+            )
+            print(f"  Doc totals: {len(_all_doors)} doors, {len(_all_wins)} windows")
+
+            # For every door/window in the doc print: its id, host id, and
+            # whether it matches this wall. This is the key diagnostic.
+            for _e in _all_doors + _all_wins:
+                try:
+                    _cat = _e.Category.Name if _e.Category else "?"
+                    _eid = _eid_int_local(_e.Id)
+                    _host_obj = getattr(_e, "Host", None)
+                    _host_id = _eid_int_local(_host_obj.Id) if _host_obj is not None else None
+                    _match = (_host_id == _wall_id_int)
+                    print(f"    {_cat} id={_eid}  host_id={_host_id}  wall_id={_wall_id_int}  match={_match}")
+                except Exception as _pe:
+                    print(f"    ERROR inspecting element: {_pe}")
+        except Exception as _de:
+            print(f"  Doc door/window scan ERROR: {_de}")
+        # --- END DIAGNOSTIC BLOCK ---
+
+        # Build final insert list: FindInserts(F,F,F,F) + Host.Id scan merged
+        _seen_int_ids = set()
+        _all_insert_ids = []
+        for _id in _fi_new:
+            _iv = _eid_int_local(_id)
+            if _iv not in _seen_int_ids:
+                _seen_int_ids.add(_iv)
+                _all_insert_ids.append(_id)
+
+        for _elem in _all_doors + _all_wins:
+            try:
+                _host_obj = getattr(_elem, "Host", None)
+                if _host_obj is not None:
+                    if _eid_int_local(_host_obj.Id) == _wall_id_int:
+                        _ev = _eid_int_local(_elem.Id)
+                        if _ev not in _seen_int_ids:
+                            _seen_int_ids.add(_ev)
+                            _all_insert_ids.append(_elem.Id)
+            except Exception:
+                pass
+
+        print(f"  Total inserts to process for wall {_wall_id_int}: {len(_all_insert_ids)}")
+        for insert_id in _all_insert_ids:
             insert_element = revit_wall.Document.GetElement(insert_id)
             if isinstance(insert_element, DB.FamilyInstance):
                 if not (insert_element.Category and insert_element.Category.Name):
@@ -332,26 +403,23 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                             # Get the underlying Line
                             line = wall_base_curve_rhino.Line
 
-                            # Use the Line to find the closest point
+                            # ClosestParameter on a Line returns arc-length in feet
+                            # (same coordinate system as LineCurve domain [0, L]).
                             t = line.ClosestParameter(opening_location_point_rhino)
 
-                            # Calculate the relative parameter on the curve (0-1)
-                            t_normalized = t / wall_base_curve_rhino.GetLength()
-
                             success = True
-                            t = t_normalized
                         else:
                             # Another approach: convert to NurbsCurve which should have ClosestPoint
                             nurbs_curve = wall_base_curve_rhino.ToNurbsCurve()
                             success, t = nurbs_curve.ClosestPoint(opening_location_point_rhino)
 
-                    print(f"Opening {insert_id} has t (normalized 0-1): {t}")
+                    print(f"Opening {insert_id} has t (arc-length ft): {t}")
 
-                    # BUG FIX: t is a normalized parameter (0-1), not an absolute coordinate
-                    # We need to convert it to absolute distance along the wall
-                    # Use curve_length helper to handle LineCurve (no GetLength method)
+                    # t is the arc-length parameter from Curve.ClosestPoint().
+                    # For rg.LineCurve(Point3d, Point3d), domain = [0, wall_length_ft],
+                    # so t is ALREADY in feet — do NOT multiply by wall_curve_length.
                     wall_curve_length = curve_length(wall_base_curve_rhino)
-                    opening_center_u = t * wall_curve_length  # Convert normalized to absolute
+                    opening_center_u = t  # t is already arc length in feet
                     print(f"Opening {insert_id} - wall_curve_length: {wall_curve_length}, opening_center_u: {opening_center_u}")
 
                     rough_width_half = opening_width_value / 2.0
@@ -369,12 +437,21 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                         "base_elevation_relative_to_wall_base": sill_height_value,
                     }
 
-                    # NEW CODE: Validate opening is within wall bounds
+                    # Clamp opening to wall bounds rather than rejecting it.
+                    # Doors/windows near wall ends have center_u within the wall,
+                    # but start_u = center_u - half_width can be slightly < 0.
                     end_u_coordinate = start_u_coordinate + opening_width_value
-                    if start_u_coordinate >= 0 and end_u_coordinate <= wall_curve_length:
+                    start_u_clamped = max(0.0, start_u_coordinate)
+                    end_u_clamped = min(wall_curve_length, end_u_coordinate)
+
+                    if end_u_clamped > start_u_clamped + 0.01:
+                        if start_u_clamped != start_u_coordinate:
+                            print(f"Note: Opening {insert_id} u_start clamped "
+                                  f"{start_u_coordinate:.3f} -> {start_u_clamped:.3f}")
+                        opening_data["start_u_coordinate"] = start_u_clamped
                         openings_data.append(opening_data)
                     else:
-                        print(f"WARNING: Skipping opening {insert_id} - outside wall bounds "
+                        print(f"WARNING: Skipping opening {insert_id} - entirely outside wall "
                               f"(u={start_u_coordinate:.2f} to {end_u_coordinate:.2f}, "
                               f"wall_length={wall_curve_length:.2f})")
                 else:

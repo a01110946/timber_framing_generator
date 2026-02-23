@@ -538,10 +538,10 @@ def _query_all_walls_from_revit() -> tuple:
                     "curve_end": curve_end,
                     "base_level_id": _eid_int_local(base_level.Id) if base_level else None,
                     "top_level_id": _eid_int_local(top_level.Id) if top_level else None,
-                    "openings": [
-                        {k: v for k, v in op.items() if k != "opening_location_point"}
-                        for op in wall_data.get("openings", [])
-                    ],
+                    "openings": _translate_openings(
+                        wall_data.get("openings", []),
+                        float(wall_data.get("wall_length", 0)),
+                    ),
                     "is_flipped": bool(wall_data.get("is_flipped", False)),
                     "wall_type": str(wall_data.get("wall_type", "")),
                     "metadata": wall_data.get("metadata", {}),
@@ -559,6 +559,53 @@ def _query_all_walls_from_revit() -> tuple:
 
     except Exception as e:
         return None, "Revit fallback failed: %s" % str(e)
+
+
+def _translate_openings(raw_openings: list, wall_length: float) -> list:
+    """Translate raw extractor opening dicts to framing-pipeline schema keys.
+
+    extract_wall_data_from_revit() uses different key names than the
+    WallData schema expected by the framing pipeline.  This converts:
+        start_u_coordinate -> u_start
+        rough_width        -> width  (and computes u_end)
+        rough_height       -> height
+        base_elevation_relative_to_wall_base -> sill_height
+
+    Args:
+        raw_openings: List of opening dicts from extract_wall_data_from_revit.
+        wall_length: Wall length in feet (for clamping u_end).
+
+    Returns:
+        List of opening dicts in WallData schema format.
+    """
+    translated = []
+    for op in raw_openings:
+        if "opening_location_point" in op:
+            continue  # Rhino geometry object — skip
+        u_start = float(op.get("start_u_coordinate", op.get("u_start", 0)))
+        width = float(op.get("rough_width", op.get("width", 0)))
+        height = float(op.get("rough_height", op.get("height", 0)))
+        u_end = float(op.get("u_end", u_start + width))
+        sill = float(op.get("base_elevation_relative_to_wall_base",
+                             op.get("sill_height", 0)))
+        # Clamp to wall bounds
+        u_start = max(0.0, u_start)
+        if wall_length > 0:
+            u_end = min(wall_length, u_end)
+        if u_end - u_start < 0.01:
+            continue
+        translated.append({
+            "id": str(op.get("id", op.get("opening_type", ""))),
+            "opening_type": op.get("opening_type", "door"),
+            "u_start": round(u_start, 4),
+            "u_end": round(u_end, 4),
+            "v_start": round(sill, 4),
+            "v_end": round(sill + height, 4),
+            "width": round(width, 4),
+            "height": round(height, 4),
+            "sill_height": round(sill, 4),
+        })
+    return translated
 
 
 def _query_walls_by_id(wall_ids: list) -> tuple:
@@ -658,10 +705,10 @@ def _query_walls_by_id(wall_ids: list) -> tuple:
                     "curve_end": curve_end,
                     "base_level_id": _eid_int_local(base_level.Id) if base_level else None,
                     "top_level_id": _eid_int_local(top_level.Id) if top_level else None,
-                    "openings": [
-                        {k: v for k, v in op.items() if k != "opening_location_point"}
-                        for op in wall_data.get("openings", [])
-                    ],
+                    "openings": _translate_openings(
+                        wall_data.get("openings", []),
+                        float(wall_data.get("wall_length", 0)),
+                    ),
                     "is_flipped": bool(wall_data.get("is_flipped", False)),
                     "wall_type": str(wall_data.get("wall_type", "")),
                     "metadata": wall_data.get("metadata", {}),

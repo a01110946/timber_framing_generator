@@ -334,10 +334,11 @@ def convert_wall_data_to_schema(wall_data, wall_id):
         height = float(opening.get('rough_height', opening.get('height', 0)))
         u_end = float(opening.get('u_end', u_start + width))
 
-        # NEW CODE: Validate opening is within wall bounds
-        if u_start < 0 or u_end > wall_length:
-            print(f"WARNING: Skipping opening - outside wall bounds "
-                  f"(u={u_start:.2f} to {u_end:.2f}, wall_length={wall_length:.2f})")
+        # Clamp opening to wall bounds (doors near wall ends may slightly overhang).
+        u_start = max(0.0, u_start)
+        u_end = min(wall_length, u_end)
+        if u_end - u_start < 0.01:
+            print(f"Note: Opening entirely outside wall bounds after clamping, skipping")
             continue
 
         sill_height = opening.get('base_elevation_relative_to_wall_base',

@@ -129,9 +129,12 @@ Technical Details:
     - bake defaults True (demo purpose: see results in Revit)
     - sheathing and assemblies default False (opt-in for heavier ops)
 
-walls_json Resolution Order (three-tier):
+walls_json Resolution Order (four-tier):
     1. MCP args dict ``walls_json`` key -- agent passes analyze_walls output directly
        (preferred: no canvas Data Recorder dependency, always fresh)
+    1.5 MCP args dict ``wall_ids`` key -- agent passes ids from create_walls response
+       (preferred when analyze_walls was not called; queries walls by ElementId with
+       full opening data extraction, so framing correctly skips doors/windows)
     2. GH input 1 (walls_json panel/Data Recorder) -- legacy canvas wiring
     3. Inline Revit fallback -- queries all walls from current Revit document
        (used when wall analyzer run=False and no cached data; requires Revit)
@@ -558,6 +561,129 @@ def _query_all_walls_from_revit() -> tuple:
         return None, "Revit fallback failed: %s" % str(e)
 
 
+def _query_walls_by_id(wall_ids: list) -> tuple:
+    """Tier-1.5: Query specific walls from Revit by ElementId.
+
+    Called when wall_ids are provided in MCP args (e.g., from a prior
+    create_walls call). Extracts full wall data including openings so that
+    the framing generator can skip doors/windows correctly.
+
+    This bypasses the need for a separate analyze_walls call — the agent
+    passes the wall_ids it received from create_walls directly.
+
+    Args:
+        wall_ids: List of Revit ElementId integers from create_walls response.
+
+    Returns:
+        tuple: (walls_json_str or None, info_message)
+    """
+    if not wall_ids:
+        return None, "wall_ids Tier-1.5: empty list"
+
+    try:
+        import clr as _clr
+        _clr.AddReference("RhinoInside.Revit")
+        _clr.AddReference("RevitAPI")
+        from RhinoInside.Revit import Revit
+        doc = Revit.ActiveDBDocument
+        if doc is None:
+            return None, "wall_ids Tier-1.5: no active Revit document"
+
+        from Autodesk.Revit.DB import ElementId as _ElemId, Wall as _Wall
+
+        PROJECT_PATH = r"C:\Users\Fernando Maytorena\OneDrive\Documentos\GitHub\timber_framing_generator"
+        if PROJECT_PATH not in sys.path:
+            sys.path.insert(0, PROJECT_PATH)
+
+        from src.timber_framing_generator.wall_data.revit_data_extractor import (
+            extract_wall_data_from_revit,
+        )
+
+        walls_out = []
+        skipped = 0
+        for raw_id in wall_ids:
+            try:
+                eid = _ElemId(int(raw_id))
+                elem = doc.GetElement(eid)
+                if elem is None or not isinstance(elem, _Wall):
+                    skipped += 1
+                    continue
+
+                wall_data = extract_wall_data_from_revit(elem, doc)
+                if wall_data is None:
+                    skipped += 1
+                    continue
+
+                wall_id_str = str(raw_id)
+                base_plane = wall_data.get("base_plane")
+                if base_plane:
+                    plane_dict = {
+                        "origin": {"x": base_plane.Origin.X, "y": base_plane.Origin.Y, "z": base_plane.Origin.Z},
+                        "x_axis": {"x": base_plane.XAxis.X, "y": base_plane.XAxis.Y, "z": base_plane.XAxis.Z},
+                        "y_axis": {"x": base_plane.YAxis.X, "y": base_plane.YAxis.Y, "z": base_plane.YAxis.Z},
+                        "z_axis": {"x": base_plane.ZAxis.X, "y": base_plane.ZAxis.Y, "z": base_plane.ZAxis.Z},
+                    }
+                else:
+                    plane_dict = {
+                        "origin": {"x": 0, "y": 0, "z": 0},
+                        "x_axis": {"x": 1, "y": 0, "z": 0},
+                        "y_axis": {"x": 0, "y": 1, "z": 0},
+                        "z_axis": {"x": 0, "y": 0, "z": 1},
+                    }
+
+                en = wall_data.get("exterior_normal")
+                if isinstance(en, dict):
+                    plane_dict["z_axis"] = {"x": float(en.get("x", 0)), "y": float(en.get("y", 0)), "z": float(en.get("z", 0))}
+
+                base_curve = wall_data.get("wall_base_curve")
+                curve_start = {"x": base_curve.PointAtStart.X, "y": base_curve.PointAtStart.Y, "z": base_curve.PointAtStart.Z} if base_curve else {"x": 0, "y": 0, "z": 0}
+                curve_end = {"x": base_curve.PointAtEnd.X, "y": base_curve.PointAtEnd.Y, "z": base_curve.PointAtEnd.Z} if base_curve else {"x": 1, "y": 0, "z": 0}
+
+                base_level = wall_data.get("base_level")
+                top_level = wall_data.get("top_level")
+
+                def _eid_int_local(eid_obj):
+                    if hasattr(eid_obj, "Value"):
+                        return int(eid_obj.Value)
+                    return int(eid_obj.IntegerValue)
+
+                wall_dict = {
+                    "wall_id": wall_id_str,
+                    "wall_length": float(wall_data.get("wall_length", 0)),
+                    "wall_height": float(wall_data.get("wall_height", 0)),
+                    "wall_thickness": float(wall_data.get("wall_thickness", 0)),
+                    "base_elevation": float(wall_data.get("base_elevation", 0)),
+                    "base_plane": plane_dict,
+                    "curve_start": curve_start,
+                    "curve_end": curve_end,
+                    "base_level_id": _eid_int_local(base_level.Id) if base_level else None,
+                    "top_level_id": _eid_int_local(top_level.Id) if top_level else None,
+                    "openings": [
+                        {k: v for k, v in op.items() if k != "opening_location_point"}
+                        for op in wall_data.get("openings", [])
+                    ],
+                    "is_flipped": bool(wall_data.get("is_flipped", False)),
+                    "wall_type": str(wall_data.get("wall_type", "")),
+                    "metadata": wall_data.get("metadata", {}),
+                }
+                walls_out.append(wall_dict)
+            except Exception as wall_err:
+                log_info("wall_ids Tier-1.5: skipped id %s: %s" % (raw_id, wall_err))
+                skipped += 1
+                continue
+
+        if not walls_out:
+            return None, "wall_ids Tier-1.5: all %d walls failed extraction" % len(wall_ids)
+
+        walls_json_str = json.dumps(walls_out)
+        return walls_json_str, "wall_ids Tier-1.5: queried %d/%d walls (skipped %d)" % (
+            len(walls_out), len(wall_ids), skipped
+        )
+
+    except Exception as e:
+        return None, "wall_ids Tier-1.5 failed: %s" % str(e)
+
+
 def _build_config(args: dict, stud_space_ft: float, stage: str) -> dict:
     """Build a config dict from MCP args for downstream pipeline components.
 
@@ -648,6 +774,25 @@ def main():
             walls_source = "mcp_args"
             info_lines.append("walls_json: from MCP args (tier 1)")
 
+        # Tier 1.5: wall_ids key in MCP args (agent passes ids from create_walls)
+        # Preferred over tier 2/3: ensures openings are included from specific walls
+        if walls_source == "none":
+            raw_wall_ids = args_dict.get("wall_ids")
+            if raw_wall_ids:
+                # Accept JSON string or list
+                if isinstance(raw_wall_ids, str):
+                    try:
+                        raw_wall_ids = json.loads(raw_wall_ids)
+                    except Exception:
+                        raw_wall_ids = []
+                if isinstance(raw_wall_ids, list) and raw_wall_ids:
+                    ids_walls_json, ids_msg = _query_walls_by_id(raw_wall_ids)
+                    info_lines.append(ids_msg)
+                    if ids_walls_json:
+                        walls_json_raw = ids_walls_json
+                        walls_source = "wall_ids"
+                        log_info("walls_json: %s" % ids_msg)
+
         # Tier 2: GH input 1 (Wall Analyzer / Data Recorder on canvas)
         walls_valid, walls_error = _validate_walls_json(walls_json_raw)
         if walls_valid and walls_source == "none":
@@ -666,8 +811,8 @@ def main():
                     walls_source = "revit_fallback"
                     log_info("walls_json: %s" % revit_msg)
 
-        # Re-validate after tier-1 (from MCP args) assignment
-        if walls_source == "mcp_args":
+        # Re-validate after tier-1 / tier-1.5 (from MCP args) assignment
+        if walls_source in ("mcp_args", "wall_ids"):
             walls_valid, walls_error = _validate_walls_json(walls_json_raw)
 
         if not walls_valid:

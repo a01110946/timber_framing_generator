@@ -173,6 +173,9 @@ class AssemblyViewConfig:
     include_sheet: bool = False
     titleblock_name: str = ""
 
+    # R8: View scale (Revit scale denominator: 96 = 1/8"=1'-0", 48 = 1/4", 24 = 1/2")
+    view_scale: int = 96
+
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]] = None) -> "AssemblyViewConfig":
         """Create config from a dictionary, using defaults for missing keys.
@@ -215,6 +218,8 @@ class AssemblyViewConfig:
             # Sheet
             include_sheet=data.get("include_sheet", False),
             titleblock_name=data.get("titleblock_name", ""),
+            # View scale
+            view_scale=int(data.get("view_scale", 96)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -243,6 +248,7 @@ class AssemblyViewConfig:
             "hide_section_markers": self.hide_section_markers,
             "include_sheet": self.include_sheet,
             "titleblock_name": self.titleblock_name,
+            "view_scale": self.view_scale,
         }
 
 
@@ -364,6 +370,23 @@ def _configure_schedule_fields(
 # View Settings
 # =============================================================================
 
+def _apply_view_scale(view: Any, scale: int) -> None:
+    """Apply a view scale to a graphical view (3D or elevation).
+
+    Silently skips if scale is invalid or the view does not support scaling.
+
+    Args:
+        view: Revit View object (View3D or ViewSection)
+        scale: Revit scale denominator (96 = 1/8"=1'-0", 48 = 1/4", 24 = 1/2")
+    """
+    if not REVIT_AVAILABLE or view is None or scale <= 0:
+        return
+    try:
+        view.Scale = scale
+    except Exception as e:
+        print("[assembly_views] Could not set Scale %d: %s" % (scale, e))
+
+
 def _apply_view_settings(
     view: Any,
     detail_level: str,
@@ -453,6 +476,7 @@ def create_assembly_views(
         view = _create_3d_orthographic(doc, assembly_id)
         if view:
             _apply_view_settings(view, config.detail_level, config.display_style)
+            _apply_view_scale(view, config.view_scale)
             created.append(CreatedViewInfo("3D Orthographic", view.Id, "3d"))
 
     # --- 2-7. Elevation Views ---
@@ -475,6 +499,7 @@ def create_assembly_views(
         view = _create_detail_section(doc, assembly_id, orientation, label)
         if view:
             _apply_view_settings(view, config.detail_level, config.display_style)
+            _apply_view_scale(view, config.view_scale)
             if config.hide_section_markers:
                 _hide_section_markers(view)
             created.append(CreatedViewInfo(label, view.Id, "elevation"))

@@ -64,22 +64,33 @@ def _eid_int(element_id: Any) -> int:
 # =============================================================================
 
 # Viewport spacing (in feet, for ARCH D 24"x36" = 2.0' x 3.0' sheet)
-VIEWPORT_H_SPACING = 0.25  # Horizontal gap between viewports
-VIEWPORT_V_SPACING = 0.25  # Vertical gap between rows
+VIEWPORT_H_SPACING = 0.20  # Horizontal gap between viewports
+VIEWPORT_V_SPACING = 0.15  # Vertical gap between rows
 
 # Starting position: near top-left of ARCH D sheet (0,0 = lower-left)
-# Sheet height ~2.0 ft; start 0.3 ft from top = Y=1.7
-LAYOUT_START_X = 0.2
-LAYOUT_START_Y = 1.7
+# Sheet height 2.0'; graphical view half-height ~0.28'; start at 1.55
+# so view top edge = 1.55 + 0.28 = 1.83 < 2.0 (stays within sheet)
+LAYOUT_START_X = 0.15
+LAYOUT_START_Y = 1.55
 
 # Max viewports per row before wrapping
 MAX_PER_ROW = 3
 
 # Approximate viewport sizes for layout calculation
-APPROX_VIEW_WIDTH = 0.9
-APPROX_VIEW_HEIGHT = 0.7
-APPROX_SCHEDULE_WIDTH = 0.9
-APPROX_SCHEDULE_HEIGHT = 0.5
+# These only affect row-wrapping decisions, NOT actual viewport size
+APPROX_VIEW_WIDTH = 0.75
+APPROX_VIEW_HEIGHT = 0.55
+APPROX_SCHEDULE_WIDTH = 0.90
+APPROX_SCHEDULE_HEIGHT = 0.50
+
+# Fixed Y position for schedule/takeoff views (center of schedule row)
+# Anchored near bottom of sheet regardless of how many graphical rows exist.
+# At Y=0.30 center: top edge ~0.55, bottom edge ~0.05 (within 0 to 2.0 sheet)
+LAYOUT_SCHEDULE_Y = 0.30
+
+# Minimum Y for graphical view rows — stop adding rows if Y would drop below
+# this to avoid overlapping the schedule area.
+LAYOUT_MIN_GRAPHICAL_Y = 0.65
 
 
 # =============================================================================
@@ -173,26 +184,33 @@ def _calculate_viewport_layout(
 
     positions: List[Tuple[Any, float, float, str]] = []
 
-    # Graphical views in rows of MAX_PER_ROW
+    # Graphical views in rows of MAX_PER_ROW.
+    # Stop adding rows if Y would drop into the schedule area (LAYOUT_MIN_GRAPHICAL_Y).
     x = LAYOUT_START_X
     y = LAYOUT_START_Y
 
     for i, vi in enumerate(graphical_views):
         if i > 0 and i % MAX_PER_ROW == 0:
+            new_y = y - (APPROX_VIEW_HEIGHT + VIEWPORT_V_SPACING)
+            if new_y < LAYOUT_MIN_GRAPHICAL_Y:
+                # No room for another graphical row — skip remaining views
+                print(
+                    "[assembly_sheets] Layout: stopping at %d graphical views "
+                    "(Y=%.2f would be below min %.2f)" % (i, new_y, LAYOUT_MIN_GRAPHICAL_Y)
+                )
+                break
             x = LAYOUT_START_X
-            y -= (APPROX_VIEW_HEIGHT + VIEWPORT_V_SPACING)
+            y = new_y
 
         positions.append((vi.view_id, x, y, "graphical"))
         x += APPROX_VIEW_WIDTH + VIEWPORT_H_SPACING
 
-    # Schedule views in next row
+    # Schedule/takeoff views at a fixed bottom position (LAYOUT_SCHEDULE_Y).
+    # This is independent of how many graphical rows were placed above.
     if schedule_views:
-        if graphical_views:
-            y -= (APPROX_VIEW_HEIGHT + VIEWPORT_V_SPACING)
         x = LAYOUT_START_X
-
         for vi in schedule_views:
-            positions.append((vi.view_id, x, y, vi.view_type))
+            positions.append((vi.view_id, x, LAYOUT_SCHEDULE_Y, vi.view_type))
             x += APPROX_SCHEDULE_WIDTH + VIEWPORT_H_SPACING
 
     return positions

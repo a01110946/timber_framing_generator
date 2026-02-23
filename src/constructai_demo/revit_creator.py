@@ -23,6 +23,107 @@ from .wall_classifier import (
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Family name aliases
+# ---------------------------------------------------------------------------
+
+# Maps common shorthand names (lowercased) to actual Revit family names.
+# Used to handle cases where the agent sends abbreviated or generic names.
+DOOR_FAMILY_ALIASES: Dict[str, str] = {
+    "pocket":                        "Sliding_Door_Pocket",
+    "pocket door":                   "Sliding_Door_Pocket",
+    "sliding_door_pocket":           "Sliding_Door_Pocket",
+    "sliding door pocket":           "Sliding_Door_Pocket",
+    "sliding bypass":                "Doors_Sliding_Interior_Integrated",
+    "bypass":                        "Doors_Sliding_Interior_Integrated",
+    "barn":                          "Doors_Sliding_Interior_Integrated",
+    "barn door":                     "Doors_Sliding_Interior_Integrated",
+    "doors_sliding_interior":        "Doors_Sliding_Interior_Integrated",
+    "sliding interior":              "Doors_Sliding_Interior_Integrated",
+    "overhead":                      "Overhead-Garage-Door",
+    "overhead-sectional":            "Overhead-Garage-Door",
+    "overhead sectional":            "Overhead-Garage-Door",
+    "garage":                        "Overhead-Garage-Door",
+    "overhead garage":               "Overhead-Garage-Door",
+    "overhead-garage":               "Overhead-Garage-Door",
+    "overhead-garage-door":          "Overhead-Garage-Door",
+}
+
+WINDOW_FAMILY_ALIASES: Dict[str, str] = {
+    "fixed":                         "Fixed",
+    "casement":                      "Casement with Trim",
+    "double hung":                   "Double Hung",
+    "slider":                        "Slider with Trim",
+    "sliding":                       "Slider with Trim",
+    "awning":                        "Awning",
+}
+
+
+def _normalize_family_name(
+    doc,
+    requested_name: str,
+    category,
+    aliases: Dict[str, str],
+) -> str:
+    """Resolve a shorthand/alias family name to an actual loaded Revit family.
+
+    Resolution order:
+    1. Hardcoded alias table (most reliable for known families)
+    2. Exact match against families loaded in the document
+    3. Case-insensitive exact match
+    4. Substring match (requested name contained in loaded family name)
+    5. Original name (unchanged, will fail later with a clear error)
+
+    Args:
+        doc: Active Revit document.
+        requested_name: Family name from the agent/schedule (may be abbreviated).
+        category: Revit BuiltInCategory for the element type.
+        aliases: Alias dict (e.g., DOOR_FAMILY_ALIASES).
+
+    Returns:
+        Resolved family name string.
+    """
+    import clr
+    clr.AddReference("RevitAPI")
+    from Autodesk.Revit import DB
+
+    alias_key = requested_name.lower().strip()
+
+    # 1. Hardcoded aliases
+    if alias_key in aliases:
+        resolved = aliases[alias_key]
+        if resolved != requested_name:
+            logger.info("Family alias: '%s' -> '%s'", requested_name, resolved)
+        return resolved
+
+    # Collect all loaded family names from document
+    collector = (
+        DB.FilteredElementCollector(doc)
+        .OfCategory(category)
+        .OfClass(DB.FamilySymbol)
+    )
+    loaded: Dict[str, str] = {}  # lower -> original
+    for sym in collector:
+        fname = sym.Family.Name
+        loaded[fname.lower()] = fname
+
+    # 2. Exact match (case-insensitive)
+    if alias_key in loaded:
+        return loaded[alias_key]
+
+    # 3. Substring match: requested name appears in loaded family name
+    req_norm = alias_key.replace("-", "").replace("_", "").replace(" ", "")
+    for fname_lower, fname_orig in loaded.items():
+        fname_norm = fname_lower.replace("-", "").replace("_", "").replace(" ", "")
+        if req_norm and (req_norm in fname_norm or fname_norm in req_norm):
+            logger.info(
+                "Family partial match: '%s' -> '%s'", requested_name, fname_orig
+            )
+            return fname_orig
+
+    # 4. No match found — return original (will cause a clear lookup failure)
+    return requested_name
+
 
 def _eid_int(element_id) -> int:
     """Get integer from ElementId (Revit 2025+: .Value, older: .IntegerValue)."""
@@ -252,7 +353,12 @@ def ensure_door_types(
         schedule_id = str(entry.get("id", ""))
         width_in = float(entry.get("width_in", 36))
         height_in = float(entry.get("height_in", 80))
-        family_name = str(entry.get("family", "Single-Flush"))
+        raw_family = str(entry.get("family", "Single-Flush"))
+
+        # Resolve alias/shorthand to actual loaded family name
+        family_name = _normalize_family_name(
+            doc, raw_family, DB.BuiltInCategory.OST_Doors, DOOR_FAMILY_ALIASES
+        )
 
         type_name = f'{int(width_in)}" x {int(height_in)}"'
         revit_type = f"{family_name} : {type_name}"

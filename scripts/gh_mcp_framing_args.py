@@ -535,7 +535,10 @@ def _query_all_walls_from_revit() -> tuple:
                     "curve_end": curve_end,
                     "base_level_id": _eid_int_local(base_level.Id) if base_level else None,
                     "top_level_id": _eid_int_local(top_level.Id) if top_level else None,
-                    "openings": wall_data.get("openings", []),
+                    "openings": [
+                        {k: v for k, v in op.items() if k != "opening_location_point"}
+                        for op in wall_data.get("openings", [])
+                    ],
                     "is_flipped": bool(wall_data.get("is_flipped", False)),
                     "wall_type": str(wall_data.get("wall_type", "")),
                     "metadata": wall_data.get("metadata", {}),

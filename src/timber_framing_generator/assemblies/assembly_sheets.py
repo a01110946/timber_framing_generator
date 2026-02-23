@@ -41,6 +41,7 @@ try:
         BuiltInCategory,
         ElementId,
         FilteredElementCollector,
+        ScheduleSheetInstance,
         Viewport,
         XYZ,
     )
@@ -62,19 +63,23 @@ def _eid_int(element_id: Any) -> int:
 # Layout Constants (in feet)
 # =============================================================================
 
-# Viewport spacing
-VIEWPORT_H_SPACING = 1.5  # Horizontal gap between viewports
-VIEWPORT_V_SPACING = 1.2  # Vertical gap between rows
+# Viewport spacing (in feet, for ARCH D 24"x36" = 2.0' x 3.0' sheet)
+VIEWPORT_H_SPACING = 0.25  # Horizontal gap between viewports
+VIEWPORT_V_SPACING = 0.25  # Vertical gap between rows
 
-# Starting position (offset from sheet lower-left)
-LAYOUT_START_X = 0.5
-LAYOUT_START_Y = 2.0
+# Starting position: near top-left of ARCH D sheet (0,0 = lower-left)
+# Sheet height ~2.0 ft; start 0.3 ft from top = Y=1.7
+LAYOUT_START_X = 0.2
+LAYOUT_START_Y = 1.7
+
+# Max viewports per row before wrapping
+MAX_PER_ROW = 3
 
 # Approximate viewport sizes for layout calculation
-APPROX_VIEW_WIDTH = 1.0
-APPROX_VIEW_HEIGHT = 0.8
-APPROX_SCHEDULE_WIDTH = 1.5
-APPROX_SCHEDULE_HEIGHT = 0.6
+APPROX_VIEW_WIDTH = 0.9
+APPROX_VIEW_HEIGHT = 0.7
+APPROX_SCHEDULE_WIDTH = 0.9
+APPROX_SCHEDULE_HEIGHT = 0.5
 
 
 # =============================================================================
@@ -140,19 +145,19 @@ def _find_titleblock(doc: Any, name: str) -> Any:
 
 def _calculate_viewport_layout(
     view_infos: List[Any],
-) -> List[Tuple[Any, float, float]]:
+) -> List[Tuple[Any, float, float, str]]:
     """Calculate grid positions for viewports on a sheet.
 
     Groups views by type into rows:
-    - Row 1: 3D + elevation views
-    - Row 2: Overflow elevations (if > 4 in row 1)
-    - Row 3: Schedules and takeoffs
+    - Row 1+: 3D + elevation views (max MAX_PER_ROW per row)
+    - Final row: Schedules and takeoffs
 
     Args:
         view_infos: List of CreatedViewInfo objects with view_id and view_type
 
     Returns:
-        List of (view_id, x, y) tuples for viewport placement
+        List of (view_id, x, y, view_type) tuples for placement.
+        view_type is "schedule"/"takeoff" for schedule views, else "graphical".
     """
     # Separate views by type
     graphical_views = []  # 3d + elevation
@@ -166,30 +171,28 @@ def _calculate_viewport_layout(
         elif vi.view_type in ("schedule", "takeoff"):
             schedule_views.append(vi)
 
-    positions: List[Tuple[Any, float, float]] = []
+    positions: List[Tuple[Any, float, float, str]] = []
 
-    # Row 1 & 2: graphical views (max 4 per row)
-    max_per_row = 4
+    # Graphical views in rows of MAX_PER_ROW
     x = LAYOUT_START_X
     y = LAYOUT_START_Y
 
     for i, vi in enumerate(graphical_views):
-        if i > 0 and i % max_per_row == 0:
-            # Start new row
+        if i > 0 and i % MAX_PER_ROW == 0:
             x = LAYOUT_START_X
             y -= (APPROX_VIEW_HEIGHT + VIEWPORT_V_SPACING)
 
-        positions.append((vi.view_id, x, y))
+        positions.append((vi.view_id, x, y, "graphical"))
         x += APPROX_VIEW_WIDTH + VIEWPORT_H_SPACING
 
-    # Row for schedules
+    # Schedule views in next row
     if schedule_views:
         if graphical_views:
             y -= (APPROX_VIEW_HEIGHT + VIEWPORT_V_SPACING)
         x = LAYOUT_START_X
 
         for vi in schedule_views:
-            positions.append((vi.view_id, x, y))
+            positions.append((vi.view_id, x, y, vi.view_type))
             x += APPROX_SCHEDULE_WIDTH + VIEWPORT_H_SPACING
 
     return positions
@@ -247,11 +250,15 @@ def create_assembly_sheet(
         # Calculate viewport positions
         positions = _calculate_viewport_layout(view_infos)
 
-        # Place viewports
+        # Place viewports — schedules need ScheduleSheetInstance, not Viewport
         viewport_count = 0
-        for view_id, x, y in positions:
+        for view_id, x, y, vtype in positions:
             try:
-                if Viewport.CanAddViewToSheet(doc, sheet.Id, view_id):
+                if vtype in ("schedule", "takeoff"):
+                    # Schedules cannot use Viewport.Create; use ScheduleSheetInstance
+                    ScheduleSheetInstance.Create(doc, sheet.Id, view_id, XYZ(x, y, 0))
+                    viewport_count += 1
+                elif Viewport.CanAddViewToSheet(doc, sheet.Id, view_id):
                     Viewport.Create(doc, sheet.Id, view_id, XYZ(x, y, 0))
                     viewport_count += 1
                 else:

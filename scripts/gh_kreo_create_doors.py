@@ -463,12 +463,11 @@ def main():
             type_map, schedule_fallbacks = ensure_door_types(doc, door_schedule)
             log_info(f"  Type map: {len(type_map)} entries, {len(schedule_fallbacks)} fallbacks")
 
-            # Match each converted door to a schedule entry by width
+            # Match each converted door to a schedule entry by width.
+            # The schedule takes priority over the Kreo JSON revit_type —
+            # the schedule is the authoritative source for door families.
             matched_to_schedule = 0
             for cd in converted_doors:
-                # Skip doors that already have a revit_type from the JSON
-                if cd.revit_type:
-                    continue
                 schedule_id = match_door_to_schedule(
                     cd.width_ft, door_schedule, tolerance_in=2.0
                 )

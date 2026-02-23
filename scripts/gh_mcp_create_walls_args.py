@@ -397,13 +397,13 @@ def main():
                 walls_json = str(default_walls).strip()
                 walls_source = "default"
 
-        # Resolve doors_json (only use default if agent requested doors,
-        # or if in manual mode without MCP args)
+        # Resolve doors_json: MCP args take priority; fall back to default
+        # panel unconditionally (pre-wired Kreo JSON = always use it).
         doors_source = "none"
         if args_valid and _has_content(args_dict.get("doors_json")):
             doors_json = str(args_dict["doors_json"]).strip()
             doors_source = "mcp"
-        elif (agent_wants_doors or not args_valid) and _has_content(default_doors):
+        elif _has_content(default_doors):
             doors_json = str(default_doors).strip()
             doors_source = "default"
 
@@ -412,7 +412,7 @@ def main():
         if args_valid and _has_content(args_dict.get("windows_json")):
             windows_json = str(args_dict["windows_json"]).strip()
             windows_source = "mcp"
-        elif (agent_wants_windows or not args_valid) and _has_content(default_windows):
+        elif _has_content(default_windows):
             windows_json = str(default_windows).strip()
             windows_source = "default"
 
@@ -450,17 +450,14 @@ def main():
             run_doors = agent_wants_doors and bool(doors_json)
             run_windows = agent_wants_windows and bool(windows_json)
         elif args_valid:
-            # All-in-one MCP: run walls + whatever agent requested.
-            # BUT: if the agent only asked for openings (door/window schedule)
-            # without providing wall geometry in the MCP call itself, assume
-            # they want to add to existing walls and skip wall creation.
-            opening_only_call = (
-                (agent_wants_doors or agent_wants_windows)
-                and walls_source != "mcp"
-            )
-            run_walls = bool(walls_json) and not opening_only_call
-            run_doors = agent_wants_doors and bool(doors_json)
-            run_windows = agent_wants_windows and bool(windows_json)
+            # All-in-one MCP: run whatever we have data for.
+            # Default panels provide doors/windows even when the agent doesn't
+            # explicitly pass door/window keys — this is the expected all-in-one
+            # behavior (Kreo JSON pre-wired = always create all elements).
+            # Staged mode (walls_result_json in args) handles "add to existing walls".
+            run_walls = bool(walls_json)
+            run_doors = bool(doors_json)
+            run_windows = bool(windows_json)
         else:
             # Manual mode (no MCP args): all gates OFF.
             # Use Boolean Toggles wired directly to each creator for manual runs.

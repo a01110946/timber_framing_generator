@@ -25,45 +25,76 @@ WallInputData = Dict[
 ]
 
 
-def _get_opening_dimension(element, symbol, param_names: List[str]) -> float:
+def _get_opening_dimension(element, symbol, param_names: List[str], bip_list=None) -> float:
     """
-    Try multiple parameter names to get an opening dimension.
+    Try multiple approaches to get an opening dimension (width or height).
 
     Checks in order:
-    1. Named parameters on instance
-    2. Named parameters on symbol (type)
+    1. BuiltInParameters on symbol (type) — most reliable for standard Revit families
+    2. Named parameters on instance
+    3. Named parameters on symbol (type)
+    4. Diagnostic dump of all symbol params when all else fails
 
     Args:
         element: The FamilyInstance (door/window)
         symbol: The FamilySymbol (type)
         param_names: List of parameter names to try (e.g., ["Rough Width", "Width"])
+        bip_list: Optional list of BuiltInParameter values to try first
 
     Returns:
-        The dimension value, or 0.0 if not found
+        The dimension value in feet, or 0.0 if not found
     """
-    # Try instance parameters first
+    # 1. Try BuiltInParameters on symbol (type) — standard Revit door/window families
+    #    store their dimensions as BIPs, which are language-independent.
+    if bip_list:
+        for bip in bip_list:
+            try:
+                param = symbol.get_Parameter(bip)
+                if param and param.HasValue:
+                    value = param.AsDouble()
+                    if value > 0:
+                        print(f"    Found BIP {bip} on type: {value:.4f} ft")
+                        return value
+            except Exception:
+                pass
+
+    # 2. Try named parameters on instance
     for name in param_names:
         try:
             param = element.LookupParameter(name)
             if param and param.HasValue:
                 value = param.AsDouble()
                 if value > 0:
-                    print(f"    Found {name} on instance: {value}")
+                    print(f"    Found '{name}' on instance: {value:.4f} ft")
                     return value
         except Exception as e:
             print(f"    Error reading instance param '{name}': {e}")
 
-    # Try type (symbol) parameters
+    # 3. Try named parameters on symbol (type)
     for name in param_names:
         try:
             param = symbol.LookupParameter(name)
             if param and param.HasValue:
                 value = param.AsDouble()
                 if value > 0:
-                    print(f"    Found {name} on type: {value}")
+                    print(f"    Found '{name}' on type: {value:.4f} ft")
                     return value
         except Exception as e:
             print(f"    Error reading type param '{name}': {e}")
+
+    # 4. All methods failed — print available numeric params on the symbol for diagnosis
+    print(f"    WARNING: dimension not found. Symbol numeric params (value > 0):")
+    try:
+        for p in symbol.Parameters:
+            try:
+                if p.HasValue:
+                    v = p.AsDouble()
+                    if v > 0:
+                        print(f"      '{p.Definition.Name}' = {v:.4f} ft")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"      Cannot list symbol params: {e}")
 
     return 0.0
 
@@ -280,8 +311,18 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
 
                 family_symbol = insert_element.Symbol
 
-                # Try multiple parameter names for width/height
-                # Different Revit families use different names
+                # BuiltInParameters to try first — language-independent, work for
+                # standard Revit door/window families regardless of template locale.
+                width_bips = [
+                    DB.BuiltInParameter.DOOR_WIDTH,          # doors (type param)
+                    DB.BuiltInParameter.FAMILY_WIDTH_PARAM,  # generic family width (type)
+                ]
+                height_bips = [
+                    DB.BuiltInParameter.DOOR_HEIGHT,          # doors (type param)
+                    DB.BuiltInParameter.FAMILY_HEIGHT_PARAM,  # generic family height (type)
+                ]
+
+                # Named-parameter fallbacks for non-standard/custom families.
                 width_param_names = [
                     "Rough Width", "Width", "Default Width", "Frame Width",
                     "Opening Width", "Clear Width", "Nominal Width"
@@ -291,12 +332,12 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     "Opening Height", "Clear Height", "Nominal Height"
                 ]
 
-                # Get dimensions using helper function with fallbacks
+                # Get dimensions: BIPs first, then named params, then diagnostic dump
                 opening_width_value = _get_opening_dimension(
-                    insert_element, family_symbol, width_param_names
+                    insert_element, family_symbol, width_param_names, bip_list=width_bips
                 )
                 opening_height_value = _get_opening_dimension(
-                    insert_element, family_symbol, height_param_names
+                    insert_element, family_symbol, height_param_names, bip_list=height_bips
                 )
 
                 print(f"Opening {insert_id} - width={opening_width_value}, height={opening_height_value}")

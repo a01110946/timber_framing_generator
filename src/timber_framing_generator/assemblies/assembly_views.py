@@ -346,6 +346,51 @@ def _apply_view_template(view: Any, template_id: Any) -> None:
         print("[assembly_views] Could not apply template: %s" % e)
 
 
+def _set_field_column_width(sf: Any, col_name: str, desired_width: float) -> bool:
+    """Set column width on a ScheduleField object.
+
+    In CPython3/pythonnet (Rhino 8), ScheduleField.ColumnWidth is not
+    accessible via normal attribute access (AttributeError).  Uses .NET
+    reflection as the primary method.  Falls back to listing available
+    properties so the correct name can be found if reflection also fails.
+
+    Args:
+        sf: Revit ScheduleField object
+        col_name: Field name (for logging)
+        desired_width: Column width in feet
+
+    Returns:
+        True if width was set successfully
+    """
+    # Method 1: direct pythonnet attribute access (works if pythonnet resolves it)
+    try:
+        sf.ColumnWidth = desired_width
+        return True
+    except AttributeError:
+        pass  # fall through to reflection
+    except Exception as direct_err:
+        print("[assembly_views] Direct ColumnWidth set failed for '%s': %s" % (col_name, direct_err))
+        return False
+
+    # Method 2: .NET reflection — bypasses pythonnet's property resolution
+    try:
+        prop = sf.GetType().GetProperty("ColumnWidth")
+        if prop is not None and prop.CanWrite:
+            prop.SetValue(sf, float(desired_width))
+            print("[assembly_views] Reflection: '%s' ColumnWidth -> %.3f ft" % (col_name, desired_width))
+            return True
+        if prop is None:
+            # Diagnose: list all properties so the correct name can be found
+            all_props = sorted(p.Name for p in sf.GetType().GetProperties())
+            print("[assembly_views] ColumnWidth not found on ScheduleField. Available: %s" % all_props)
+        else:
+            print("[assembly_views] ColumnWidth property is read-only for '%s'" % col_name)
+    except Exception as ref_err:
+        print("[assembly_views] Reflection failed for '%s': %s %s" % (col_name, type(ref_err).__name__, ref_err))
+
+    return False
+
+
 def _configure_schedule_fields(
     doc: Any,
     schedule: Any,
@@ -354,8 +399,13 @@ def _configure_schedule_fields(
     """Configure fields on a schedule view and set column widths.
 
     Clears existing fields, adds requested fields in order, then applies
-    column-width overrides.  Prints diagnostic lines to Rhino console so
-    failures are visible even when exceptions are caught.
+    column-width overrides.
+
+    Key discoveries (diagnosed 2026-02):
+    - In this Revit version, AddField() returns ScheduleField directly (NOT
+      ScheduleFieldId).  Do NOT pass the return value to GetField().
+    - ScheduleField.ColumnWidth is not accessible via pythonnet attribute
+      access; use .NET reflection instead (_set_field_column_width).
 
     Args:
         doc: Revit Document object
@@ -363,7 +413,6 @@ def _configure_schedule_fields(
         field_names: List of field names to add
     """
     if not REVIT_AVAILABLE or schedule is None or not field_names:
-        print("[assembly_views] _configure_schedule_fields: skipped (available=%s, schedule=%s)" % (REVIT_AVAILABLE, schedule is not None))
         return
 
     try:
@@ -375,74 +424,19 @@ def _configure_schedule_fields(
             name = sf.GetName(doc)
             available[name] = sf
 
-        print("[assembly_views] Schedulable fields: %d, requested: %s" % (len(available), field_names))
-
-        # Clear existing fields and verify
+        # Clear existing fields
         definition.ClearFields()
-        count_after_clear = definition.GetFieldCount()
-        print("[assembly_views] Field count after ClearFields: %d" % count_after_clear)
 
-        # Add requested fields, track which names were successfully added
-        added_names = []
-        field_ids_from_add = []
+        # Add requested fields; AddField() returns the ScheduleField directly
+        # in this Revit version — use it immediately for width-setting.
         for name in field_names:
             if name in available:
-                fid = definition.AddField(available[name])
-                added_names.append(name)
-                field_ids_from_add.append(fid)
-                print("[assembly_views] Added field: '%s'" % name)
+                sched_field = definition.AddField(available[name])
+                desired_width = SCHEDULE_COLUMN_WIDTHS.get(name)
+                if desired_width is not None and sched_field is not None:
+                    _set_field_column_width(sched_field, name, desired_width)
             else:
-                print("[assembly_views] Field '%s' not found in schedulable fields" % name)
-
-        print("[assembly_views] Added %d of %d requested fields" % (len(added_names), len(field_names)))
-
-        # -- Approach A: use field IDs returned directly by AddField() --
-        # These are ScheduleFieldId values returned at add-time, before any
-        # list conversion.  Try these first.
-        set_count = 0
-        for i, (col_name, fid) in enumerate(zip(added_names, field_ids_from_add)):
-            desired_width = SCHEDULE_COLUMN_WIDTHS.get(col_name)
-            if desired_width is None:
-                continue
-            try:
-                sf = definition.GetField(fid)
-                if sf is None:
-                    print("[assembly_views] GetField(AddField-id) returned None for '%s'" % col_name)
-                    continue
-                old_w = sf.ColumnWidth
-                sf.ColumnWidth = desired_width
-                new_w = sf.ColumnWidth
-                print("[assembly_views] '%s' width: %.4f -> set %.4f -> read-back %.4f" % (col_name, old_w, desired_width, new_w))
-                set_count += 1
-            except Exception as cw_err:
-                print("[assembly_views] Approach-A failed for '%s': %s %s" % (col_name, type(cw_err).__name__, cw_err))
-
-        # -- Approach B: fallback via GetFieldOrder() if Approach A set nothing --
-        if set_count == 0:
-            print("[assembly_views] Approach-A set 0 widths, trying GetFieldOrder()")
-            try:
-                field_order_ids = list(definition.GetFieldOrder())
-                print("[assembly_views] GetFieldOrder returned %d IDs" % len(field_order_ids))
-                for i, fid in enumerate(field_order_ids):
-                    if i >= len(added_names):
-                        break
-                    col_name = added_names[i]
-                    desired_width = SCHEDULE_COLUMN_WIDTHS.get(col_name)
-                    if desired_width is None:
-                        continue
-                    try:
-                        sf = definition.GetField(fid)
-                        if sf is None:
-                            print("[assembly_views] GetField(order-id) returned None for '%s'" % col_name)
-                            continue
-                        old_w = sf.ColumnWidth
-                        sf.ColumnWidth = desired_width
-                        new_w = sf.ColumnWidth
-                        print("[assembly_views] B '%s' width: %.4f -> set %.4f -> read-back %.4f" % (col_name, old_w, desired_width, new_w))
-                    except Exception as cw_err:
-                        print("[assembly_views] Approach-B failed for '%s': %s %s" % (col_name, type(cw_err).__name__, cw_err))
-            except Exception as fo_err:
-                print("[assembly_views] GetFieldOrder() failed: %s %s" % (type(fo_err).__name__, fo_err))
+                print("[assembly_views] Schedule field '%s' not found, skipping" % name)
 
     except Exception as e:
         print("[assembly_views] _configure_schedule_fields failed: %s %s" % (type(e).__name__, e))

@@ -104,8 +104,9 @@ FAMILY_COLUMN_WIDTH: float = 0.50
 TYPE_COLUMN_WIDTH: float = 0.14   # e.g. "2x4 Stud" — about 1.7"
 LENGTH_COLUMN_WIDTH: float = 0.14  # numeric field — about 1.7"
 
-# Map from field name to desired column width (feet). Fields not listed here
-# keep Revit's default width.
+# Map from field name to desired SheetColumnWidth (feet).
+# Revit 2024+ uses SheetColumnWidth (on-sheet) and GridColumnWidth (view).
+# Fields not listed here keep Revit's default width.
 SCHEDULE_COLUMN_WIDTHS: Dict[str, float] = {
     "Family": FAMILY_COLUMN_WIDTH,
     "Type": TYPE_COLUMN_WIDTH,
@@ -364,18 +365,18 @@ def _set_field_column_width_reflection(sf: Any, col_name: str, desired_width: fl
         True if width was set, False otherwise
     """
     try:
-        prop = sf.GetType().GetProperty("ColumnWidth")
+        # Revit 2024+ split ColumnWidth into GridColumnWidth (schedule view) and
+        # SheetColumnWidth (schedule placed on a sheet).  Use SheetColumnWidth.
+        prop = sf.GetType().GetProperty("SheetColumnWidth")
         if prop is not None and prop.CanWrite:
             prop.SetValue(sf, float(desired_width))
-            print("[assembly_views] Set '%s' ColumnWidth=%.3f ft" % (col_name, desired_width))
+            print("[assembly_views] Set '%s' SheetColumnWidth=%.3f ft" % (col_name, desired_width))
             return True
         if prop is None:
-            # ColumnWidth not found — list all public properties so we can
-            # identify the correct name in this Revit version.
             all_props = sorted(p.Name for p in sf.GetType().GetProperties())
-            print("[assembly_views] ColumnWidth not found on ScheduleField. Has: %s" % all_props)
+            print("[assembly_views] SheetColumnWidth not found on ScheduleField. Has: %s" % all_props)
         else:
-            print("[assembly_views] ColumnWidth property exists but is read-only for '%s'" % col_name)
+            print("[assembly_views] SheetColumnWidth property is read-only for '%s'" % col_name)
     except Exception as ref_err:
         print("[assembly_views] Reflection error for '%s': %s %s" % (col_name, type(ref_err).__name__, ref_err))
     return False

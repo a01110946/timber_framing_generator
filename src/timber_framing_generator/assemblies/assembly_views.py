@@ -100,9 +100,9 @@ DEFAULT_TAKEOFF_FIELDS: List[str] = ["Type", "Count", "Material: Name", "Materia
 # Schedule column widths in feet (sheet coordinates).
 # Revit default is ~0.083' (1"). Widen "Family" to fit "TFG_Timber_Framing"
 # without wrapping (18 chars at 3/32" ≈ 1.7" minimum → use 0.50' = 6").
-FAMILY_COLUMN_WIDTH: float = 0.50
-TYPE_COLUMN_WIDTH: float = 0.14   # e.g. "2x4 Stud" — about 1.7"
-LENGTH_COLUMN_WIDTH: float = 0.14  # numeric field — about 1.7"
+FAMILY_COLUMN_WIDTH: float = 0.20
+TYPE_COLUMN_WIDTH: float = 0.10
+LENGTH_COLUMN_WIDTH: float = 0.10
 
 # Map from field name to desired SheetColumnWidth (feet).
 # Revit 2024+ uses SheetColumnWidth (on-sheet) and GridColumnWidth (view).

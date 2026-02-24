@@ -87,7 +87,7 @@ MAX_PER_ROW = 4
 # 4 view centers: 0.40, 1.10, 1.80, 2.50 → right edge 2.775 < 3.0 ✓
 APPROX_VIEW_WIDTH = 0.55
 APPROX_VIEW_HEIGHT = 0.55
-APPROX_SCHEDULE_WIDTH = 0.80  # Family(0.50) + Type(0.14) + Length(0.14) + margin
+APPROX_SCHEDULE_WIDTH = 0.45  # Family(0.20) + Type(0.10) + Length(0.10) + margin
 APPROX_SCHEDULE_HEIGHT = 0.50
 
 # Fixed Y position for schedule/takeoff views (center of schedule row)

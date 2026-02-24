@@ -93,14 +93,26 @@ DISPLAY_STYLE_MAP: Dict[str, str] = {
 # Default schedule field lists
 # Column schedule uses "Length" (the instance length parameter);
 # Framing schedule uses "Cut Length" (the fabrication cut length).
-DEFAULT_COLUMN_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "Length"]
+DEFAULT_COLUMN_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "System Length"]
 DEFAULT_FRAMING_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "Cut Length"]
 DEFAULT_TAKEOFF_FIELDS: List[str] = ["Type", "Count", "Material: Name", "Material: Area"]
 
-# Family column width in feet (sheet coordinates).
-# "TFG_Timber_Framing" is 18 chars; 0.20' ≈ 2.4" fits without wrapping at
-# typical schedule text heights (3/32" per character × 18 chars ≈ 1.7").
-FAMILY_COLUMN_WIDTH: float = 0.20
+# Schedule column widths in feet (sheet coordinates).
+# Revit default is ~0.083' (1"). Widen "Family" to fit "TFG_Timber_Framing"
+# without wrapping (18 chars at 3/32" ≈ 1.7" minimum → use 0.50' = 6").
+FAMILY_COLUMN_WIDTH: float = 0.50
+TYPE_COLUMN_WIDTH: float = 0.14   # e.g. "2x4 Stud" — about 1.7"
+LENGTH_COLUMN_WIDTH: float = 0.14  # numeric field — about 1.7"
+
+# Map from field name to desired column width (feet). Fields not listed here
+# keep Revit's default width.
+SCHEDULE_COLUMN_WIDTHS: Dict[str, float] = {
+    "Family": FAMILY_COLUMN_WIDTH,
+    "Type": TYPE_COLUMN_WIDTH,
+    "Length": LENGTH_COLUMN_WIDTH,
+    "Cut Length": LENGTH_COLUMN_WIDTH,
+    "System Length": LENGTH_COLUMN_WIDTH,
+}
 
 
 # =============================================================================
@@ -341,8 +353,10 @@ def _configure_schedule_fields(
 ) -> None:
     """Configure fields on a schedule view.
 
-    Clears existing fields, then adds requested fields by name from
-    the schedule's available schedulable fields.
+    Clears existing fields, adds requested fields in order, then applies
+    column-width overrides via GetFieldOrder() (more reliable than using the
+    ScheduleFieldId returned by AddField(), which can have CLR type resolution
+    issues in pythonnet).
 
     Args:
         doc: Revit Document object
@@ -363,24 +377,37 @@ def _configure_schedule_fields(
         # Clear existing fields
         definition.ClearFields()
 
-        # Add requested fields in order, applying column-width overrides
+        # Add requested fields in order, tracking which names were added
+        added_names = []
         for name in field_names:
             if name in available:
-                field_id = definition.AddField(available[name])
-                # Widen the Family column so long family names (e.g.
-                # "TFG_Timber_Framing") fit in a single row without wrapping.
-                if name == "Family":
-                    try:
-                        sched_field = definition.GetField(field_id)
-                        if sched_field is not None:
-                            sched_field.ColumnWidth = FAMILY_COLUMN_WIDTH
-                    except Exception as cw_err:
-                        print(
-                            "[assembly_views] Could not set Family column width: %s"
-                            % cw_err
-                        )
+                definition.AddField(available[name])
+                added_names.append(name)
             else:
                 print("[assembly_views] Schedule field '%s' not found, skipping" % name)
+
+        # Apply column widths using GetFieldOrder() — avoids relying on the
+        # ScheduleFieldId returned by AddField(), which may not round-trip
+        # correctly through pythonnet's CLR type resolution.
+        try:
+            field_ids = list(definition.GetFieldOrder())
+            for i, fid in enumerate(field_ids):
+                if i >= len(added_names):
+                    break
+                col_name = added_names[i]
+                desired_width = SCHEDULE_COLUMN_WIDTHS.get(col_name)
+                if desired_width is not None:
+                    try:
+                        sched_field = definition.GetField(fid)
+                        if sched_field is not None:
+                            sched_field.ColumnWidth = desired_width
+                    except Exception as cw_err:
+                        print(
+                            "[assembly_views] Could not set '%s' column width: %s"
+                            % (col_name, cw_err)
+                        )
+        except Exception as fo_err:
+            print("[assembly_views] GetFieldOrder() failed: %s" % fo_err)
 
     except Exception as e:
         print("[assembly_views] Failed to configure schedule fields: %s" % e)

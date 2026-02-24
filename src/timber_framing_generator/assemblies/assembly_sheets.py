@@ -64,8 +64,8 @@ def _eid_int(element_id: Any) -> int:
 # =============================================================================
 
 # Viewport spacing (in feet, for ARCH D 24"x36" = 2.0' x 3.0' sheet)
-VIEWPORT_H_SPACING = 0.15  # Horizontal gap between viewports
-VIEWPORT_V_SPACING = 0.15  # Vertical gap between rows
+VIEWPORT_H_SPACING = 0.10  # Horizontal gap between viewports
+VIEWPORT_V_SPACING = 0.10  # Vertical gap between rows
 
 # Starting position: near top-left of ARCH D sheet (0,0 = lower-left)
 # LAYOUT_START_X is the CENTER x of the first viewport. Set to half of
@@ -87,13 +87,13 @@ MAX_PER_ROW = 4
 # 4 view centers: 0.40, 1.10, 1.80, 2.50 → right edge 2.775 < 3.0 ✓
 APPROX_VIEW_WIDTH = 0.55
 APPROX_VIEW_HEIGHT = 0.55
-APPROX_SCHEDULE_WIDTH = 0.90
+APPROX_SCHEDULE_WIDTH = 0.80  # Family(0.50) + Type(0.14) + Length(0.14) + margin
 APPROX_SCHEDULE_HEIGHT = 0.50
 
 # Fixed Y position for schedule/takeoff views (center of schedule row)
 # Anchored near bottom of sheet regardless of how many graphical rows exist.
 # At Y=0.30 center: top edge ~0.55, bottom edge ~0.05 (within 0 to 2.0 sheet)
-LAYOUT_SCHEDULE_Y = 0.30
+LAYOUT_SCHEDULE_Y = 0.60
 
 # Minimum Y for graphical view rows — stop adding rows if Y would drop below
 # this to avoid overlapping the schedule area.

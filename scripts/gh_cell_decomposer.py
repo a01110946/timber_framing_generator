@@ -248,12 +248,19 @@ def setup_component():
          Grasshopper.Kernel.GH_ParamAccess.item),
     ]
 
+    # Guard all property setters — unconditional assignment triggers GH parameter
+    # reconstruction which silently disconnects wires on every solve.
     for i, (name, nick, desc, access) in enumerate(input_config):
         if i < inputs.Count:
-            inputs[i].Name = name
-            inputs[i].NickName = nick
-            inputs[i].Description = desc
-            inputs[i].Access = access
+            p = inputs[i]
+            if p.Name != name:
+                p.Name = name
+            if p.NickName != nick:
+                p.NickName = nick
+            if p.Description != desc:
+                p.Description = desc
+            if p.Access != access:
+                p.Access = access
 
     # Configure outputs (start from index 1)
     outputs = ghenv.Component.Params.Output
@@ -267,9 +274,13 @@ def setup_component():
     for i, (name, nick, desc) in enumerate(output_config):
         idx = i + 1
         if idx < outputs.Count:
-            outputs[idx].Name = name
-            outputs[idx].NickName = nick
-            outputs[idx].Description = desc
+            o = outputs[idx]
+            if o.Name != name:
+                o.Name = name
+            if o.NickName != nick:
+                o.NickName = nick
+            if o.Description != desc:
+                o.Description = desc
 
 # =============================================================================
 # Helper Functions
@@ -1100,16 +1111,9 @@ def main():
 
         log_lines.append(f"Cell Decomposer v1.1")
         log_lines.append(f"Walls: {len(wall_list)}")
-
-        # Debug: Show what panels_json contains
-        log_lines.append(f"DEBUG panels_json type: {type(panels_json)}")
-        log_lines.append(f"DEBUG panels_json_input type: {type(panels_json_input)}")
-        if panels_json_input:
-            log_lines.append(f"DEBUG panels_json_input length: {len(panels_json_input)}")
-            log_lines.append(f"DEBUG panels_json_input first 200 chars: {str(panels_json_input)[:200]}")
-        else:
-            log_lines.append(f"DEBUG panels_json_input is None or empty")
-        log_lines.append(f"DEBUG panels_data: {type(panels_data)}, len={len(panels_data) if panels_data else 0}")
+        mode = "panel-aware" if panels_data else "legacy"
+        panels_count = len(panels_data) if panels_data else 0
+        log_lines.append(f"Mode: {mode} ({panels_count} panel entries)")
         log_lines.append("")
 
         # Process decomposition
@@ -1140,20 +1144,6 @@ def main():
 # Execution
 # =============================================================================
 
-# Debug: Print actual input NickNames
-print("[PARAM DEBUG] Input parameter NickNames:")
-for i, param in enumerate(ghenv.Component.Params.Input):
-    print(f"  Input {i}: NickName='{param.NickName}', Name='{param.Name}'")
-
-# Debug: Check globals vs locals for panels_json
-print("[SCOPE DEBUG] Checking globals() for input variables:")
-print(f"  'panels_json' in globals(): {'panels_json' in globals()}")
-print(f"  'wall_json' in globals(): {'wall_json' in globals()}")
-print(f"  'run' in globals(): {'run' in globals()}")
-if 'panels_json' in globals():
-    print(f"  globals()['panels_json'] type: {type(globals()['panels_json'])}")
-    print(f"  globals()['panels_json'] value: {repr(globals()['panels_json'])[:200]}")
-
 # Set default values for optional inputs
 # Track whether variables were defined by GH or set by fallback
 _panels_json_from_gh = False
@@ -1171,21 +1161,44 @@ except NameError:
     panels_json = None
     _panels_json_from_gh = False
 
-# If panels_json is still None, try reading directly from the component parameter
+# If panels_json is still None, read directly from the component parameter.
+# Uses multi-fallback pattern because .Branch(0) only works on typed params.
 if panels_json is None:
     try:
         panels_param = ghenv.Component.Params.Input[1]  # Index 1 = panels_json
         if panels_param.VolatileDataCount > 0:
-            # Get the first item from the volatile data
-            branch = panels_param.VolatileData.Branch(0)
-            if branch and len(branch) > 0:
-                raw_value = branch[0]
-                # Extract the actual value (might be wrapped in GH_String or similar)
-                if hasattr(raw_value, 'Value'):
-                    panels_json = raw_value.Value
-                else:
-                    panels_json = str(raw_value)
-                print(f"[WORKAROUND] Read panels_json directly from param: {type(panels_json)}, len={len(panels_json) if panels_json else 0}")
+            vd = panels_param.VolatileData
+            raw_value = None
+
+            # Try Branch(0) — works for typed (GH_String) params
+            try:
+                branch = vd.Branch(0)
+                if branch is not None and len(branch) > 0:
+                    raw_value = branch[0]
+            except Exception:
+                pass
+
+            # Try get_Branch(0) as fallback
+            if raw_value is None:
+                try:
+                    branch = vd.get_Branch(0)
+                    if branch is not None and len(branch) > 0:
+                        raw_value = branch[0]
+                except Exception:
+                    pass
+
+            # Try AllData as last resort (works for untyped IGH_Goo params)
+            if raw_value is None:
+                try:
+                    all_items = list(vd.AllData(True))
+                    if all_items:
+                        raw_value = all_items[0]
+                except Exception:
+                    pass
+
+            if raw_value is not None:
+                panels_json = raw_value.Value if hasattr(raw_value, 'Value') else str(raw_value)
+                print(f"[WORKAROUND] Read panels_json from param: len={len(panels_json) if panels_json else 0}")
     except Exception as e:
         print(f"[WORKAROUND] Failed to read panels_json from param: {e}")
 
@@ -1193,13 +1206,6 @@ try:
     run
 except NameError:
     run = False
-
-# Debug: Print immediately to see what GH passed
-print(f"[INIT DEBUG] panels_json defined by GH: {_panels_json_from_gh}")
-print(f"[INIT DEBUG] panels_json value type: {type(panels_json)}")
-print(f"[INIT DEBUG] panels_json is None: {panels_json is None}")
-if panels_json is not None:
-    print(f"[INIT DEBUG] panels_json length: {len(panels_json) if hasattr(panels_json, '__len__') else 'N/A'}")
 
 # Execute main
 if __name__ == "__main__":

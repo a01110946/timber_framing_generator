@@ -376,11 +376,14 @@ def _check_opening_anomalies(wall_id, opening_index, opening, wall_length, wall_
     anomalies = []
     opening_type = opening.get("opening_type", "unknown").upper()
 
-    start_u = opening.get("start_u_coordinate", 0.0)
-    rough_width = opening.get("rough_width", 0.0)
-    end_u = start_u + rough_width
-    rough_height = opening.get("rough_height", 0.0)
-    sill_height = opening.get("base_elevation_relative_to_wall_base", 0.0)
+    # gh_wall_analyzer serialises OpeningData with these keys (not the raw extractor keys)
+    start_u = float(opening.get("u_start", opening.get("start_u_coordinate", 0.0)))
+    rough_width = float(opening.get("width", opening.get("rough_width", 0.0)))
+    end_u = float(opening.get("u_end", start_u + rough_width))
+    rough_height = float(opening.get("height", opening.get("rough_height", 0.0)))
+    sill_height = float(opening.get("sill_height",
+                        opening.get("v_start",
+                        opening.get("base_elevation_relative_to_wall_base", 0.0))))
     header_top = sill_height + rough_height
 
     def _add(issue_text):

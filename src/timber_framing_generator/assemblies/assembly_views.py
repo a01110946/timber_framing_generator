@@ -91,8 +91,16 @@ DISPLAY_STYLE_MAP: Dict[str, str] = {
 }
 
 # Default schedule field lists
-DEFAULT_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "Cut Length"]
+# Column schedule uses "Length" (the instance length parameter);
+# Framing schedule uses "Cut Length" (the fabrication cut length).
+DEFAULT_COLUMN_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "Length"]
+DEFAULT_FRAMING_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "Cut Length"]
 DEFAULT_TAKEOFF_FIELDS: List[str] = ["Type", "Count", "Material: Name", "Material: Area"]
+
+# Family column width in feet (sheet coordinates).
+# "TFG_Timber_Framing" is 18 chars; 0.20' ≈ 2.4" fits without wrapping at
+# typical schedule text heights (3/32" per character × 18 chars ≈ 1.7").
+FAMILY_COLUMN_WIDTH: float = 0.20
 
 
 # =============================================================================
@@ -355,10 +363,22 @@ def _configure_schedule_fields(
         # Clear existing fields
         definition.ClearFields()
 
-        # Add requested fields in order
+        # Add requested fields in order, applying column-width overrides
         for name in field_names:
             if name in available:
-                definition.AddField(available[name])
+                field_id = definition.AddField(available[name])
+                # Widen the Family column so long family names (e.g.
+                # "TFG_Timber_Framing") fit in a single row without wrapping.
+                if name == "Family":
+                    try:
+                        sched_field = definition.GetField(field_id)
+                        if sched_field is not None:
+                            sched_field.ColumnWidth = FAMILY_COLUMN_WIDTH
+                    except Exception as cw_err:
+                        print(
+                            "[assembly_views] Could not set Family column width: %s"
+                            % cw_err
+                        )
             else:
                 print("[assembly_views] Schedule field '%s' not found, skipping" % name)
 
@@ -459,9 +479,12 @@ def create_assembly_views(
 
     created: List[CreatedViewInfo] = []
 
-    # Pre-parse field name lists
-    schedule_field_names = _parse_field_names(
-        config.schedule_fields, DEFAULT_SCHEDULE_FIELDS,
+    # Pre-parse field name lists (column and framing schedules have different defaults)
+    column_schedule_field_names = _parse_field_names(
+        config.schedule_fields, DEFAULT_COLUMN_SCHEDULE_FIELDS,
+    )
+    framing_schedule_field_names = _parse_field_names(
+        config.schedule_fields, DEFAULT_FRAMING_SCHEDULE_FIELDS,
     )
     takeoff_field_names = _parse_field_names(
         config.takeoff_fields, DEFAULT_TAKEOFF_FIELDS,
@@ -518,7 +541,7 @@ def create_assembly_views(
             doc, assembly_id,
             BuiltInCategory.OST_StructuralColumns,
             "Structural Column Schedule",
-            schedule_field_names,
+            column_schedule_field_names,   # uses "Length" not "Cut Length"
             schedule_template_id,
         )
         if view:
@@ -532,7 +555,7 @@ def create_assembly_views(
             doc, assembly_id,
             BuiltInCategory.OST_StructuralFraming,
             "Structural Framing Schedule",
-            schedule_field_names,
+            framing_schedule_field_names,  # uses "Cut Length"
             schedule_template_id,
         )
         if view:

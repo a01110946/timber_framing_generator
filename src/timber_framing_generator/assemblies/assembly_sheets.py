@@ -64,21 +64,28 @@ def _eid_int(element_id: Any) -> int:
 # =============================================================================
 
 # Viewport spacing (in feet, for ARCH D 24"x36" = 2.0' x 3.0' sheet)
-VIEWPORT_H_SPACING = 0.20  # Horizontal gap between viewports
+VIEWPORT_H_SPACING = 0.15  # Horizontal gap between viewports
 VIEWPORT_V_SPACING = 0.15  # Vertical gap between rows
 
 # Starting position: near top-left of ARCH D sheet (0,0 = lower-left)
-# Sheet height 2.0'; graphical view half-height ~0.28'; start at 1.55
-# so view top edge = 1.55 + 0.28 = 1.83 < 2.0 (stays within sheet)
-LAYOUT_START_X = 0.15
+# LAYOUT_START_X is the CENTER x of the first viewport. Set to half of
+# APPROX_VIEW_WIDTH + left margin (0.15) so the left edge stays on the sheet.
+# Sheet height 2.0'; graphical view half-height ~0.275'; start at 1.55
+# so view top edge = 1.55 + 0.275 = 1.825 < 2.0 (stays within sheet)
+LAYOUT_START_X = 0.40   # = left_margin(0.15) + half_view_width(0.275) ≈ 0.40
 LAYOUT_START_Y = 1.55
 
-# Max viewports per row before wrapping
-MAX_PER_ROW = 3
+# Max viewports per row before wrapping.
+# 4 per row fits 7 graphical views (1 3D + 6 elevations) in 2 rows,
+# avoiding the third-row break that previously skipped the last elevation.
+MAX_PER_ROW = 4
 
 # Approximate viewport sizes for layout calculation
-# These only affect row-wrapping decisions, NOT actual viewport size
-APPROX_VIEW_WIDTH = 0.75
+# These only affect row-wrapping decisions, NOT actual viewport size.
+# Reduced to fit 4 views per row within ARCH D sheet width (3.0').
+# Row step = APPROX_VIEW_WIDTH + VIEWPORT_H_SPACING = 0.55 + 0.15 = 0.70
+# 4 view centers: 0.40, 1.10, 1.80, 2.50 → right edge 2.775 < 3.0 ✓
+APPROX_VIEW_WIDTH = 0.55
 APPROX_VIEW_HEIGHT = 0.55
 APPROX_SCHEDULE_WIDTH = 0.90
 APPROX_SCHEDULE_HEIGHT = 0.50

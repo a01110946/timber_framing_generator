@@ -531,7 +531,10 @@ def find_family_symbol_by_name(
 
 
 def find_door_family(doc) -> Optional[object]:
-    """Find the first available single door FamilySymbol.
+    """Find the preferred fallback door FamilySymbol.
+
+    Tries 'Single-Flush : 28" x 80"' first, then falls back to the first
+    available door FamilySymbol in the document.
 
     Args:
         doc: Active Revit document.
@@ -543,13 +546,31 @@ def find_door_family(doc) -> Optional[object]:
     clr.AddReference("RevitAPI")
     from Autodesk.Revit import DB
 
+    _PREFERRED_FAMILY = "Single-Flush"
+    _PREFERRED_TYPE = '28" x 80"'
+
     collector = (
         DB.FilteredElementCollector(doc)
         .OfCategory(DB.BuiltInCategory.OST_Doors)
         .OfClass(DB.FamilySymbol)
     )
-    for symbol in collector:
-        return symbol  # Return first available
+    symbols = list(collector)
+
+    # Priority: preferred family + type
+    for symbol in symbols:
+        if symbol.Family.Name == _PREFERRED_FAMILY and symbol.Name == _PREFERRED_TYPE:
+            logger.debug("find_door_family: using preferred '%s : %s'", _PREFERRED_FAMILY, _PREFERRED_TYPE)
+            return symbol
+
+    # Fallback: first available
+    if symbols:
+        first = symbols[0]
+        logger.warning(
+            "find_door_family: preferred '%s : %s' not found, falling back to '%s : %s'",
+            _PREFERRED_FAMILY, _PREFERRED_TYPE, first.Family.Name, first.Name,
+        )
+        return first
+
     logger.warning("No door family found in document")
     return None
 

@@ -346,48 +346,38 @@ def _apply_view_template(view: Any, template_id: Any) -> None:
         print("[assembly_views] Could not apply template: %s" % e)
 
 
-def _set_field_column_width(sf: Any, col_name: str, desired_width: float) -> bool:
-    """Set column width on a ScheduleField object.
+def _set_field_column_width_reflection(sf: Any, col_name: str, desired_width: float) -> bool:
+    """Set ScheduleField.ColumnWidth via .NET reflection.
 
-    In CPython3/pythonnet (Rhino 8), ScheduleField.ColumnWidth is not
-    accessible via normal attribute access (AttributeError).  Uses .NET
-    reflection as the primary method.  Falls back to listing available
-    properties so the correct name can be found if reflection also fails.
+    pythonnet cannot resolve ScheduleField.ColumnWidth as a Python attribute
+    (AttributeError), and setting it directly on AddField() return values is a
+    silent no-op (pythonnet adds a Python-level attribute, never calls the C#
+    setter).  Reflection bypasses pythonnet's binding layer entirely and calls
+    the .NET property setter directly.
 
     Args:
-        sf: Revit ScheduleField object
-        col_name: Field name (for logging)
+        sf: Revit ScheduleField object (from GetField(), not AddField() return)
+        col_name: Field name for logging
         desired_width: Column width in feet
 
     Returns:
-        True if width was set successfully
+        True if width was set, False otherwise
     """
-    # Method 1: direct pythonnet attribute access (works if pythonnet resolves it)
-    try:
-        sf.ColumnWidth = desired_width
-        return True
-    except AttributeError:
-        pass  # fall through to reflection
-    except Exception as direct_err:
-        print("[assembly_views] Direct ColumnWidth set failed for '%s': %s" % (col_name, direct_err))
-        return False
-
-    # Method 2: .NET reflection — bypasses pythonnet's property resolution
     try:
         prop = sf.GetType().GetProperty("ColumnWidth")
         if prop is not None and prop.CanWrite:
             prop.SetValue(sf, float(desired_width))
-            print("[assembly_views] Reflection: '%s' ColumnWidth -> %.3f ft" % (col_name, desired_width))
+            print("[assembly_views] Set '%s' ColumnWidth=%.3f ft" % (col_name, desired_width))
             return True
         if prop is None:
-            # Diagnose: list all properties so the correct name can be found
+            # ColumnWidth not found — list all public properties so we can
+            # identify the correct name in this Revit version.
             all_props = sorted(p.Name for p in sf.GetType().GetProperties())
-            print("[assembly_views] ColumnWidth not found on ScheduleField. Available: %s" % all_props)
+            print("[assembly_views] ColumnWidth not found on ScheduleField. Has: %s" % all_props)
         else:
-            print("[assembly_views] ColumnWidth property is read-only for '%s'" % col_name)
+            print("[assembly_views] ColumnWidth property exists but is read-only for '%s'" % col_name)
     except Exception as ref_err:
-        print("[assembly_views] Reflection failed for '%s': %s %s" % (col_name, type(ref_err).__name__, ref_err))
-
+        print("[assembly_views] Reflection error for '%s': %s %s" % (col_name, type(ref_err).__name__, ref_err))
     return False
 
 
@@ -399,13 +389,16 @@ def _configure_schedule_fields(
     """Configure fields on a schedule view and set column widths.
 
     Clears existing fields, adds requested fields in order, then applies
-    column-width overrides.
+    column-width overrides via .NET reflection.
 
     Key discoveries (diagnosed 2026-02):
-    - In this Revit version, AddField() returns ScheduleField directly (NOT
-      ScheduleFieldId).  Do NOT pass the return value to GetField().
-    - ScheduleField.ColumnWidth is not accessible via pythonnet attribute
-      access; use .NET reflection instead (_set_field_column_width).
+    - AddField() return value is NOT a ScheduleFieldId — passing it to
+      GetField() causes TypeError.  Do NOT use the AddField() return value.
+    - ScheduleField.ColumnWidth raises AttributeError via pythonnet direct
+      attribute access; sf.ColumnWidth = x on AddField() return is a silent
+      no-op (pythonnet sets Python attr, never calls C# setter).
+    - Fix: add all fields first, then use GetFieldOrder() + GetField() for
+      live references, then set width via reflection.
 
     Args:
         doc: Revit Document object
@@ -427,16 +420,34 @@ def _configure_schedule_fields(
         # Clear existing fields
         definition.ClearFields()
 
-        # Add requested fields; AddField() returns the ScheduleField directly
-        # in this Revit version — use it immediately for width-setting.
+        # Add requested fields; discard AddField() return value (unreliable type)
+        added_names = []
         for name in field_names:
             if name in available:
-                sched_field = definition.AddField(available[name])
-                desired_width = SCHEDULE_COLUMN_WIDTHS.get(name)
-                if desired_width is not None and sched_field is not None:
-                    _set_field_column_width(sched_field, name, desired_width)
+                definition.AddField(available[name])
+                added_names.append(name)
             else:
                 print("[assembly_views] Schedule field '%s' not found, skipping" % name)
+
+        # Set column widths: get live ScheduleField refs via GetFieldOrder() +
+        # GetField(), then set ColumnWidth via .NET reflection.
+        try:
+            field_ids = list(definition.GetFieldOrder())
+            for i, fid in enumerate(field_ids):
+                if i >= len(added_names):
+                    break
+                col_name = added_names[i]
+                desired_width = SCHEDULE_COLUMN_WIDTHS.get(col_name)
+                if desired_width is None:
+                    continue
+                try:
+                    live_sf = definition.GetField(fid)
+                    if live_sf is not None:
+                        _set_field_column_width_reflection(live_sf, col_name, desired_width)
+                except Exception as gf_err:
+                    print("[assembly_views] GetField error for '%s': %s" % (col_name, gf_err))
+        except Exception as fo_err:
+            print("[assembly_views] GetFieldOrder error: %s" % fo_err)
 
     except Exception as e:
         print("[assembly_views] _configure_schedule_fields failed: %s %s" % (type(e).__name__, e))

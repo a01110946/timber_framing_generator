@@ -37,6 +37,7 @@ Usage:
     track_profile = get_cfs_profile(ElementType.BOTTOM_PLATE)
 """
 
+import re
 from typing import Dict
 
 from src.timber_framing_generator.core.material_system import (
@@ -245,6 +246,70 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
         properties={
             "profile_type": "stud",
             "web_depth_inches": 8.0,
+            "flange_width_inches": 1.62,
+            "gauge": 68,
+            "thickness_mils": 68,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+        }
+    ),
+
+    # 10" web studs (1000 series) — for ~10" thick walls
+    "1000S162-54": ElementProfile(
+        name="1000S162-54",
+        width=1.62 / 12,
+        depth=10.0 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 10.0,
+            "flange_width_inches": 1.62,
+            "gauge": 54,
+            "thickness_mils": 54,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+        }
+    ),
+    "1000S162-68": ElementProfile(
+        name="1000S162-68",
+        width=1.62 / 12,
+        depth=10.0 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 10.0,
+            "flange_width_inches": 1.62,
+            "gauge": 68,
+            "thickness_mils": 68,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+        }
+    ),
+
+    # 12" web studs (1200 series) — for ~12" thick walls
+    "1200S162-54": ElementProfile(
+        name="1200S162-54",
+        width=1.62 / 12,
+        depth=12.0 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 12.0,
+            "flange_width_inches": 1.62,
+            "gauge": 54,
+            "thickness_mils": 54,
+            "has_lips": True,
+            "lip_depth_inches": 0.5,
+        }
+    ),
+    "1200S162-68": ElementProfile(
+        name="1200S162-68",
+        width=1.62 / 12,
+        depth=12.0 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "stud",
+            "web_depth_inches": 12.0,
             "flange_width_inches": 1.62,
             "gauge": 68,
             "thickness_mils": 68,
@@ -743,6 +808,38 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
         }
     ),
 
+    # 10" web tracks (1000 series) — pair with 1000-series studs
+    "1000T125-54": ElementProfile(
+        name="1000T125-54",
+        width=1.25 / 12,
+        depth=10.0 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "track",
+            "web_depth_inches": 10.0,
+            "flange_width_inches": 1.25,
+            "gauge": 54,
+            "thickness_mils": 54,
+            "has_lips": False,
+        }
+    ),
+
+    # 12" web tracks (1200 series) — pair with 1200-series studs
+    "1200T125-54": ElementProfile(
+        name="1200T125-54",
+        width=1.25 / 12,
+        depth=12.0 / 12,
+        material_system=MaterialSystem.CFS,
+        properties={
+            "profile_type": "track",
+            "web_depth_inches": 12.0,
+            "flange_width_inches": 1.25,
+            "gauge": 54,
+            "thickness_mils": 54,
+            "has_lips": False,
+        }
+    ),
+
     # =========================================================================
     # TRACKS - T200 FLANGE (2.00" - Sill Tracks)
     # =========================================================================
@@ -828,9 +925,10 @@ CFS_PROFILES: Dict[str, ElementProfile] = {
 # Maps element types to their default CFS profile for NON-BEARING walls
 # Uses 362 series (3 5/8") with S125 flange, 54 mil gauge
 DEFAULT_CFS_PROFILES: Dict[ElementType, str] = {
-    # Tracks for horizontal members (plates)
+    # Tracks for horizontal members (plates) — both T125 so top/bottom match
+    # when a wall falls through to defaults without series adjustment.
     ElementType.BOTTOM_PLATE: "362T125-54",   # Bottom track (T125 = 1.25" flange)
-    ElementType.TOP_PLATE: "362T250-54",      # Top track (T250 = 2.5" flange)
+    ElementType.TOP_PLATE: "362T125-54",      # Top track (T125 = 1.25" flange)
 
     # Studs for vertical members (S125 = standard wall studs)
     ElementType.STUD: "362S125-54",
@@ -851,8 +949,9 @@ DEFAULT_CFS_PROFILES: Dict[ElementType, str] = {
 # Uses 362 series (3 5/8") with S162 flange, 68 mil gauge (thicker for structural)
 DEFAULT_CFS_PROFILES_LOAD_BEARING: Dict[ElementType, str] = {
     # Tracks for horizontal members - thicker gauge for load transfer
+    # Both T125 so top/bottom match when no series adjustment applies.
     ElementType.BOTTOM_PLATE: "362T125-68",   # Bottom track (68 mil gauge)
-    ElementType.TOP_PLATE: "362T250-68",      # Top track (68 mil gauge)
+    ElementType.TOP_PLATE: "362T125-68",      # Top track (68 mil gauge)
 
     # Studs for vertical members - S162 flange for better load capacity
     ElementType.STUD: "362S162-68",
@@ -881,6 +980,8 @@ WALL_WIDTH_TO_SERIES: Dict[float, str] = {
     5.5: "550",      # 5 1/2" walls
     6.0: "600",      # 6" walls
     8.0: "800",      # 8" walls
+    10.0: "1000",    # 10" walls
+    12.0: "1200",    # 12" walls
 }
 
 
@@ -888,27 +989,69 @@ WALL_WIDTH_TO_SERIES: Dict[float, str] = {
 # Helper Functions
 # =============================================================================
 
+def _available_cfs_series() -> set:
+    """Return the set of series prefixes ("350", "362", ..., "1000", "1200")
+    that have at least one profile defined in CFS_PROFILES. Series declared
+    in WALL_WIDTH_TO_SERIES but missing from CFS_PROFILES would otherwise
+    cause a silent fallback to the raw default (362-series), which has
+    caused profile-selection bugs in the past.
+
+    Handles both 3-digit series (350-800) and 4-digit series (1000, 1200).
+    Plain name[:3] slicing would truncate "1000S162-54" to "100", which
+    wouldn't match WALL_WIDTH_TO_SERIES's "1000" entry.
+    """
+    available = set()
+    for name in CFS_PROFILES.keys():
+        m = re.match(r'^(\d{3,4})', name)
+        if m:
+            available.add(m.group(1))
+    return available
+
+
 def get_series_for_wall_thickness(wall_thickness_inches: float) -> str:
     """
     Get the appropriate CFS series for a given wall thickness.
+
+    Picks the largest series whose web depth is less than or equal to the
+    wall thickness. CFS profiles must fit inside the wall — picking the
+    closest series by absolute distance would assign 1000-series (10")
+    to a 9.5" wall, leaving 0.25" of profile sticking out each face.
+
+    Only considers series that actually have profiles defined in
+    CFS_PROFILES — a series declared in WALL_WIDTH_TO_SERIES but missing
+    from CFS_PROFILES (e.g., 1000/1200 before profiles are added) is
+    skipped so the caller doesn't silently fall back to 362-series.
+
+    If the wall is thinner than the smallest available series, falls
+    back to that smallest series.
 
     Args:
         wall_thickness_inches: Wall thickness in inches
 
     Returns:
-        Series string (e.g., "600" for 6" walls)
+        Series string (e.g., "800" for a 9.5" wall, "600" for a 6" wall)
     """
-    # Find the closest matching series
-    best_series = "362"  # Default fallback
-    best_diff = float('inf')
+    available = _available_cfs_series()
 
-    for width, series in WALL_WIDTH_TO_SERIES.items():
-        diff = abs(width - wall_thickness_inches)
-        if diff < best_diff:
-            best_diff = diff
-            best_series = series
+    available_pairs = [
+        (width, series)
+        for width, series in WALL_WIDTH_TO_SERIES.items()
+        if series in available
+    ]
 
-    return best_series
+    if not available_pairs:
+        return "362"
+
+    tolerance = 1e-6
+    fitting = [
+        (width, series)
+        for width, series in available_pairs
+        if width <= wall_thickness_inches + tolerance
+    ]
+    if fitting:
+        return max(fitting, key=lambda pair: pair[0])[1]
+
+    return min(available_pairs, key=lambda pair: pair[0])[1]
 
 
 def get_cfs_profile(
@@ -958,7 +1101,6 @@ def get_cfs_profile(
         target_series = get_series_for_wall_thickness(wall_thickness_inches)
         # Replace the series in the default profile name
         # E.g., "362S125-54" -> "600S125-54" for 6" walls
-        import re
         adjusted_name = re.sub(r'^\d{3}', target_series, default_profile_name)
 
         # Check if the adjusted profile exists
@@ -1050,13 +1192,10 @@ def get_profile_for_wall(
         >>> print(profile.name)
         '550T250-54'
     """
-    # Find the closest matching series
-    series = WALL_WIDTH_TO_SERIES.get(wall_width_inches)
-    if series is None:
-        # Find closest match
-        closest = min(WALL_WIDTH_TO_SERIES.keys(),
-                      key=lambda x: abs(x - wall_width_inches))
-        series = WALL_WIDTH_TO_SERIES[closest]
+    # Pick the largest series whose web depth fits within the wall.
+    # See get_series_for_wall_thickness — picking by absolute distance would
+    # oversize the profile on walls between standard widths (e.g., 9.5").
+    series = get_series_for_wall_thickness(wall_width_inches)
 
     # Determine profile type based on element type
     if element_type in (ElementType.BOTTOM_PLATE, ElementType.TOP_PLATE,

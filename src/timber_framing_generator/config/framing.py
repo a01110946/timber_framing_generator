@@ -338,6 +338,18 @@ def _infer_profile_from_thickness(wall_type: str) -> Optional[str]:
     Returns:
         Profile name (e.g., "2x4") or None if no thickness found
     """
+    # Pattern: fractional inch notation like "6 1/2\"" or "10 1/2 inch".
+    # Must run BEFORE the plain inch pattern — otherwise the latter matches
+    # the denominator ("2\"") and mis-reports thickness=2.
+    fraction_pattern = r'(\d+)\s+(\d+)/(\d+)\s*(?:"|inch|in\b)'
+    match = re.search(fraction_pattern, wall_type, re.IGNORECASE)
+    if match:
+        whole = float(match.group(1))
+        num = float(match.group(2))
+        den = float(match.group(3))
+        if den != 0:
+            return _thickness_to_profile(whole + num / den)
+
     # Pattern: number followed by inch mark or "inch"
     inch_pattern = r'(\d+(?:\.\d+)?)\s*(?:"|inch|in\b)'
     match = re.search(inch_pattern, wall_type, re.IGNORECASE)

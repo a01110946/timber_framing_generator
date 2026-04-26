@@ -191,6 +191,7 @@ OUTPUT_CONFIG = [
     ("Classifications", "classifications", "Classifications (column or beam)"),
     ("Profile Names", "profile_names", "Profile names"),
     ("Revit Type Names", "revit_type_names", "Matched Revit type names"),
+    ("Revit Family Names", "revit_family_names", "Revit family names (from Family Resolver); use to split the stream when beams span multiple families (e.g. CFS_Plate + CFS_Joist)"),
     ("CSR Angles", "csr_angles", "Cross-Section Rotation angles (beams only)"),
     ("Geometry Indices", "geometry_indices", "Indices into column_curves/beam_curves"),
     ("Base Level IDs", "base_level_ids", "Base level IDs (from wall)"),
@@ -255,6 +256,7 @@ element_types = []
 classifications = []
 profile_names = []
 revit_type_names = []
+revit_family_names = []
 csr_angles = []
 geometry_indices = []
 base_level_ids = []
@@ -320,6 +322,7 @@ if run and baking_data_json:
                     classifications.append(member_class)
                     profile_names.append(member.get("profile_name", ""))
                     revit_type_names.append(member.get("revit_type_name", ""))
+                    revit_family_names.append(member.get("revit_family", ""))
                     csr_angles.append(member.get("csr_angle", 0.0))
                     geometry_indices.append(member.get("geometry_index", -1))
 
@@ -328,17 +331,22 @@ if run and baking_data_json:
                     top_level_ids.append(wall_top_level)
 
                     # Centerline points as Point3d
+                    # CRITICAL: Use RhinoCommonFactory to create from the correct
+                    # assembly. Using rg.Point3d() directly can land the point in
+                    # the Rhino3dmIO assembly (if rhino3dm is loaded), and GH
+                    # silently coerces those to Unset — placing all beams at the
+                    # world origin. Same fix as column_planes below.
                     start = member.get("centerline_start", {})
                     end = member.get("centerline_end", {})
-                    centerline_starts.append(rg.Point3d(
-                        start.get("x", 0.0),
-                        start.get("y", 0.0),
-                        start.get("z", 0.0)
+                    centerline_starts.append(rc_factory.create_point3d(
+                        float(start.get("x", 0.0)),
+                        float(start.get("y", 0.0)),
+                        float(start.get("z", 0.0))
                     ))
-                    centerline_ends.append(rg.Point3d(
-                        end.get("x", 0.0),
-                        end.get("y", 0.0),
-                        end.get("z", 0.0)
+                    centerline_ends.append(rc_factory.create_point3d(
+                        float(end.get("x", 0.0)),
+                        float(end.get("y", 0.0)),
+                        float(end.get("z", 0.0))
                     ))
 
                     # Column orientation planes (for updating Location after creation)
@@ -400,6 +408,7 @@ if run and baking_data_json:
                 f"  classifications: {len(classifications)}",
                 f"  profile_names: {len(profile_names)}",
                 f"  revit_type_names: {len(revit_type_names)}",
+                f"  revit_family_names: {len(revit_family_names)} (unique: {sorted(set(n for n in revit_family_names if n))})",
                 f"  csr_angles: {len(csr_angles)}",
                 f"  geometry_indices: {len(geometry_indices)}",
                 f"  base_level_ids: {len(base_level_ids)}",

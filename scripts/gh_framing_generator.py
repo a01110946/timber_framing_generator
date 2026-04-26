@@ -491,9 +491,21 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config,
     # Build a shallow copy of config so global config is never mutated.
     wall_type_name = wall_data_dict.get("wall_type", "") if wall_data_dict else ""
     wall_config = dict(config)
-    # Only inject per-wall overrides if the config doesn't already have non-empty profile_overrides
+
+    # Thread wall_thickness (inches) and is_load_bearing through config.
+    # The CFS strategy used to rely on _current_wall_thickness_inches instance
+    # state set in create_horizontal_members, which was fragile across walls.
+    # Explicit config makes profile selection deterministic per wall.
+    wall_thickness_ft = wall_data_dict.get("wall_thickness") if wall_data_dict else None
+    if wall_thickness_ft and wall_thickness_ft > 0:
+        wall_config["wall_thickness_inches"] = float(wall_thickness_ft) * 12.0
+    if wall_data_dict and "is_load_bearing" in wall_data_dict:
+        wall_config["is_load_bearing"] = bool(wall_data_dict["is_load_bearing"])
+
+    # Only inject per-wall overrides if the config doesn't already have non-empty profile_overrides.
+    # Skip for non-timber systems: CFS and others have their own profile selection logic.
     existing_overrides = wall_config.get("profile_overrides") or {}
-    if wall_type_name and not existing_overrides:
+    if wall_type_name and not existing_overrides and strategy.material_system == MaterialSystem.TIMBER:
         try:
             profile = get_profile_for_wall_type(wall_type_name)
             profile_name = profile.name  # e.g. "2x4" or "2x6"
@@ -502,6 +514,8 @@ def generate_framing_for_wall(cell_data_dict, wall_data_dict, strategy, config,
                 "stud": profile_name,
                 "king_stud": profile_name,
                 "trimmer": profile_name,
+                "header": profile_name,
+                "sill": profile_name,
                 "header_cripple": profile_name,
                 "sill_cripple": profile_name,
                 "bottom_plate": profile_name,

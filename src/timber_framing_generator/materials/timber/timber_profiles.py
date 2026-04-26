@@ -46,6 +46,17 @@ from src.timber_framing_generator.core.material_system import (
 #   Nominal x12 → Actual 11.25" = 0.9375'
 
 TIMBER_PROFILES: Dict[str, ElementProfile] = {
+    "2x3": ElementProfile(
+        name="2x3",
+        width=1.5 / 12,      # 1.5 inches = 0.125 feet (visible edge along wall)
+        depth=2.5 / 12,      # 2.5 inches = 0.2083 feet (wall thickness)
+        material_system=MaterialSystem.TIMBER,
+        properties={
+            "nominal": "2x3",
+            "actual_inches": (1.5, 2.5),
+            "grade": "SPF #2",
+        }
+    ),
     "2x4": ElementProfile(
         name="2x4",
         width=1.5 / 12,      # 1.5 inches = 0.125 feet (visible edge along wall)

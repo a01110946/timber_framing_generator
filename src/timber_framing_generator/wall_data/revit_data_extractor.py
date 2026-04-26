@@ -454,14 +454,19 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                             nurbs_curve = wall_base_curve_rhino.ToNurbsCurve()
                             success, t = nurbs_curve.ClosestPoint(opening_location_point_rhino)
 
-                    print(f"Opening {insert_id} has t (arc-length ft): {t}")
-
-                    # t is the arc-length parameter from Curve.ClosestPoint().
-                    # For rg.LineCurve(Point3d, Point3d), domain = [0, wall_length_ft],
-                    # so t is ALREADY in feet — do NOT multiply by wall_curve_length.
+                    # GOTCHA (Rhino 8 CPython3): Curve.ClosestPoint() returns a
+                    # NORMALIZED parameter in [0, 1] — even though Curve.Domain
+                    # reports [0, length] and Curve.PointAt(t) uses that same
+                    # [0, length] parameterization. The two APIs disagree inside
+                    # pythonnet. Verified empirically: for a 27.4 ft wall with an
+                    # opening at 23.75 ft from start, ClosestPoint returned 0.867
+                    # (= 23.75/27.4) while Domain.T1 = 27.4 and PointAt(0.867)
+                    # returned a point only 0.87 ft along. So: treat t as [0, 1]
+                    # and multiply by arc-length to get the world u-coordinate.
                     wall_curve_length = curve_length(wall_base_curve_rhino)
-                    opening_center_u = t  # t is already arc length in feet
-                    print(f"Opening {insert_id} - wall_curve_length: {wall_curve_length}, opening_center_u: {opening_center_u}")
+                    opening_center_u = t * wall_curve_length
+                    print(f"Opening {insert_id} centered at u={opening_center_u:.3f} "
+                          f"(t={t:.4f}, wall_length={wall_curve_length:.3f})")
 
                     rough_width_half = opening_width_value / 2.0
                     start_u_coordinate = opening_center_u - rough_width_half if success else 0.0

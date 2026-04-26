@@ -220,10 +220,23 @@ class CFSFramingStrategy(FramingStrategy):
         if override_name:
             return get_cfs_profile(element_type, override_name)
 
-        # Use wall thickness and load-bearing aware selection
-        # If not explicitly provided, use the current values from instance
-        thickness = wall_thickness_inches or self._current_wall_thickness_inches
-        load_bearing = is_load_bearing if is_load_bearing is not None else self._current_is_load_bearing
+        # Resolve wall thickness: explicit arg > config > instance state.
+        # Threading through config (set per-wall in generate_framing_for_wall)
+        # is the authoritative path; instance state is a legacy fallback that
+        # can go stale across walls when the strategy is a singleton.
+        thickness = (
+            wall_thickness_inches
+            or config.get("wall_thickness_inches")
+            or self._current_wall_thickness_inches
+        )
+
+        if is_load_bearing is not None:
+            load_bearing = is_load_bearing
+        elif "is_load_bearing" in config:
+            load_bearing = bool(config["is_load_bearing"])
+        else:
+            load_bearing = self._current_is_load_bearing
+
         return get_cfs_profile(
             element_type,
             wall_thickness_inches=thickness,

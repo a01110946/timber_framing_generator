@@ -454,19 +454,21 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                             nurbs_curve = wall_base_curve_rhino.ToNurbsCurve()
                             success, t = nurbs_curve.ClosestPoint(opening_location_point_rhino)
 
-                    # GOTCHA (Rhino 8 CPython3): Curve.ClosestPoint() returns a
-                    # NORMALIZED parameter in [0, 1] — even though Curve.Domain
-                    # reports [0, length] and Curve.PointAt(t) uses that same
-                    # [0, length] parameterization. The two APIs disagree inside
-                    # pythonnet. Verified empirically: for a 27.4 ft wall with an
-                    # opening at 23.75 ft from start, ClosestPoint returned 0.867
-                    # (= 23.75/27.4) while Domain.T1 = 27.4 and PointAt(0.867)
-                    # returned a point only 0.87 ft along. So: treat t as [0, 1]
-                    # and multiply by arc-length to get the world u-coordinate.
+                    # Normalize t to [0, 1] from the curve's own domain, so this
+                    # works whether the underlying API returns arc-length
+                    # (LineCurve.Line.ClosestParameter → domain [0, L]) or a
+                    # pre-normalized parameter (some Curve.ClosestPoint paths).
+                    domain = wall_base_curve_rhino.Domain
+                    domain_length = domain.T1 - domain.T0
+                    t_normalized = (
+                        (t - domain.T0) / domain_length
+                        if domain_length > 1e-9 else 0.0
+                    )
                     wall_curve_length = curve_length(wall_base_curve_rhino)
-                    opening_center_u = t * wall_curve_length
+                    opening_center_u = t_normalized * wall_curve_length
                     print(f"Opening {insert_id} centered at u={opening_center_u:.3f} "
-                          f"(t={t:.4f}, wall_length={wall_curve_length:.3f})")
+                          f"(t={t:.4f}, t_norm={t_normalized:.4f}, "
+                          f"wall_length={wall_curve_length:.3f})")
 
                     rough_width_half = opening_width_value / 2.0
                     start_u_coordinate = opening_center_u - rough_width_half if success else 0.0

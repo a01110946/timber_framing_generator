@@ -196,18 +196,23 @@ def load_family(doc, rfa_path: str) -> Optional[Any]:
             success = doc.LoadFamily(rfa_path, load_options, family_ref)
             if success:
                 t.Commit()
-                logger.info("Loaded family from %s", rfa_path)
+                print("[LOADER] Loaded family from %s (fresh)" % rfa_path)
                 return family_ref.Value
             else:
-                t.RollBack()
-                logger.warning("LoadFamily returned False for %s", rfa_path)
+                # LoadFamily returns False when family already exists
+                # BUT with IFamilyLoadOptions returning True, it should
+                # have overwritten. Either way, commit (not rollback)
+                # to persist any parameter updates.
+                t.Commit()
+                print("[LOADER] LoadFamily returned False for %s "
+                      "(family already in doc, overwrite attempted)" % rfa_path)
 
-                # Family may already be loaded — try to find it
+                # Return the already-loaded family
                 import os
                 family_name = os.path.splitext(os.path.basename(rfa_path))[0]
                 loaded = get_loaded_families(doc)
                 if family_name in loaded:
-                    logger.info("Family '%s' already loaded in document", family_name)
+                    print("[LOADER] Found existing '%s' in document" % family_name)
                     return loaded[family_name]["family"]
 
                 return None
@@ -293,3 +298,160 @@ def get_all_family_types(doc, family: Any) -> List[str]:
     except Exception as e:
         logger.error("Failed to get family types: %s", e)
         return []
+
+
+# =============================================================================
+# Type Duplication (for families missing manifest-declared types)
+# =============================================================================
+
+# Parameter-name fallbacks for framing dimensions. Different .rfa templates use
+# different conventions: "b"/"d" (classic structural), "Width"/"Depth" (generic),
+# "Section Width"/"Section Height" (some lumber families). Try each in order.
+FRAMING_WIDTH_PARAM_NAMES = [
+    "b", "Width", "Section Width", "Thickness", "Actual Width",
+]
+FRAMING_DEPTH_PARAM_NAMES = [
+    "d", "Depth", "Section Height", "Height", "Actual Depth",
+]
+
+
+def _set_first_matching_param(symbol, param_names, value_ft) -> Optional[str]:
+    """Try each parameter name in order; set the first editable match.
+
+    Returns the name of the parameter that was set, or None if none matched.
+    """
+    for name in param_names:
+        p = symbol.LookupParameter(name)
+        if p is not None and not p.IsReadOnly:
+            try:
+                p.Set(value_ft)
+                return name
+            except Exception:
+                continue
+    return None
+
+
+def _list_editable_params(symbol) -> List[str]:
+    """Return names of editable (non-read-only) parameters on a FamilySymbol."""
+    try:
+        return [p.Definition.Name for p in symbol.Parameters if not p.IsReadOnly]
+    except Exception:
+        return []
+
+
+def ensure_type_exists(
+    doc,
+    family: Any,
+    type_name: str,
+    width_in: Optional[float] = None,
+    depth_in: Optional[float] = None,
+) -> Optional[Any]:
+    """Return an activated FamilySymbol for the requested type, creating it
+    via Duplicate() if it doesn't exist yet.
+
+    Used when a family is already loaded in Revit but is missing types that
+    the manifest declares. Looks up the type by name; if absent, duplicates
+    an existing type in the family and sets width/depth dimension parameters
+    (with fallbacks for common framing parameter conventions).
+
+    Args:
+        doc: Revit Document object.
+        family: Revit Family object to ensure the type in.
+        type_name: Name of the type that should exist (e.g., "2x10").
+        width_in: Desired width in inches. If None and type is missing,
+            returns None (can't create without dimensions).
+        depth_in: Desired depth in inches. If None and type is missing,
+            returns None.
+
+    Returns:
+        Activated FamilySymbol, or None if lookup/duplication failed.
+    """
+    if not REVIT_AVAILABLE:
+        return None
+
+    try:
+        symbol_ids = list(family.GetFamilySymbolIds())
+
+        # Fast path: type already exists — just activate if needed
+        for symbol_id in symbol_ids:
+            sym = doc.GetElement(symbol_id)
+            if sym is not None and sym.Name == type_name:
+                if not sym.IsActive:
+                    t = Transaction(doc, f"Activate Type: {type_name}")
+                    t.Start()
+                    try:
+                        sym.Activate()
+                        doc.Regenerate()
+                        t.Commit()
+                    except Exception:
+                        if t.HasStarted():
+                            t.RollBack()
+                        raise
+                return sym
+
+        # Type missing — need to duplicate
+        if width_in is None or depth_in is None:
+            logger.warning(
+                "Type '%s' missing in family '%s' and no dimensions provided; "
+                "cannot create via Duplicate",
+                type_name, family.Name,
+            )
+            return None
+
+        if not symbol_ids:
+            logger.warning(
+                "Family '%s' has no existing types to duplicate from", family.Name
+            )
+            return None
+
+        source = doc.GetElement(symbol_ids[0])
+        if source is None:
+            return None
+
+        width_ft = width_in / 12.0
+        depth_ft = depth_in / 12.0
+
+        t = Transaction(doc, f"Create Type: {type_name}")
+        t.Start()
+        try:
+            new_sym = source.Duplicate(type_name)
+
+            width_param = _set_first_matching_param(
+                new_sym, FRAMING_WIDTH_PARAM_NAMES, width_ft
+            )
+            depth_param = _set_first_matching_param(
+                new_sym, FRAMING_DEPTH_PARAM_NAMES, depth_ft
+            )
+
+            if width_param is None or depth_param is None:
+                available = _list_editable_params(new_sym)
+                logger.warning(
+                    "Duplicated '%s' but failed to set dimensions "
+                    "(width_param=%s, depth_param=%s). Editable params: %s",
+                    type_name, width_param, depth_param, available,
+                )
+
+            if not new_sym.IsActive:
+                new_sym.Activate()
+            doc.Regenerate()
+            t.Commit()
+
+            logger.info(
+                "Created type '%s' in family '%s' via Duplicate (width=%.4f ft, "
+                "depth=%.4f ft, width_param=%s, depth_param=%s)",
+                type_name, family.Name, width_ft, depth_ft,
+                width_param, depth_param,
+            )
+            return new_sym
+
+        except Exception:
+            if t.HasStarted():
+                t.RollBack()
+            raise
+
+    except Exception as e:
+        logger.error(
+            "ensure_type_exists('%s') failed in family '%s': %s",
+            type_name, getattr(family, "Name", "?"), e,
+        )
+        return None

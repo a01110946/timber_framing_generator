@@ -256,13 +256,19 @@ def parse_cfs_profile_name(profile_name: str) -> dict:
     Examples:
         "362S125-54" -> {"series": "362", "type": "S", "flange": "125", "gauge": "54"}
         "600T125-54(50)" -> {"series": "600", "type": "T", "flange": "125", "gauge": "54"}
+        "1000S162-54" -> {"series": "1000", "type": "S", "flange": "162", "gauge": "54"}
+
+    Series prefix is 3 or 4 digits: 350-800 are 3-digit; 1000, 1200, 1600 are
+    4-digit. A 3-digit-only regex would fail to parse 1000-series profiles,
+    which cascades into the W-Shape fallback when find_similar_cfs_profile
+    gets a None source.
 
     Returns:
         Dict with profile components or None if not a CFS profile
     """
     import re
-    # Match patterns like 362S125-54 or 600T125-54(50)
-    pattern = r'^(\d{3})([ST])(\d{3})-(\d{2,3})(?:\(\d+\))?$'
+    # Match patterns like 362S125-54, 600T125-54(50), 1000S162-54, 1200S250-97
+    pattern = r'^(\d{3,4})([ST])(\d{3})-(\d{2,3})(?:\(\d+\))?$'
     match = re.match(pattern, profile_name.upper())
     if match:
         return {
@@ -996,19 +1002,41 @@ if run and elements_json:
                     skipped_count += 1
                     continue
 
-                # Match to Revit type
-                matched_type, match_quality = find_matching_revit_type(
-                    profile_name, type_list, user_type_mapping,
-                    debug_first_n=1 if debug_type_match else 0
-                )
+                # If type_mapping provides an authoritative override for this profile,
+                # use it directly — no need to search the connected type lists.
+                # This allows bypassing revit_column_types/revit_beam_types entirely.
+                # Family Resolver's resolved `element.revit_type` is also authoritative:
+                # it reflects the type the resolver confirmed exists in the Revit doc,
+                # so we trust it over matching against wired type pickers (which can be
+                # incomplete and silently fall through to find_similar_cfs_profile,
+                # mapping e.g. 1000S162-54 -> 800S162-54 by series proximity).
+                direct_type_name = None
+                direct_source = None
+                if user_type_mapping and profile_name in user_type_mapping:
+                    direct_type_name = user_type_mapping[profile_name]
+                    direct_source = 'user_mapping'
+                elif getattr(element, "revit_type", None):
+                    direct_type_name = element.revit_type
+                    direct_source = 'resolver'
 
-                if matched_type is None:
-                    unmapped.append(f"{classification.title()}: {element.id} ({profile_name})")
-                    skipped_count += 1
-                    continue
+                if direct_type_name:
+                    revit_type_name = direct_type_name
+                    match_quality = direct_source
+                    type_match_stats[direct_source] = type_match_stats.get(direct_source, 0) + 1
+                else:
+                    # Match to Revit type via type list
+                    matched_type, match_quality = find_matching_revit_type(
+                        profile_name, type_list, user_type_mapping,
+                        debug_first_n=1 if debug_type_match else 0
+                    )
 
-                if match_quality:
-                    type_match_stats[match_quality] = type_match_stats.get(match_quality, 0) + 1
+                    if matched_type is None:
+                        unmapped.append(f"{classification.title()}: {element.id} ({profile_name})")
+                        skipped_count += 1
+                        continue
+
+                    if match_quality:
+                        type_match_stats[match_quality] = type_match_stats.get(match_quality, 0) + 1
 
                 # =========================================================
                 # Compute CSR angle for CFS elements
@@ -1165,8 +1193,9 @@ if run and elements_json:
                     csr_stats[elem_type] = {}
                 csr_stats[elem_type][csr_angle] = csr_stats[elem_type].get(csr_angle, 0) + 1
 
-                # Get Revit type name for JSON output
-                revit_type_name = get_type_name(matched_type)
+                # Get Revit type name for JSON output (direct_type_name already set above)
+                if not direct_type_name:
+                    revit_type_name = get_type_name(matched_type)
 
                 # Determine geometry index based on classification (compute BEFORE debug tracking)
                 if classification == "column":
@@ -1197,12 +1226,20 @@ if run and elements_json:
                     })
 
                 # Build member data for JSON
+                # revit_family comes from the Family Resolver's enrichment —
+                # we propagate it here so downstream (Baking Data Parser / GH
+                # canvas) can split the beam stream by family. In CFS, beams
+                # span two families (TFG_CFS_Plate for T-profile tracks and
+                # TFG_CFS_Joist for S-profile horizontal members like row
+                # blocking, headers, sills), so family-agnostic routing would
+                # silently drop half the types.
                 member_data = {
                     "id": element.id,
                     "element_type": element.element_type,
                     "classification": classification,
                     "profile_name": profile_name,
                     "revit_type_name": revit_type_name,
+                    "revit_family": getattr(element, "revit_family", None) or "",
                     "centerline_start": {
                         "x": element.centerline_start.x,
                         "y": element.centerline_start.y,

@@ -241,6 +241,16 @@ def setup_component():
 # Helper Functions
 # =============================================================================
 
+def _element_id_int(element_id) -> int:
+    """Get integer value from an ElementId, compatible with Revit 2024 and 2025+.
+
+    Revit 2025 replaced ElementId.IntegerValue with ElementId.Value.
+    """
+    if hasattr(element_id, 'Value'):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 def validate_inputs(walls, run):
     """Validate component inputs.
 
@@ -302,8 +312,8 @@ def convert_wall_data_to_schema(wall_data, wall_id):
     # Extract Revit level IDs for RiR baking
     base_level = wall_data.get('base_level')
     top_level = wall_data.get('top_level')
-    base_level_id = base_level.Id.IntegerValue if base_level else None
-    top_level_id = top_level.Id.IntegerValue if top_level else None
+    base_level_id = _element_id_int(base_level.Id) if base_level else None
+    top_level_id = _element_id_int(top_level.Id) if top_level else None
 
     # Extract base curve endpoints
     base_curve = wall_data.get('wall_base_curve')
@@ -324,10 +334,11 @@ def convert_wall_data_to_schema(wall_data, wall_id):
         height = float(opening.get('rough_height', opening.get('height', 0)))
         u_end = float(opening.get('u_end', u_start + width))
 
-        # NEW CODE: Validate opening is within wall bounds
-        if u_start < 0 or u_end > wall_length:
-            print(f"WARNING: Skipping opening - outside wall bounds "
-                  f"(u={u_start:.2f} to {u_end:.2f}, wall_length={wall_length:.2f})")
+        # Clamp opening to wall bounds (doors near wall ends may slightly overhang).
+        u_start = max(0.0, u_start)
+        u_end = min(wall_length, u_end)
+        if u_end - u_start < 0.01:
+            print(f"Note: Opening entirely outside wall bounds after clamping, skipping")
             continue
 
         sill_height = opening.get('base_elevation_relative_to_wall_base',
@@ -391,7 +402,7 @@ def process_walls(walls_input, doc):
 
     for i, wall in enumerate(walls_input):
         try:
-            wall_id = str(wall.Id.IntegerValue)
+            wall_id = str(_element_id_int(wall.Id))
             data = extract_wall_data_from_revit(wall, doc)
 
             if data:

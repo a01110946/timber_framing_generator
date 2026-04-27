@@ -24,6 +24,29 @@ from typing import List, Optional
 from enum import Enum
 
 
+class PanelizationStrategy(Enum):
+    """Strategy for panel joint placement.
+
+    Different prefab builders use different strategies for splitting walls
+    into panels. Each strategy balances manufacturing simplicity, panel count,
+    and structural requirements differently.
+
+    Attributes:
+        LENGTH_OPTIMIZED: DP minimizes panel count; joints avoid opening
+            exclusion zones. May produce L-shaped panels. (Default)
+        OPENING_BOUNDED: Force joints at king studs flanking openings so
+            each opening becomes its own rectangular panel.
+        NO_SPLIT_THROUGH: Widen exclusion zones to span the full horizontal
+            range of each opening, preventing any joint within an opening.
+        EQUAL_LENGTH: Simple equal division snapped to studs, with no
+            opening awareness.
+    """
+    LENGTH_OPTIMIZED = "length_optimized"
+    OPENING_BOUNDED = "opening_bounded"
+    NO_SPLIT_THROUGH = "no_split_through"
+    EQUAL_LENGTH = "equal_length"
+
+
 class CornerPriority(Enum):
     """Strategy for determining which wall extends at corners.
 
@@ -114,6 +137,10 @@ class PanelConfig:
         stud_spacing: Stud spacing for joint alignment (feet)
         snap_to_studs: Whether to snap joints to stud locations
         weight_per_sqft: Estimated panel weight per square foot (lbs)
+        strategy: Panelization strategy for joint placement
+        opening_edge_stud: Which stud defines opening edge for OPENING_BOUNDED
+            strategy. "king_and_trimmer" places joint at outer king stud edge;
+            "trimmer_only" places joint at outer trimmer edge.
 
     Example:
         >>> config = PanelConfig(max_panel_length=20.0)
@@ -145,10 +172,19 @@ class PanelConfig:
     # Weight estimation
     weight_per_sqft: float = 5.0  # lbs/sqft (rough estimate for framed wall)
 
+    # Panelization strategy
+    strategy: PanelizationStrategy = field(
+        default_factory=lambda: PanelizationStrategy.LENGTH_OPTIMIZED
+    )
+    opening_edge_stud: str = "king_and_trimmer"  # or "trimmer_only"
+    stud_width: float = 0.125  # 1.5" in feet (actual width of a 2x4/2x6 stud)
+
     def __post_init__(self):
-        """Convert corner_priority string to enum if needed."""
+        """Convert string values to enums if needed."""
         if isinstance(self.corner_priority, str):
             self.corner_priority = CornerPriority(self.corner_priority)
+        if isinstance(self.strategy, str):
+            self.strategy = PanelizationStrategy(self.strategy)
 
     def validate(self) -> List[str]:
         """Validate configuration parameters.
@@ -195,6 +231,17 @@ class PanelConfig:
         if self.stud_spacing <= 0:
             errors.append("stud_spacing must be positive")
 
+        # Strategy validation
+        if not isinstance(self.strategy, PanelizationStrategy):
+            errors.append(f"strategy must be a PanelizationStrategy, got {type(self.strategy)}")
+        if self.opening_edge_stud not in ("king_and_trimmer", "trimmer_only"):
+            errors.append(
+                f"opening_edge_stud must be 'king_and_trimmer' or 'trimmer_only', "
+                f"got '{self.opening_edge_stud}'"
+            )
+        if self.stud_width <= 0:
+            errors.append("stud_width must be positive")
+
         if errors:
             raise ValueError("PanelConfig validation failed:\n" + "\n".join(errors))
 
@@ -219,6 +266,9 @@ class PanelConfig:
             "stud_spacing": self.stud_spacing,
             "snap_to_studs": self.snap_to_studs,
             "weight_per_sqft": self.weight_per_sqft,
+            "strategy": self.strategy.value,
+            "opening_edge_stud": self.opening_edge_stud,
+            "stud_width": self.stud_width,
         }
 
     @classmethod
@@ -246,6 +296,11 @@ class PanelConfig:
             stud_spacing=data.get("stud_spacing", 1.333),
             snap_to_studs=data.get("snap_to_studs", True),
             weight_per_sqft=data.get("weight_per_sqft", 5.0),
+            strategy=PanelizationStrategy(
+                data.get("strategy", "length_optimized")
+            ),
+            opening_edge_stud=data.get("opening_edge_stud", "king_and_trimmer"),
+            stud_width=data.get("stud_width", 0.125),
         )
 
     @classmethod

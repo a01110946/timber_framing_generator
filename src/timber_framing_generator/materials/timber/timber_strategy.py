@@ -275,7 +275,23 @@ class TimberFramingStrategy(FramingStrategy):
             # Filter openings to only those within this panel's range
             all_openings = rhino_wall_data.get("openings", [])
             if panel_u_start is not None and panel_u_end is not None:
-                openings = get_openings_in_range(all_openings, panel_u_start, panel_u_end)
+                raw_openings = get_openings_in_range(all_openings, panel_u_start, panel_u_end)
+                # Convert wall-relative opening u-coordinates to panel-relative.
+                # The plate reference line starts at the panel's WBC bl (panel_u_start from
+                # the wall origin), so door positions must be expressed relative to that start.
+                # Without this, create_plates computes seg_u_offset=0 and treats wall-relative
+                # u_start as panel-local, placing a spurious plate segment inside door openings.
+                panel_length = panel_u_end - panel_u_start
+                openings = []
+                for op in raw_openings:
+                    op_copy = dict(op)
+                    local_start = max(op.get("u_start", 0) - panel_u_start, 0.0)
+                    local_end = min(op.get("u_end", 0) - panel_u_start, panel_length)
+                    op_copy["u_start"] = local_start
+                    op_copy["u_end"] = local_end
+                    op_copy["start_u_coordinate"] = local_start
+                    op_copy["rough_width"] = local_end - local_start
+                    openings.append(op_copy)
                 logger.debug(f"Panel [{panel_u_start:.2f}-{panel_u_end:.2f}]: {len(openings)}/{len(all_openings)} openings")
             else:
                 openings = all_openings

@@ -56,6 +56,7 @@ class FamilyEntry:
     types: Dict[str, FamilyTypeInfo]
     sha256: str
     domain: str = "framing"
+    material_system: str = ""  # e.g. "timber", "cfs"; empty = not material-specific
 
 
 @dataclass
@@ -103,16 +104,17 @@ def parse_manifest(json_str: str) -> FamilyManifest:
             }
             types[type_name] = FamilyTypeInfo(
                 width_in=type_data["width_in"],
-                depth_in=type_data["depth_in"],
+                depth_in=type_data.get("depth_in", type_data.get("height_in", 0.0)),
                 properties=properties,
             )
 
         families[family_key] = FamilyEntry(
-            file=family_data["file"],
+            file=family_data.get("file", ""),
             category=family_data["category"],
             types=types,
             sha256=family_data.get("sha256", ""),
             domain=family_data.get("domain", "framing"),
+            material_system=family_data.get("material_system", ""),
         )
 
     return FamilyManifest(
@@ -149,13 +151,16 @@ def serialize_manifest(manifest: FamilyManifest) -> str:
             type_dict.update(type_info.properties)
             types_data[type_name] = type_dict
 
-        data["families"][family_key] = {
+        fam_dict: Dict[str, Any] = {
             "file": entry.file,
             "category": entry.category,
             "types": types_data,
             "sha256": entry.sha256,
             "domain": entry.domain,
         }
+        if entry.material_system:
+            fam_dict["material_system"] = entry.material_system
+        data["families"][family_key] = fam_dict
 
     return json.dumps(data, indent=2)
 
@@ -290,3 +295,28 @@ def get_families_for_elements(
             needed[family_key] = manifest.families[family_key]
 
     return needed
+
+
+def get_families_for_material(
+    manifest: FamilyManifest,
+    material_system: str,
+) -> Dict[str, FamilyEntry]:
+    """Return all framing families matching a given material system.
+
+    Used to ensure every family for a material system is loaded even
+    when some profile names are shared (e.g., both Timber_Stud and
+    Timber_Framing have "2x4" types — profile matching alone would
+    only find one of them).
+
+    Args:
+        manifest: Parsed FamilyManifest
+        material_system: Material system string (e.g. "timber", "cfs")
+
+    Returns:
+        Dict mapping family_key -> FamilyEntry for matching families
+    """
+    return {
+        key: entry
+        for key, entry in manifest.families.items()
+        if entry.material_system == material_system
+    }

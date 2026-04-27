@@ -25,45 +25,76 @@ WallInputData = Dict[
 ]
 
 
-def _get_opening_dimension(element, symbol, param_names: List[str]) -> float:
+def _get_opening_dimension(element, symbol, param_names: List[str], bip_list=None) -> float:
     """
-    Try multiple parameter names to get an opening dimension.
+    Try multiple approaches to get an opening dimension (width or height).
 
     Checks in order:
-    1. Named parameters on instance
-    2. Named parameters on symbol (type)
+    1. BuiltInParameters on symbol (type) — most reliable for standard Revit families
+    2. Named parameters on instance
+    3. Named parameters on symbol (type)
+    4. Diagnostic dump of all symbol params when all else fails
 
     Args:
         element: The FamilyInstance (door/window)
         symbol: The FamilySymbol (type)
         param_names: List of parameter names to try (e.g., ["Rough Width", "Width"])
+        bip_list: Optional list of BuiltInParameter values to try first
 
     Returns:
-        The dimension value, or 0.0 if not found
+        The dimension value in feet, or 0.0 if not found
     """
-    # Try instance parameters first
+    # 1. Try BuiltInParameters on symbol (type) — standard Revit door/window families
+    #    store their dimensions as BIPs, which are language-independent.
+    if bip_list:
+        for bip in bip_list:
+            try:
+                param = symbol.get_Parameter(bip)
+                if param and param.HasValue:
+                    value = param.AsDouble()
+                    if value > 0:
+                        print(f"    Found BIP {bip} on type: {value:.4f} ft")
+                        return value
+            except Exception:
+                pass
+
+    # 2. Try named parameters on instance
     for name in param_names:
         try:
             param = element.LookupParameter(name)
             if param and param.HasValue:
                 value = param.AsDouble()
                 if value > 0:
-                    print(f"    Found {name} on instance: {value}")
+                    print(f"    Found '{name}' on instance: {value:.4f} ft")
                     return value
         except Exception as e:
             print(f"    Error reading instance param '{name}': {e}")
 
-    # Try type (symbol) parameters
+    # 3. Try named parameters on symbol (type)
     for name in param_names:
         try:
             param = symbol.LookupParameter(name)
             if param and param.HasValue:
                 value = param.AsDouble()
                 if value > 0:
-                    print(f"    Found {name} on type: {value}")
+                    print(f"    Found '{name}' on type: {value:.4f} ft")
                     return value
         except Exception as e:
             print(f"    Error reading type param '{name}': {e}")
+
+    # 4. All methods failed — print available numeric params on the symbol for diagnosis
+    print(f"    WARNING: dimension not found. Symbol numeric params (value > 0):")
+    try:
+        for p in symbol.Parameters:
+            try:
+                if p.HasValue:
+                    v = p.AsDouble()
+                    if v > 0:
+                        print(f"      '{p.Definition.Name}' = {v:.4f} ft")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"      Cannot list symbol params: {e}")
 
     return 0.0
 
@@ -190,10 +221,81 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
 
         # 5. Get openings.
         openings_data: List[Dict[str, Union[str, float]]] = []
-        print(f"Wall {revit_wall.Id} has {len(revit_wall.FindInserts(True, False, True, True))} openings")
-        insert_ids = revit_wall.FindInserts(True, False, True, True)
-        print(f"Wall {revit_wall.Id} has {len(insert_ids)} inserts")
-        for insert_id in insert_ids:
+
+        # Helper: version-safe ElementId -> int
+        def _eid_int_local(eid):
+            if hasattr(eid, "Value"):
+                return int(eid.Value)
+            return int(eid.IntegerValue)
+
+        _wall_id_int = _eid_int_local(revit_wall.Id)
+
+        # --- DIAGNOSTIC BLOCK ---
+        # Both old and new FindInserts signatures side-by-side so we can see
+        # what each variant returns in the Rhino console.
+        _fi_old = revit_wall.FindInserts(True, False, True, True)
+        _fi_new = revit_wall.FindInserts(False, False, False, False)
+        print(f"[DBG] Wall {_wall_id_int}:")
+        print(f"  FindInserts(T,F,T,T) = {len(_fi_old)}  ids={[_eid_int_local(x) for x in _fi_old]}")
+        print(f"  FindInserts(F,F,F,F) = {len(_fi_new)}  ids={[_eid_int_local(x) for x in _fi_new]}")
+
+        # Total doors and windows in the document — collect once, reuse below
+        _all_doors = []
+        _all_wins = []
+        try:
+            _all_doors = list(
+                DB.FilteredElementCollector(doc)
+                .OfCategory(DB.BuiltInCategory.OST_Doors)
+                .OfClass(DB.FamilyInstance)
+                .ToElements()
+            )
+            _all_wins = list(
+                DB.FilteredElementCollector(doc)
+                .OfCategory(DB.BuiltInCategory.OST_Windows)
+                .OfClass(DB.FamilyInstance)
+                .ToElements()
+            )
+            print(f"  Doc totals: {len(_all_doors)} doors, {len(_all_wins)} windows")
+
+            # For every door/window in the doc print: its id, host id, and
+            # whether it matches this wall. This is the key diagnostic.
+            for _e in _all_doors + _all_wins:
+                try:
+                    _cat = _e.Category.Name if _e.Category else "?"
+                    _eid = _eid_int_local(_e.Id)
+                    _host_obj = getattr(_e, "Host", None)
+                    _host_id = _eid_int_local(_host_obj.Id) if _host_obj is not None else None
+                    _match = (_host_id == _wall_id_int)
+                    print(f"    {_cat} id={_eid}  host_id={_host_id}  wall_id={_wall_id_int}  match={_match}")
+                except Exception as _pe:
+                    print(f"    ERROR inspecting element: {_pe}")
+        except Exception as _de:
+            print(f"  Doc door/window scan ERROR: {_de}")
+        # --- END DIAGNOSTIC BLOCK ---
+
+        # Build final insert list: FindInserts(F,F,F,F) + Host.Id scan merged
+        _seen_int_ids = set()
+        _all_insert_ids = []
+        for _id in _fi_new:
+            _iv = _eid_int_local(_id)
+            if _iv not in _seen_int_ids:
+                _seen_int_ids.add(_iv)
+                _all_insert_ids.append(_id)
+
+        for _elem in _all_doors + _all_wins:
+            try:
+                _host_obj = getattr(_elem, "Host", None)
+                if _host_obj is not None:
+                    if _eid_int_local(_host_obj.Id) == _wall_id_int:
+                        _ev = _eid_int_local(_elem.Id)
+                        if _ev not in _seen_int_ids:
+                            _seen_int_ids.add(_ev)
+                            _all_insert_ids.append(_elem.Id)
+            except Exception:
+                pass
+
+        print(f"  Total inserts to process for wall {_wall_id_int}: {len(_all_insert_ids)}")
+        for insert_id in _all_insert_ids:
             insert_element = revit_wall.Document.GetElement(insert_id)
             if isinstance(insert_element, DB.FamilyInstance):
                 if not (insert_element.Category and insert_element.Category.Name):
@@ -209,8 +311,18 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
 
                 family_symbol = insert_element.Symbol
 
-                # Try multiple parameter names for width/height
-                # Different Revit families use different names
+                # BuiltInParameters to try first — language-independent, work for
+                # standard Revit door/window families regardless of template locale.
+                width_bips = [
+                    DB.BuiltInParameter.DOOR_WIDTH,          # doors (type param)
+                    DB.BuiltInParameter.FAMILY_WIDTH_PARAM,  # generic family width (type)
+                ]
+                height_bips = [
+                    DB.BuiltInParameter.DOOR_HEIGHT,          # doors (type param)
+                    DB.BuiltInParameter.FAMILY_HEIGHT_PARAM,  # generic family height (type)
+                ]
+
+                # Named-parameter fallbacks for non-standard/custom families.
                 width_param_names = [
                     "Rough Width", "Width", "Default Width", "Frame Width",
                     "Opening Width", "Clear Width", "Nominal Width"
@@ -220,12 +332,12 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                     "Opening Height", "Clear Height", "Nominal Height"
                 ]
 
-                # Get dimensions using helper function with fallbacks
+                # Get dimensions: BIPs first, then named params, then diagnostic dump
                 opening_width_value = _get_opening_dimension(
-                    insert_element, family_symbol, width_param_names
+                    insert_element, family_symbol, width_param_names, bip_list=width_bips
                 )
                 opening_height_value = _get_opening_dimension(
-                    insert_element, family_symbol, height_param_names
+                    insert_element, family_symbol, height_param_names, bip_list=height_bips
                 )
 
                 print(f"Opening {insert_id} - width={opening_width_value}, height={opening_height_value}")
@@ -373,12 +485,21 @@ def extract_wall_data_from_revit(revit_wall: DB.Wall, doc) -> WallInputData:
                         "base_elevation_relative_to_wall_base": sill_height_value,
                     }
 
-                    # NEW CODE: Validate opening is within wall bounds
+                    # Clamp opening to wall bounds rather than rejecting it.
+                    # Doors/windows near wall ends have center_u within the wall,
+                    # but start_u = center_u - half_width can be slightly < 0.
                     end_u_coordinate = start_u_coordinate + opening_width_value
-                    if start_u_coordinate >= 0 and end_u_coordinate <= wall_curve_length:
+                    start_u_clamped = max(0.0, start_u_coordinate)
+                    end_u_clamped = min(wall_curve_length, end_u_coordinate)
+
+                    if end_u_clamped > start_u_clamped + 0.01:
+                        if start_u_clamped != start_u_coordinate:
+                            print(f"Note: Opening {insert_id} u_start clamped "
+                                  f"{start_u_coordinate:.3f} -> {start_u_clamped:.3f}")
+                        opening_data["start_u_coordinate"] = start_u_clamped
                         openings_data.append(opening_data)
                     else:
-                        print(f"WARNING: Skipping opening {insert_id} - outside wall bounds "
+                        print(f"WARNING: Skipping opening {insert_id} - entirely outside wall "
                               f"(u={start_u_coordinate:.2f} to {end_u_coordinate:.2f}, "
                               f"wall_length={wall_curve_length:.2f})")
                 else:

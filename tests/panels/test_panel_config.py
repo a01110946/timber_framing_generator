@@ -4,6 +4,7 @@
 import pytest
 from src.timber_framing_generator.panels.panel_config import (
     PanelConfig,
+    PanelizationStrategy,
     CornerPriority,
     ExclusionZone,
 )
@@ -142,3 +143,84 @@ class TestPanelConfig:
         """Test 24" OC preset."""
         config = PanelConfig.for_24_oc()
         assert config.stud_spacing == 2.0
+
+
+class TestPanelizationStrategy:
+    """Tests for PanelizationStrategy enum and PanelConfig strategy fields."""
+
+    def test_default_strategy(self):
+        """Test default strategy is LENGTH_OPTIMIZED."""
+        config = PanelConfig()
+        assert config.strategy == PanelizationStrategy.LENGTH_OPTIMIZED
+
+    def test_strategy_string_conversion(self):
+        """Test that string strategy is converted to enum."""
+        config = PanelConfig(strategy="opening_bounded")
+        assert config.strategy == PanelizationStrategy.OPENING_BOUNDED
+
+    def test_strategy_enum_values(self):
+        """Test all strategy enum values exist."""
+        assert PanelizationStrategy.LENGTH_OPTIMIZED.value == "length_optimized"
+        assert PanelizationStrategy.OPENING_BOUNDED.value == "opening_bounded"
+        assert PanelizationStrategy.NO_SPLIT_THROUGH.value == "no_split_through"
+        assert PanelizationStrategy.EQUAL_LENGTH.value == "equal_length"
+
+    def test_strategy_to_dict(self):
+        """Test strategy is included in to_dict output."""
+        config = PanelConfig(strategy=PanelizationStrategy.OPENING_BOUNDED)
+        d = config.to_dict()
+        assert d["strategy"] == "opening_bounded"
+        assert d["opening_edge_stud"] == "king_and_trimmer"
+        assert d["stud_width"] == 0.125
+
+    def test_strategy_from_dict(self):
+        """Test strategy is correctly parsed from dict."""
+        d = {
+            "strategy": "no_split_through",
+            "opening_edge_stud": "trimmer_only",
+            "stud_width": 0.125,
+        }
+        config = PanelConfig.from_dict(d)
+        assert config.strategy == PanelizationStrategy.NO_SPLIT_THROUGH
+        assert config.opening_edge_stud == "trimmer_only"
+
+    def test_strategy_from_dict_defaults(self):
+        """Test from_dict with missing strategy uses default."""
+        config = PanelConfig.from_dict({})
+        assert config.strategy == PanelizationStrategy.LENGTH_OPTIMIZED
+        assert config.opening_edge_stud == "king_and_trimmer"
+
+    def test_strategy_roundtrip(self):
+        """Test to_dict -> from_dict roundtrip preserves strategy."""
+        original = PanelConfig(
+            strategy=PanelizationStrategy.EQUAL_LENGTH,
+            opening_edge_stud="trimmer_only",
+        )
+        d = original.to_dict()
+        restored = PanelConfig.from_dict(d)
+        assert restored.strategy == original.strategy
+        assert restored.opening_edge_stud == original.opening_edge_stud
+
+    def test_validate_invalid_opening_edge_stud(self):
+        """Test validation catches invalid opening_edge_stud."""
+        config = PanelConfig(opening_edge_stud="invalid_value")
+        with pytest.raises(ValueError) as exc_info:
+            config.validate()
+        assert "opening_edge_stud" in str(exc_info.value)
+
+    def test_validate_invalid_stud_width(self):
+        """Test validation catches non-positive stud_width."""
+        config = PanelConfig(stud_width=0)
+        with pytest.raises(ValueError) as exc_info:
+            config.validate()
+        assert "stud_width" in str(exc_info.value)
+
+    def test_default_opening_edge_stud(self):
+        """Test default opening_edge_stud is king_and_trimmer."""
+        config = PanelConfig()
+        assert config.opening_edge_stud == "king_and_trimmer"
+
+    def test_default_stud_width(self):
+        """Test default stud_width is 0.125 ft (1.5 inches)."""
+        config = PanelConfig()
+        assert config.stud_width == 0.125

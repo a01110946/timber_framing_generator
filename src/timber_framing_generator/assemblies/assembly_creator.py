@@ -65,6 +65,13 @@ except Exception as e:
     REVIT_ERROR = str(e)
 
 
+def _eid_int(element_id: Any) -> int:
+    """Version-safe ElementId integer conversion (Revit 2025+ removed IntegerValue)."""
+    if hasattr(element_id, "Value"):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 # =============================================================================
 # Data Models
 # =============================================================================
@@ -786,6 +793,12 @@ def _to_element_id(value: Any) -> Any:
     GH untyped parameters often unwrap ElementIds as strings (via .Value).
     This converts str/int back to ElementId for the .NET List<ElementId>.
 
+    CRITICAL (Revit 2025+): ElementId(Int32) constructor was removed.
+    Only ElementId(Int64) exists. pythonnet may fail to resolve the Int64
+    overload for small Python ints (which fit in Int32), creating a null
+    .NET reference that makes doc.GetElement() throw "null id". Fix: always
+    pass an explicit System.Int64 to force the correct overload.
+
     Args:
         value: An ElementId, int, or str (integer representation)
 
@@ -797,20 +810,19 @@ def _to_element_id(value: Any) -> Any:
     """
     if isinstance(value, ElementId):
         return value
-    if isinstance(value, int):
-        return ElementId(value)
-    if isinstance(value, str):
-        try:
-            return ElementId(int(value))
-        except ValueError:
-            raise ValueError(
-                "Cannot convert string '%s' to ElementId (not an integer)" % value
-            )
-    # Fallback: try int() conversion for other numeric types
     try:
-        return ElementId(int(value))
+        int_val = int(value)
     except (ValueError, TypeError):
-        raise ValueError("Cannot convert %r (type %s) to ElementId" % (value, type(value).__name__))
+        raise ValueError(
+            "Cannot convert %r (type %s) to ElementId" % (value, type(value).__name__)
+        )
+    # Force Int64 to ensure correct overload resolution in pythonnet
+    # with Revit 2025+ (Int32 constructor removed).
+    try:
+        from System import Int64
+        return ElementId(Int64(int_val))
+    except Exception:
+        return ElementId(int_val)
 
 
 def _fix_assembly_orientation(
@@ -968,7 +980,11 @@ def _build_valid_element_list(
             skipped_invalid += 1
             continue
 
-        elem = doc.GetElement(eid_obj)
+        try:
+            elem = doc.GetElement(eid_obj)
+        except Exception:
+            skipped_invalid += 1
+            continue
         if elem is None:
             skipped_invalid += 1
             continue
@@ -1121,7 +1137,7 @@ def create_assemblies(
                     )
                     result.views_created = [vi.view_name for vi in view_infos]
                     result.view_ids = [
-                        vi.view_id.IntegerValue
+                        _eid_int(vi.view_id)
                         for vi in view_infos
                         if vi.view_id is not None
                     ]
@@ -1149,7 +1165,7 @@ def create_assemblies(
                     assembly_name, e,
                 )
 
-            result.assembly_id = assembly.Id.IntegerValue
+            result.assembly_id = _eid_int(assembly.Id)
             result.status = "created"
             batch.successful += 1
             logger.info(

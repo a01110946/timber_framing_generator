@@ -1,14 +1,16 @@
 {
   "schema_version": "1.0",
-  "revit_version": "2025",
+  "revit_version": "2026",
   "base_url": "https://raw.githubusercontent.com/a01110946/timber_framing_generator/main/families",
   "families": {
 
-    "TFG_Timber_Stud": {
+    "Timber_Stud": {
       "file": "timber/structural_columns/TFG_Timber_Stud.rfa",
       "category": "OST_StructuralColumns",
       "domain": "framing",
+      "material_system": "timber",
       "types": {
+        "2x3":  { "width_in": 1.5, "depth_in": 2.5   },
         "2x4":  { "width_in": 1.5, "depth_in": 3.5   },
         "2x6":  { "width_in": 1.5, "depth_in": 5.5   },
         "2x8":  { "width_in": 1.5, "depth_in": 7.25  },
@@ -18,25 +20,27 @@
       "sha256": "placeholder_update_when_rfa_created"
     },
 
-    "TFG_Timber_Framing": {
+    "Timber_Framing": {
       "file": "timber/structural_framing/TFG_Timber_Framing.rfa",
       "category": "OST_StructuralFraming",
       "domain": "framing",
+      "material_system": "timber",
       "types": {
-        "2x4_Plate":    { "width_in": 1.5, "depth_in": 3.5   },
-        "2x6_Plate":    { "width_in": 1.5, "depth_in": 5.5   },
-        "2x6_Header":   { "width_in": 1.5, "depth_in": 5.5   },
-        "2x8_Header":   { "width_in": 1.5, "depth_in": 7.25  },
-        "2x10_Header":  { "width_in": 1.5, "depth_in": 9.25  },
-        "2x12_Header":  { "width_in": 1.5, "depth_in": 11.25 }
+        "2x3":  { "width_in": 1.5, "depth_in": 2.5   },
+        "2x4":  { "width_in": 1.5, "depth_in": 3.5   },
+        "2x6":  { "width_in": 1.5, "depth_in": 5.5   },
+        "2x8":  { "width_in": 1.5, "depth_in": 7.25  },
+        "2x10": { "width_in": 1.5, "depth_in": 9.25  },
+        "2x12": { "width_in": 1.5, "depth_in": 11.25 }
       },
       "sha256": "placeholder_update_when_rfa_created"
     },
 
-    "TFG_LVL_Beam": {
+    "LVL_Beam": {
       "file": "timber/structural_framing/TFG_LVL_Beam.rfa",
       "category": "OST_StructuralFraming",
       "domain": "framing",
+      "material_system": "timber",
       "types": {
         "LVL_1.75x5.5":   { "width_in": 1.75, "depth_in": 5.5   },
         "LVL_1.75x7.25":  { "width_in": 1.75, "depth_in": 7.25  },
@@ -53,16 +57,24 @@
       "sha256": "placeholder_update_when_rfa_created"
     },
 
-    "TFG_CFS_Stud": {
+    "CFS_Stud": {
       "file": "cfs/structural_columns/TFG_CFS_Stud.rfa",
       "category": "OST_StructuralColumns",
       "domain": "framing",
+      "material_system": "cfs",
       "types": {
-        "362S125-33": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0346, "Return": 0.375, "gauge": 20, "fy_ksi": 50 },
-        "362S125-43": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0451, "Return": 0.375, "gauge": 18, "fy_ksi": 50 },
-        "362S125-54": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0566, "Return": 0.375, "gauge": 16, "fy_ksi": 50 },
-        "362S125-68": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0713, "Return": 0.375, "gauge": 14, "fy_ksi": 50 },
-        "400S125-33": { "width_in": 1.25, "depth_in": 4.0,   "tf": 0.0346, "Return": 0.375, "gauge": 20, "fy_ksi": 50 },
+        "350S162-33": { "width_in": 1.625, "depth_in": 3.5,   "tf": 0.0346, "Return": 0.5,   "gauge": 20, "fy_ksi": 50 },
+        "350S162-43": { "width_in": 1.625, "depth_in": 3.5,   "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
+        "350S162-54": { "width_in": 1.625, "depth_in": 3.5,   "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "362S125-33": { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0346, "Return": 0.375, "gauge": 20, "fy_ksi": 50 },
+        "362S125-43": { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0451, "Return": 0.375, "gauge": 18, "fy_ksi": 50 },
+        "362S125-54": { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0566, "Return": 0.375, "gauge": 16, "fy_ksi": 50 },
+        "362S125-68": { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0713, "Return": 0.375, "gauge": 14, "fy_ksi": 50 },
+        "362S162-33": { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0346, "Return": 0.5,   "gauge": 20, "fy_ksi": 50 },
+        "362S162-43": { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
+        "362S162-54": { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "362S162-68": { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
+        "400S125-33": { "width_in": 1.25,  "depth_in": 4.0,   "tf": 0.0346, "Return": 0.375, "gauge": 20, "fy_ksi": 50 },
         "400S125-43": { "width_in": 1.25, "depth_in": 4.0,   "tf": 0.0451, "Return": 0.375, "gauge": 18, "fy_ksi": 50 },
         "400S125-54": { "width_in": 1.25, "depth_in": 4.0,   "tf": 0.0566, "Return": 0.375, "gauge": 16, "fy_ksi": 50 },
         "400S125-68": { "width_in": 1.25, "depth_in": 4.0,   "tf": 0.0713, "Return": 0.375, "gauge": 14, "fy_ksi": 50 },
@@ -70,20 +82,56 @@
         "550S125-43": { "width_in": 1.25, "depth_in": 5.5,   "tf": 0.0451, "Return": 0.375, "gauge": 18, "fy_ksi": 50 },
         "550S125-54": { "width_in": 1.25, "depth_in": 5.5,   "tf": 0.0566, "Return": 0.375, "gauge": 16, "fy_ksi": 50 },
         "550S125-68": { "width_in": 1.25, "depth_in": 5.5,   "tf": 0.0713, "Return": 0.375, "gauge": 14, "fy_ksi": 50 },
-        "550S250-97": { "width_in": 2.5,  "depth_in": 5.5,   "tf": 0.1017, "Return": 0.625, "gauge": 12, "fy_ksi": 50 }
+        "550S250-97": { "width_in": 2.5,  "depth_in": 5.5,   "tf": 0.1017, "Return": 0.625, "gauge": 12, "fy_ksi": 50 },
+        "600S162-33": { "width_in": 1.625, "depth_in": 6.0,  "tf": 0.0346, "Return": 0.5,   "gauge": 20, "fy_ksi": 50 },
+        "600S162-43": { "width_in": 1.625, "depth_in": 6.0,  "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
+        "600S162-54": { "width_in": 1.625, "depth_in": 6.0,  "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "600S162-68": { "width_in": 1.625, "depth_in": 6.0,  "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
+        "800S162-54": { "width_in": 1.625, "depth_in": 8.0,  "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "800S162-68": { "width_in": 1.625, "depth_in": 8.0,  "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
+        "1000S162-54": { "width_in": 1.625, "depth_in": 10.0, "tf": 0.0566, "Return": 0.5,  "gauge": 16, "fy_ksi": 50 },
+        "1000S162-68": { "width_in": 1.625, "depth_in": 10.0, "tf": 0.0713, "Return": 0.5,  "gauge": 14, "fy_ksi": 50 },
+        "1200S162-54": { "width_in": 1.625, "depth_in": 12.0, "tf": 0.0566, "Return": 0.5,  "gauge": 16, "fy_ksi": 50 },
+        "1200S162-68": { "width_in": 1.625, "depth_in": 12.0, "tf": 0.0713, "Return": 0.5,  "gauge": 14, "fy_ksi": 50 }
       },
       "sha256": "placeholder_update_when_rfa_created"
     },
 
-    "TFG_CFS_Joist": {
+    "CFS_Joist": {
       "file": "cfs/structural_framing/TFG_CFS_Joist.rfa",
       "category": "OST_StructuralFraming",
       "domain": "framing",
+      "material_system": "cfs",
       "types": {
+        "350S162-33":   { "width_in": 1.625, "depth_in": 3.5,   "tf": 0.0346, "Return": 0.5,   "gauge": 20, "fy_ksi": 50 },
+        "350S162-43":   { "width_in": 1.625, "depth_in": 3.5,   "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
+        "350S162-54":   { "width_in": 1.625, "depth_in": 3.5,   "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "362S125-33":   { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0346, "Return": 0.375, "gauge": 20, "fy_ksi": 50 },
+        "362S125-43":   { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0451, "Return": 0.375, "gauge": 18, "fy_ksi": 50 },
+        "362S125-54":   { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0566, "Return": 0.375, "gauge": 16, "fy_ksi": 50 },
+        "362S125-68":   { "width_in": 1.25,  "depth_in": 3.625, "tf": 0.0713, "Return": 0.375, "gauge": 14, "fy_ksi": 50 },
         "362S162-33":   { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0346, "Return": 0.5,   "gauge": 20, "fy_ksi": 50 },
+        "362S162-43":   { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
+        "362S162-54":   { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "362S162-68":   { "width_in": 1.625, "depth_in": 3.625, "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
+        "400S125-33":   { "width_in": 1.25,  "depth_in": 4.0,   "tf": 0.0346, "Return": 0.375, "gauge": 20, "fy_ksi": 50 },
+        "400S125-43":   { "width_in": 1.25,  "depth_in": 4.0,   "tf": 0.0451, "Return": 0.375, "gauge": 18, "fy_ksi": 50 },
+        "400S125-54":   { "width_in": 1.25,  "depth_in": 4.0,   "tf": 0.0566, "Return": 0.375, "gauge": 16, "fy_ksi": 50 },
+        "400S125-68":   { "width_in": 1.25,  "depth_in": 4.0,   "tf": 0.0713, "Return": 0.375, "gauge": 14, "fy_ksi": 50 },
         "400S162-43":   { "width_in": 1.625, "depth_in": 4.0,   "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
+        "550S125-33":   { "width_in": 1.25,  "depth_in": 5.5,   "tf": 0.0346, "Return": 0.375, "gauge": 20, "fy_ksi": 50 },
+        "550S125-43":   { "width_in": 1.25,  "depth_in": 5.5,   "tf": 0.0451, "Return": 0.375, "gauge": 18, "fy_ksi": 50 },
+        "550S125-54":   { "width_in": 1.25,  "depth_in": 5.5,   "tf": 0.0566, "Return": 0.375, "gauge": 16, "fy_ksi": 50 },
+        "550S125-68":   { "width_in": 1.25,  "depth_in": 5.5,   "tf": 0.0713, "Return": 0.375, "gauge": 14, "fy_ksi": 50 },
+        "600S162-33":   { "width_in": 1.625, "depth_in": 6.0,   "tf": 0.0346, "Return": 0.5,   "gauge": 20, "fy_ksi": 50 },
+        "600S162-43":   { "width_in": 1.625, "depth_in": 6.0,   "tf": 0.0451, "Return": 0.5,   "gauge": 18, "fy_ksi": 50 },
         "600S162-54":   { "width_in": 1.625, "depth_in": 6.0,   "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "600S162-68":   { "width_in": 1.625, "depth_in": 6.0,   "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
         "800S162-54":   { "width_in": 1.625, "depth_in": 8.0,   "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "800S162-68":   { "width_in": 1.625, "depth_in": 8.0,   "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
+        "1000S162-54":  { "width_in": 1.625, "depth_in": 10.0,  "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
+        "1000S162-68":  { "width_in": 1.625, "depth_in": 10.0,  "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
+        "1200S162-54":  { "width_in": 1.625, "depth_in": 12.0,  "tf": 0.0566, "Return": 0.5,   "gauge": 16, "fy_ksi": 50 },
         "1200S162-68":  { "width_in": 1.625, "depth_in": 12.0,  "tf": 0.0713, "Return": 0.5,   "gauge": 14, "fy_ksi": 50 },
         "1200S250-68":  { "width_in": 2.5,   "depth_in": 12.0,  "tf": 0.0713, "Return": 0.625, "gauge": 14, "fy_ksi": 50 },
         "1200S250-97":  { "width_in": 2.5,   "depth_in": 12.0,  "tf": 0.1017, "Return": 0.625, "gauge": 12, "fy_ksi": 50 },
@@ -94,10 +142,11 @@
       "sha256": "placeholder_update_when_rfa_created"
     },
 
-    "TFG_CFS_Track": {
+    "CFS_Track": {
       "file": "cfs/structural_columns/TFG_CFS_Track.rfa",
       "category": "OST_StructuralColumns",
       "domain": "framing",
+      "material_system": "cfs",
       "types": {
         "362T125-54_V": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "362T250-54_V": { "width_in": 2.5,  "depth_in": 3.625, "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
@@ -111,21 +160,111 @@
       "sha256": "placeholder_update_when_rfa_created"
     },
 
-    "TFG_CFS_Plate": {
+    "CFS_Plate": {
       "file": "cfs/structural_framing/TFG_CFS_Plate.rfa",
       "category": "OST_StructuralFraming",
       "domain": "framing",
+      "material_system": "cfs",
       "types": {
+        "350T125-33": { "width_in": 1.25, "depth_in": 3.5,   "tf": 0.0346, "gauge": 20, "fy_ksi": 50 },
+        "350T125-43": { "width_in": 1.25, "depth_in": 3.5,   "tf": 0.0451, "gauge": 18, "fy_ksi": 50 },
+        "350T125-54": { "width_in": 1.25, "depth_in": 3.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
+        "362T125-33": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0346, "gauge": 20, "fy_ksi": 50 },
+        "362T125-43": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0451, "gauge": 18, "fy_ksi": 50 },
         "362T125-54": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
+        "362T125-68": { "width_in": 1.25, "depth_in": 3.625, "tf": 0.0713, "gauge": 14, "fy_ksi": 50 },
         "362T250-54": { "width_in": 2.5,  "depth_in": 3.625, "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "400T125-54": { "width_in": 1.25, "depth_in": 4.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "400T250-54": { "width_in": 2.5,  "depth_in": 4.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "550T125-54": { "width_in": 1.25, "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "550T200-54": { "width_in": 2.0,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
         "550T250-54": { "width_in": 2.5,  "depth_in": 5.5,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
-        "600T125-54": { "width_in": 1.25, "depth_in": 6.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 }
+        "600T125-33": { "width_in": 1.25, "depth_in": 6.0,   "tf": 0.0346, "gauge": 20, "fy_ksi": 50 },
+        "600T125-43": { "width_in": 1.25, "depth_in": 6.0,   "tf": 0.0451, "gauge": 18, "fy_ksi": 50 },
+        "600T125-54": { "width_in": 1.25, "depth_in": 6.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
+        "800T125-54": { "width_in": 1.25, "depth_in": 8.0,   "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
+        "800T125-68": { "width_in": 1.25, "depth_in": 8.0,   "tf": 0.0713, "gauge": 14, "fy_ksi": 50 },
+        "1000T125-54": { "width_in": 1.25, "depth_in": 10.0, "tf": 0.0566, "gauge": 16, "fy_ksi": 50 },
+        "1200T125-54": { "width_in": 1.25, "depth_in": 12.0, "tf": 0.0566, "gauge": 16, "fy_ksi": 50 }
       },
       "sha256": "placeholder_update_when_rfa_created"
+    },
+
+    "Single-Flush": {
+      "file": "doors/Single-Flush.rfa",
+      "category": "OST_Doors",
+      "domain": "doors",
+      "dimension_params": { "width": "Width", "height": "Height" },
+      "types": {
+        "28\" x 80\"": { "width_in": 28, "height_in": 80 },
+        "30\" x 80\"": { "width_in": 30, "height_in": 80 },
+        "32\" x 80\"": { "width_in": 32, "height_in": 80 },
+        "34\" x 80\"": { "width_in": 34, "height_in": 80 },
+        "36\" x 80\"": { "width_in": 36, "height_in": 80 },
+        "36\" x 84\"": { "width_in": 36, "height_in": 84 }
+      },
+      "sha256": "cfb91dd384ca456d83ce111f41393c567aeb569642e511b44212e9948a3ab8c0"
+    },
+
+    "Overhead-Garage-Door": {
+      "file": "doors/Overhead-Garage-Door.rfa",
+      "category": "OST_Doors",
+      "domain": "doors",
+      "dimension_params": { "width": "Garage door width", "height": "Garage door height" },
+      "types": {
+        "16' x 7'":  { "width_in": 192, "height_in": 84 },
+        "16' x 8'":  { "width_in": 192, "height_in": 96 },
+        "9' x 7'":   { "width_in": 108, "height_in": 84 },
+        "9' x 8'":   { "width_in": 108, "height_in": 96 }
+      },
+      "sha256": "5f6273ece7f6f70582f435456eb682b7605e5cfd178e1f96249d6b022f01cdeb"
+    },
+
+    "Sliding_Door_Pocket": {
+      "file": "doors/Sliding_Door_Pocket.rfa",
+      "category": "OST_Doors",
+      "domain": "doors",
+      "dimension_params": { "width": "Door Panel Width", "height": "Door Panel Height" },
+      "placement_offset_in": -14.0,
+      "types": {
+        "28\" x 80\"": { "width_in": 23, "height_in": 80 },
+        "30\" x 80\"": { "width_in": 25, "height_in": 80 },
+        "32\" x 80\"": { "width_in": 27, "height_in": 80 },
+        "36\" x 80\"": { "width_in": 31, "height_in": 80 }
+      },
+      "sha256": "60bb0b9a234b3cb0e1b0a0b6a27f044dfe6a2fa862e873318bb8e95e7eb656a7"
+    },
+
+    "Doors_Sliding_Interior_Integrated": {
+      "file": "doors/Doors_Sliding_Interior_Integrated.rfa",
+      "category": "OST_Doors",
+      "domain": "doors",
+      "dimension_params": { "width": "Width", "height": "Height" },
+      "types": {
+        "48\" x 80\"": { "width_in": 48, "height_in": 80 },
+        "60\" x 80\"": { "width_in": 60, "height_in": 80 },
+        "72\" x 80\"": { "width_in": 72, "height_in": 80 }
+      },
+      "sha256": "7a043e8f3d0191c2f323abafee07a4539e63466f20531c0d95ccfedf7f7acecd"
+    },
+
+    "Window-Casement-Double": {
+      "category": "OST_Windows",
+      "domain": "windows",
+      "dimension_params": { "width": "Width", "height": "Height" },
+      "types": {
+        "48\" x 54\"": { "width_in": 48, "height_in": 54, "sill_height_in": 26 },
+        "24\" x 12\"": { "width_in": 24, "height_in": 12, "sill_height_in": 68 }
+      }
+    },
+
+    "Window-Double-Hung": {
+      "category": "OST_Windows",
+      "domain": "windows",
+      "dimension_params": { "width": "Width", "height": "Height" },
+      "types": {
+        "42\" x 48\"": { "width_in": 42, "height_in": 48, "sill_height_in": 32 }
+      }
     }
   }
 }

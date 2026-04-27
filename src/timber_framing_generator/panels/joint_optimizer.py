@@ -20,7 +20,7 @@ Example:
 from typing import List, Tuple, Optional
 import math
 
-from .panel_config import PanelConfig, ExclusionZone
+from .panel_config import PanelConfig, PanelizationStrategy, ExclusionZone
 
 
 def find_exclusion_zones(
@@ -448,3 +448,239 @@ def get_panel_boundaries(
         (boundaries[i], boundaries[i + 1])
         for i in range(len(boundaries) - 1)
     ]
+
+
+# =============================================================================
+# Strategy Dispatcher
+# =============================================================================
+
+
+def find_joints_for_strategy(
+    wall_data: dict,
+    config: PanelConfig,
+) -> List[float]:
+    """Dispatch to strategy-specific joint finder.
+
+    This is the main entry point for finding joint positions. It selects
+    the appropriate algorithm based on ``config.strategy`` and returns
+    joint U-coordinates (not including 0 and wall_length).
+
+    Args:
+        wall_data: WallData dictionary with openings, wall_length, etc.
+        config: Panel configuration including strategy selection
+
+    Returns:
+        List of joint U-coordinates
+    """
+    wall_length = wall_data.get("wall_length", wall_data.get("length", 0))
+
+    if config.strategy == PanelizationStrategy.OPENING_BOUNDED:
+        return _find_joints_opening_bounded(wall_data, config)
+    elif config.strategy == PanelizationStrategy.NO_SPLIT_THROUGH:
+        return _find_joints_no_split_through(wall_data, config)
+    elif config.strategy == PanelizationStrategy.EQUAL_LENGTH:
+        return _find_joints_equal_length(wall_data, config)
+    else:
+        # LENGTH_OPTIMIZED (default) - existing behavior
+        exclusion_zones = find_exclusion_zones(wall_data, config)
+        return find_optimal_joints(wall_length, exclusion_zones, config)
+
+
+# =============================================================================
+# Opening-Bounded Strategy
+# =============================================================================
+
+
+def _find_joints_opening_bounded(
+    wall_data: dict,
+    config: PanelConfig,
+) -> List[float]:
+    """Find joints by forcing splits at opening king-stud edges.
+
+    Each opening becomes its own panel. Mandatory joints are placed at
+    the outer edge of the king stud (or trimmer) flanking each opening.
+    Sub-segments between mandatory joints are further split via DP if
+    they exceed max_panel_length.
+
+    Args:
+        wall_data: WallData dictionary
+        config: Panel configuration
+
+    Returns:
+        List of joint U-coordinates
+    """
+    wall_length = wall_data.get("wall_length", wall_data.get("length", 0))
+    openings = wall_data.get("openings", [])
+
+    if not openings:
+        # No openings: fall back to length-optimized
+        exclusion_zones = find_exclusion_zones(wall_data, config)
+        return find_optimal_joints(wall_length, exclusion_zones, config)
+
+    # Compute mandatory joint positions at opening edges
+    stud_w = config.stud_width  # 0.125 ft = 1.5" (one stud width)
+
+    mandatory_joints = set()
+    for opening in openings:
+        u_start = opening.get("u_start", 0)
+        u_end = opening.get("u_end", 0)
+
+        if config.opening_edge_stud == "king_and_trimmer":
+            # Joint at outer edge of king stud
+            # King stud is outside trimmer, trimmer is flush with opening edge
+            left_joint = u_start - stud_w - stud_w   # king outer edge
+            right_joint = u_end + stud_w + stud_w     # king outer edge
+        else:  # trimmer_only
+            # Joint at outer edge of trimmer (flush with opening)
+            left_joint = u_start - stud_w
+            right_joint = u_end + stud_w
+
+        # Snap to nearest stud if configured
+        if config.snap_to_studs:
+            left_joint = _snap_to_nearest_stud(left_joint, config.stud_spacing)
+            right_joint = _snap_to_nearest_stud(right_joint, config.stud_spacing)
+
+        # Clamp to wall bounds (exclude 0 and wall_length since those are boundaries)
+        if left_joint > 0 and left_joint < wall_length:
+            mandatory_joints.add(left_joint)
+        if right_joint > 0 and right_joint < wall_length:
+            mandatory_joints.add(right_joint)
+
+    # Sort and build segment boundaries
+    sorted_joints = sorted(mandatory_joints)
+    segment_boundaries = [0.0] + sorted_joints + [wall_length]
+
+    # For each sub-segment, check if it needs further splitting
+    all_joints = list(sorted_joints)
+
+    for i in range(len(segment_boundaries) - 1):
+        seg_start = segment_boundaries[i]
+        seg_end = segment_boundaries[i + 1]
+        seg_length = seg_end - seg_start
+
+        if seg_length > config.max_panel_length:
+            # Build a mini wall_data for this sub-segment (no openings
+            # since openings are already bounded by mandatory joints)
+            sub_wall = {
+                "wall_length": seg_length,
+                "openings": [],
+            }
+            sub_zones = find_exclusion_zones(sub_wall, config)
+            sub_joints = find_optimal_joints(seg_length, sub_zones, config)
+
+            # Shift sub-joints back to wall-absolute coords
+            for sj in sub_joints:
+                absolute_joint = seg_start + sj
+                if absolute_joint > 0 and absolute_joint < wall_length:
+                    all_joints.append(absolute_joint)
+
+    # Deduplicate and sort
+    all_joints = sorted(set(all_joints))
+    return all_joints
+
+
+# =============================================================================
+# No-Split-Through Strategy
+# =============================================================================
+
+
+def _find_joints_no_split_through(
+    wall_data: dict,
+    config: PanelConfig,
+) -> List[float]:
+    """Find joints preventing any split within opening horizontal ranges.
+
+    Like LENGTH_OPTIMIZED but with wider exclusion zones that span the
+    full U-range of each opening (plus the standard offset). This prevents
+    L-shaped panels without forcing openings into their own panels.
+
+    Args:
+        wall_data: WallData dictionary
+        config: Panel configuration
+
+    Returns:
+        List of joint U-coordinates
+    """
+    wall_length = wall_data.get("wall_length", wall_data.get("length", 0))
+    openings = wall_data.get("openings", [])
+
+    zones = []
+
+    # Create wide exclusion zones spanning full opening U-range + offset
+    for opening in openings:
+        u_start = opening.get("u_start", 0)
+        u_end = opening.get("u_end", 0)
+
+        # Zone spans the full opening range plus offset on each side
+        zone_start = max(0, u_start - config.min_joint_to_opening)
+        zone_end = min(wall_length, u_end + config.min_joint_to_opening)
+
+        zones.append(ExclusionZone(
+            u_start=zone_start,
+            u_end=zone_end,
+            zone_type="opening_full_span",
+            element_id=opening.get("id"),
+        ))
+
+    # Corner exclusion zones (same as standard)
+    if config.min_joint_to_corner > 0:
+        zones.append(ExclusionZone(
+            u_start=0,
+            u_end=min(wall_length, config.min_joint_to_corner),
+            zone_type="corner_start",
+        ))
+        zones.append(ExclusionZone(
+            u_start=max(0, wall_length - config.min_joint_to_corner),
+            u_end=wall_length,
+            zone_type="corner_end",
+        ))
+
+    # Sort and merge
+    zones.sort(key=lambda z: z.u_start)
+    merged_zones = _merge_overlapping_zones(zones)
+
+    return find_optimal_joints(wall_length, merged_zones, config)
+
+
+# =============================================================================
+# Equal-Length Strategy
+# =============================================================================
+
+
+def _find_joints_equal_length(
+    wall_data: dict,
+    config: PanelConfig,
+) -> List[float]:
+    """Find joints by dividing wall into equal-length panels.
+
+    Simple strategy: compute N = ceil(wall_length / max_panel_length),
+    then place N-1 evenly spaced joints. Optionally snap to studs.
+    No opening awareness.
+
+    Args:
+        wall_data: WallData dictionary
+        config: Panel configuration
+
+    Returns:
+        List of joint U-coordinates
+    """
+    wall_length = wall_data.get("wall_length", wall_data.get("length", 0))
+
+    if wall_length <= config.max_panel_length:
+        return []  # Single panel, no joints needed
+
+    num_panels = math.ceil(wall_length / config.max_panel_length)
+    panel_length = wall_length / num_panels
+
+    joints = []
+    for i in range(1, num_panels):
+        joint_pos = panel_length * i
+
+        if config.snap_to_studs:
+            joint_pos = _snap_to_nearest_stud(joint_pos, config.stud_spacing)
+
+        # Avoid placing joints at wall boundaries
+        if joint_pos > 0 and joint_pos < wall_length:
+            joints.append(joint_pos)
+
+    return sorted(set(joints))

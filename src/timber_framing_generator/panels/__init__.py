@@ -19,6 +19,7 @@ Example:
 
 from .panel_config import (
     PanelConfig,
+    PanelizationStrategy,
     CornerPriority,
     ExclusionZone,
 )
@@ -35,6 +36,7 @@ from .corner_handler import (
 from .joint_optimizer import (
     find_exclusion_zones,
     find_optimal_joints,
+    find_joints_for_strategy,
     get_panel_boundaries,
     validate_joints,
 )
@@ -49,6 +51,7 @@ from .panel_decomposer import (
 __all__ = [
     # Configuration
     "PanelConfig",
+    "PanelizationStrategy",
     "CornerPriority",
     "ExclusionZone",
     # Corner handling
@@ -61,6 +64,7 @@ __all__ = [
     # Joint optimization
     "find_exclusion_zones",
     "find_optimal_joints",
+    "find_joints_for_strategy",
     "get_panel_boundaries",
     "validate_joints",
     # Panel decomposition

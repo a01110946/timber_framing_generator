@@ -62,6 +62,13 @@ except Exception as e:
     print("[assembly_views] Error: %s" % e)
 
 
+def _eid_int(element_id: Any) -> int:
+    """Version-safe ElementId integer conversion (Revit 2025+ removed IntegerValue)."""
+    if hasattr(element_id, "Value"):
+        return int(element_id.Value)
+    return int(element_id.IntegerValue)
+
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -84,8 +91,29 @@ DISPLAY_STYLE_MAP: Dict[str, str] = {
 }
 
 # Default schedule field lists
-DEFAULT_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "Cut Length"]
+# Column schedule uses "Length" (the instance length parameter);
+# Framing schedule uses "Cut Length" (the fabrication cut length).
+DEFAULT_COLUMN_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "System Length"]
+DEFAULT_FRAMING_SCHEDULE_FIELDS: List[str] = ["Family", "Type", "Cut Length"]
 DEFAULT_TAKEOFF_FIELDS: List[str] = ["Type", "Count", "Material: Name", "Material: Area"]
+
+# Schedule column widths in feet (sheet coordinates).
+# Revit default is ~0.083' (1"). Widen "Family" to fit "TFG_Timber_Framing"
+# without wrapping (18 chars at 3/32" ≈ 1.7" minimum → use 0.50' = 6").
+FAMILY_COLUMN_WIDTH: float = 0.20
+TYPE_COLUMN_WIDTH: float = 0.10
+LENGTH_COLUMN_WIDTH: float = 0.10
+
+# Map from field name to desired SheetColumnWidth (feet).
+# Revit 2024+ uses SheetColumnWidth (on-sheet) and GridColumnWidth (view).
+# Fields not listed here keep Revit's default width.
+SCHEDULE_COLUMN_WIDTHS: Dict[str, float] = {
+    "Family": FAMILY_COLUMN_WIDTH,
+    "Type": TYPE_COLUMN_WIDTH,
+    "Length": LENGTH_COLUMN_WIDTH,
+    "Cut Length": LENGTH_COLUMN_WIDTH,
+    "System Length": LENGTH_COLUMN_WIDTH,
+}
 
 
 # =============================================================================
@@ -166,6 +194,9 @@ class AssemblyViewConfig:
     include_sheet: bool = False
     titleblock_name: str = ""
 
+    # R8: View scale (Revit scale denominator: 96 = 1/8"=1'-0", 48 = 1/4", 24 = 1/2")
+    view_scale: int = 96
+
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]] = None) -> "AssemblyViewConfig":
         """Create config from a dictionary, using defaults for missing keys.
@@ -208,6 +239,8 @@ class AssemblyViewConfig:
             # Sheet
             include_sheet=data.get("include_sheet", False),
             titleblock_name=data.get("titleblock_name", ""),
+            # View scale
+            view_scale=int(data.get("view_scale", 96)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -236,6 +269,7 @@ class AssemblyViewConfig:
             "hide_section_markers": self.hide_section_markers,
             "include_sheet": self.include_sheet,
             "titleblock_name": self.titleblock_name,
+            "view_scale": self.view_scale,
         }
 
 
@@ -313,15 +347,59 @@ def _apply_view_template(view: Any, template_id: Any) -> None:
         print("[assembly_views] Could not apply template: %s" % e)
 
 
+def _set_field_column_width_reflection(sf: Any, col_name: str, desired_width: float) -> bool:
+    """Set ScheduleField.ColumnWidth via .NET reflection.
+
+    pythonnet cannot resolve ScheduleField.ColumnWidth as a Python attribute
+    (AttributeError), and setting it directly on AddField() return values is a
+    silent no-op (pythonnet adds a Python-level attribute, never calls the C#
+    setter).  Reflection bypasses pythonnet's binding layer entirely and calls
+    the .NET property setter directly.
+
+    Args:
+        sf: Revit ScheduleField object (from GetField(), not AddField() return)
+        col_name: Field name for logging
+        desired_width: Column width in feet
+
+    Returns:
+        True if width was set, False otherwise
+    """
+    try:
+        # Revit 2024+ split ColumnWidth into GridColumnWidth (schedule view) and
+        # SheetColumnWidth (schedule placed on a sheet).  Use SheetColumnWidth.
+        prop = sf.GetType().GetProperty("SheetColumnWidth")
+        if prop is not None and prop.CanWrite:
+            prop.SetValue(sf, float(desired_width))
+            print("[assembly_views] Set '%s' SheetColumnWidth=%.3f ft" % (col_name, desired_width))
+            return True
+        if prop is None:
+            all_props = sorted(p.Name for p in sf.GetType().GetProperties())
+            print("[assembly_views] SheetColumnWidth not found on ScheduleField. Has: %s" % all_props)
+        else:
+            print("[assembly_views] SheetColumnWidth property is read-only for '%s'" % col_name)
+    except Exception as ref_err:
+        print("[assembly_views] Reflection error for '%s': %s %s" % (col_name, type(ref_err).__name__, ref_err))
+    return False
+
+
 def _configure_schedule_fields(
     doc: Any,
     schedule: Any,
     field_names: List[str],
 ) -> None:
-    """Configure fields on a schedule view.
+    """Configure fields on a schedule view and set column widths.
 
-    Clears existing fields, then adds requested fields by name from
-    the schedule's available schedulable fields.
+    Clears existing fields, adds requested fields in order, then applies
+    column-width overrides via .NET reflection.
+
+    Key discoveries (diagnosed 2026-02):
+    - AddField() return value is NOT a ScheduleFieldId — passing it to
+      GetField() causes TypeError.  Do NOT use the AddField() return value.
+    - ScheduleField.ColumnWidth raises AttributeError via pythonnet direct
+      attribute access; sf.ColumnWidth = x on AddField() return is a silent
+      no-op (pythonnet sets Python attr, never calls C# setter).
+    - Fix: add all fields first, then use GetFieldOrder() + GetField() for
+      live references, then set width via reflection.
 
     Args:
         doc: Revit Document object
@@ -330,6 +408,7 @@ def _configure_schedule_fields(
     """
     if not REVIT_AVAILABLE or schedule is None or not field_names:
         return
+
     try:
         definition = schedule.Definition
 
@@ -342,20 +421,59 @@ def _configure_schedule_fields(
         # Clear existing fields
         definition.ClearFields()
 
-        # Add requested fields in order
+        # Add requested fields; discard AddField() return value (unreliable type)
+        added_names = []
         for name in field_names:
             if name in available:
                 definition.AddField(available[name])
+                added_names.append(name)
             else:
                 print("[assembly_views] Schedule field '%s' not found, skipping" % name)
 
+        # Set column widths: get live ScheduleField refs via GetFieldOrder() +
+        # GetField(), then set ColumnWidth via .NET reflection.
+        try:
+            field_ids = list(definition.GetFieldOrder())
+            for i, fid in enumerate(field_ids):
+                if i >= len(added_names):
+                    break
+                col_name = added_names[i]
+                desired_width = SCHEDULE_COLUMN_WIDTHS.get(col_name)
+                if desired_width is None:
+                    continue
+                try:
+                    live_sf = definition.GetField(fid)
+                    if live_sf is not None:
+                        _set_field_column_width_reflection(live_sf, col_name, desired_width)
+                except Exception as gf_err:
+                    print("[assembly_views] GetField error for '%s': %s" % (col_name, gf_err))
+        except Exception as fo_err:
+            print("[assembly_views] GetFieldOrder error: %s" % fo_err)
+
     except Exception as e:
-        print("[assembly_views] Failed to configure schedule fields: %s" % e)
+        print("[assembly_views] _configure_schedule_fields failed: %s %s" % (type(e).__name__, e))
 
 
 # =============================================================================
 # View Settings
 # =============================================================================
+
+def _apply_view_scale(view: Any, scale: int) -> None:
+    """Apply a view scale to a graphical view (3D or elevation).
+
+    Silently skips if scale is invalid or the view does not support scaling.
+
+    Args:
+        view: Revit View object (View3D or ViewSection)
+        scale: Revit scale denominator (96 = 1/8"=1'-0", 48 = 1/4", 24 = 1/2")
+    """
+    if not REVIT_AVAILABLE or view is None or scale <= 0:
+        return
+    try:
+        view.Scale = scale
+    except Exception as e:
+        print("[assembly_views] Could not set Scale %d: %s" % (scale, e))
+
 
 def _apply_view_settings(
     view: Any,
@@ -429,9 +547,12 @@ def create_assembly_views(
 
     created: List[CreatedViewInfo] = []
 
-    # Pre-parse field name lists
-    schedule_field_names = _parse_field_names(
-        config.schedule_fields, DEFAULT_SCHEDULE_FIELDS,
+    # Pre-parse field name lists (column and framing schedules have different defaults)
+    column_schedule_field_names = _parse_field_names(
+        config.schedule_fields, DEFAULT_COLUMN_SCHEDULE_FIELDS,
+    )
+    framing_schedule_field_names = _parse_field_names(
+        config.schedule_fields, DEFAULT_FRAMING_SCHEDULE_FIELDS,
     )
     takeoff_field_names = _parse_field_names(
         config.takeoff_fields, DEFAULT_TAKEOFF_FIELDS,
@@ -446,6 +567,7 @@ def create_assembly_views(
         view = _create_3d_orthographic(doc, assembly_id)
         if view:
             _apply_view_settings(view, config.detail_level, config.display_style)
+            _apply_view_scale(view, config.view_scale)
             created.append(CreatedViewInfo("3D Orthographic", view.Id, "3d"))
 
     # --- 2-7. Elevation Views ---
@@ -468,6 +590,7 @@ def create_assembly_views(
         view = _create_detail_section(doc, assembly_id, orientation, label)
         if view:
             _apply_view_settings(view, config.detail_level, config.display_style)
+            _apply_view_scale(view, config.view_scale)
             if config.hide_section_markers:
                 _hide_section_markers(view)
             created.append(CreatedViewInfo(label, view.Id, "elevation"))
@@ -486,7 +609,7 @@ def create_assembly_views(
             doc, assembly_id,
             BuiltInCategory.OST_StructuralColumns,
             "Structural Column Schedule",
-            schedule_field_names,
+            column_schedule_field_names,   # uses "Length" not "Cut Length"
             schedule_template_id,
         )
         if view:
@@ -500,7 +623,7 @@ def create_assembly_views(
             doc, assembly_id,
             BuiltInCategory.OST_StructuralFraming,
             "Structural Framing Schedule",
-            schedule_field_names,
+            framing_schedule_field_names,  # uses "Cut Length"
             schedule_template_id,
         )
         if view:
@@ -511,7 +634,7 @@ def create_assembly_views(
     logger.info(
         "Created %d views for assembly %s: %s",
         len(created),
-        assembly_id.IntegerValue,
+        _eid_int(assembly_id),
         ", ".join(vi.view_name for vi in created),
     )
     return created
@@ -533,7 +656,7 @@ def _create_3d_orthographic(doc: Any, assembly_id: Any) -> Any:
     """
     try:
         view = AssemblyViewUtils.Create3DOrthographic(doc, assembly_id)
-        print("[assembly_views] Created 3D view for %s" % assembly_id.IntegerValue)
+        print("[assembly_views] Created 3D view for %s" % _eid_int(assembly_id))
         return view
     except Exception as e:
         print("[assembly_views] Failed 3D view: %s" % e)
@@ -561,7 +684,7 @@ def _create_detail_section(
         view = AssemblyViewUtils.CreateDetailSection(
             doc, assembly_id, orientation,
         )
-        print("[assembly_views] Created %s for %s" % (label, assembly_id.IntegerValue))
+        print("[assembly_views] Created %s for %s" % (label, _eid_int(assembly_id)))
         return view
     except Exception as e:
         print("[assembly_views] Failed %s: %s" % (label, e))
@@ -587,7 +710,7 @@ def _create_material_takeoff(
     """
     try:
         view = AssemblyViewUtils.CreateMaterialTakeoff(doc, assembly_id)
-        print("[assembly_views] Created takeoff for %s" % assembly_id.IntegerValue)
+        print("[assembly_views] Created takeoff for %s" % _eid_int(assembly_id))
 
         if field_names:
             _configure_schedule_fields(doc, view, field_names)
@@ -626,7 +749,7 @@ def _create_single_category_schedule(
         view = AssemblyViewUtils.CreateSingleCategorySchedule(
             doc, assembly_id, category_id,
         )
-        print("[assembly_views] Created %s for %s" % (label, assembly_id.IntegerValue))
+        print("[assembly_views] Created %s for %s" % (label, _eid_int(assembly_id)))
 
         if field_names:
             _configure_schedule_fields(doc, view, field_names)

@@ -32,6 +32,7 @@ from .corner_handler import (
 from .joint_optimizer import (
     find_exclusion_zones,
     find_optimal_joints,
+    find_joints_for_strategy,
     get_panel_boundaries,
 )
 
@@ -74,15 +75,11 @@ def decompose_wall_to_panels(
         working_wall_data.get("length", original_length)
     )
 
-    # Find exclusion zones
+    # Find exclusion zones (kept for diagnostics metadata)
     exclusion_zones = find_exclusion_zones(working_wall_data, config)
 
-    # Find optimal joint locations
-    joint_u_coords = find_optimal_joints(
-        adjusted_length,
-        exclusion_zones,
-        config
-    )
+    # Find joint locations using configured strategy
+    joint_u_coords = find_joints_for_strategy(working_wall_data, config)
 
     # Get panel boundaries
     boundaries = get_panel_boundaries(joint_u_coords, adjusted_length)
